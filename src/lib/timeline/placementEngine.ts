@@ -449,6 +449,8 @@ export class TimelinePlacementEngine {
           height: 400,
         };
 
+        useProjectStore.getState().addMediaAsset(mediaAsset);
+
         const latestTracks = useTimelineStore.getState().tracks;
         const latestClips = useTimelineStore.getState().clips;
         const placement = resolveAddToTimelinePlacement({
@@ -479,6 +481,7 @@ export class TimelinePlacementEngine {
         });
 
         useHistoryStore.getState().execute(new AddClipCommand(stickerClip));
+        await getActiveSessionOrNull()?.prewarmClip(stickerClip, placement.startTime);
         return { success: true, clipId: stickerClip.id, trackId: targetTrackId };
       }
 

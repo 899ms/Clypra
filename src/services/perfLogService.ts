@@ -56,6 +56,7 @@ export type PerfLogKind =
   | "fallback-event"
   | "audio-snapshot"
   | "text-rollup"
+  | "sticker-rollup"
   | "export-span"
   | "seek-span"
   | "ai-inference";

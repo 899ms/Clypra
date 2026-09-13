@@ -464,6 +464,24 @@ export function listenForNativePlaybackStats(
   });
 }
 
+/** Listen for out-of-band mask texture eviction notifications from Rust compositor. */
+export function listenForNativeMaskEviction(
+  onEvicted: (assetIds: string[]) => void,
+): Promise<UnlistenFn> {
+  return listen<string[]>("native-mask-evicted", (event) => {
+    onEvicted(event.payload);
+  });
+}
+
+/** Listen for out-of-band raster (text, sticker, image) texture eviction notifications from Rust compositor. */
+export function listenForNativeRasterEviction(
+  onEvicted: (assetIds: string[]) => void,
+): Promise<UnlistenFn> {
+  return listen<string[]>("native-raster-evicted", (event) => {
+    onEvicted(event.payload);
+  });
+}
+
 /** Decode a native playback frame ahead of presentation. */
 export async function queueNativeFrame(
   request: NativeFrameRequest,
