@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager};
 pub mod ai;
 pub mod audio;
 pub mod commands;
+pub mod clymatte;
 pub mod diagnostics;
 pub mod models;
 pub mod native_audio;
@@ -335,6 +336,13 @@ pub fn run() {
             download_mediapipe_model,
             verify_mediapipe_model,
             delete_mediapipe_model,
+            // Clymatte container & background baking commands
+            clymatte_check_status,
+            clymatte_register_active_matte,
+            clymatte_unregister_active_matte,
+            clymatte_write_frames,
+            clymatte_bake_clip,
+            clymatte_cancel_bake,
             // Screen recording & native smoke test commands
             trim_video,
             set_menu_language,
