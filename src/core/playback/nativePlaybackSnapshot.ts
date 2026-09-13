@@ -29,11 +29,13 @@ export function buildNativePlaybackSnapshotKey(request: NativeFrameRequest): str
       canvasWidth: project.canvasWidth,
       canvasHeight: project.canvasHeight,
       clearColor: project.clearColor,
-      videoLayers: project.videoLayers.map((layer) => ({
-        layerId: layer.layerId,
-        assetId: layer.assetId,
-        videoPath: layer.videoPath,
-      })),
+      videoLayers: project.videoLayers
+        .filter((layer) => !layer.layerId?.endsWith(":subject-cutout"))
+        .map((layer) => ({
+          layerId: layer.layerId,
+          assetId: layer.assetId,
+          videoPath: layer.videoPath,
+        })),
       transition: project.transition
         ? {
             outgoingLayer: project.transition.outgoingLayer,

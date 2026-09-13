@@ -165,4 +165,71 @@ describe("native playback snapshot identity", () => {
 
     expect(rasterKey).toBe(sdfKey);
   });
+
+  it("keeps the structural snapshot key unchanged when a video layer has a bodyEffect or subject-cutout added", () => {
+    const withoutEffectKey = buildNativePlaybackSnapshotKey(baseRequest);
+    const withEffectKey = buildNativePlaybackSnapshotKey({
+      ...baseRequest,
+      project: {
+        ...baseRequest.project,
+        videoLayers: [
+          ...baseRequest.project.videoLayers,
+          {
+            ...baseRequest.project.videoLayers[0],
+            layerId: "video:subject-cutout",
+            bodyEffect: {
+              maskAssetId: "video_fx:0.000",
+              renderer: "body_cutout",
+              colorR: 1,
+              colorG: 1,
+              colorB: 1,
+              params: [4, 1, 4, 0],
+            },
+          },
+        ],
+      },
+    } as unknown as NativeFrameRequest);
+
+    expect(withEffectKey).toBe(withoutEffectKey);
+  });
+
+  it("carries bodyEffect and colorGrade on video layers in compact demand", () => {
+    const requestWithCutout = {
+      ...baseRequest,
+      project: {
+        ...baseRequest.project,
+        videoLayers: [
+          baseRequest.project.videoLayers[0],
+          {
+            ...baseRequest.project.videoLayers[0],
+            layerId: "video:subject-cutout",
+            colorGrade: { contrast: 1.2 },
+            bodyEffect: {
+              maskAssetId: "video:subject-cutout_fx:100",
+              renderer: "body_cutout",
+              colorR: 1,
+              colorG: 1,
+              colorB: 1,
+              strength: 1,
+              radius: 4,
+              time: 3.33,
+            },
+          },
+        ],
+      },
+    } as unknown as NativeFrameRequest;
+
+    const demand = createNativePlaybackFrameDemand(requestWithCutout);
+    expect(demand.videoLayers).toHaveLength(2);
+    expect(demand.videoLayers[1].bodyEffect).toMatchObject({
+      maskAssetId: "video:subject-cutout_fx:100",
+      renderer: "body_cutout",
+      strength: 1,
+      radius: 4,
+    });
+    expect(demand.videoLayers[1].colorGrade).toMatchObject({
+      contrast: 1.2,
+    });
+  });
 });
+

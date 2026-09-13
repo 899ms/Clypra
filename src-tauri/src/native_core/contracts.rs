@@ -709,6 +709,8 @@ pub struct FrameRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativePlaybackVideoLayerUpdate {
+    #[serde(default)]
+    pub layer_id: Option<String>,
     pub source_time: FrameTime,
     pub x: f32,
     pub y: f32,
@@ -717,6 +719,10 @@ pub struct NativePlaybackVideoLayerUpdate {
     pub rotation: f32,
     pub opacity: f32,
     pub z_index: i32,
+    #[serde(default)]
+    pub color_grade: Option<ColorGradeSnapshot>,
+    #[serde(default)]
+    pub body_effect: Option<BodyEffectSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1135,7 +1141,12 @@ impl FrameRequest {
                 if body_effect.mask_asset_id.trim().is_empty()
                     || !matches!(
                         body_effect.renderer.as_str(),
-                        "body_outline" | "body_glow" | "body_segmentation_glow" | "body_particles"
+                        "body_outline"
+                            | "body_glow"
+                            | "body_segmentation_glow"
+                            | "body_particles"
+                            | "body_cutout"
+                            | "subject_cutout"
                     )
                     || !body_effect.color_r.is_finite()
                     || !body_effect.color_g.is_finite()
@@ -1400,12 +1411,16 @@ impl FrameRequest {
         }
         for video_layer in &self.project.video_layers {
             if let Some(body_effect) = video_layer.body_effect.as_ref() {
-                if !self
-                    .project
-                    .raster_layers
-                    .iter()
-                    .any(|mask| mask.is_mask && mask.asset_id == body_effect.mask_asset_id)
-                {
+                let prefix = body_effect
+                    .mask_asset_id
+                    .split(':')
+                    .next()
+                    .unwrap_or(&body_effect.mask_asset_id);
+                if !self.project.raster_layers.iter().any(|mask| {
+                    mask.is_mask
+                        && (mask.asset_id == body_effect.mask_asset_id
+                            || mask.asset_id.starts_with(prefix))
+                }) {
                     return Err(NativeCoreError::InvalidContract(
                         "Body effect references a missing mask asset".to_string(),
                     ));
@@ -1518,6 +1533,15 @@ impl FrameRequest {
         cache_request.project.project_revision.clear();
         cache_request.project.clear_color = [0.0, 0.0, 0.0, 1.0];
         cache_request.project.transition = None;
+
+        // Strip cutout layers: pre-decoded video frames represent the underlying
+        // media streams. A synthesized foreground cutout layer shares the exact
+        // same decoder output as the base video, so lookahead pre-decoding matches
+        // whether the cutout is active or not.
+        cache_request
+            .project
+            .video_layers
+            .retain(|layer| !layer.layer_id.ends_with(":subject-cutout"));
 
         // Normalise time representations to canonical frame indices
         cache_request.frame_time.ticks = 0;
@@ -1729,6 +1753,18 @@ mod tests {
         second.project.video_layers[0].blend_mode = "screen".to_string();
         second.project.video_layers[0].z_index = 4;
         second.project.video_layers[0].color_grade = Some(serde_json::from_str("{}").unwrap());
+
+        assert_eq!(first.decode_cache_key().unwrap(), second.decode_cache_key().unwrap());
+    }
+
+    #[test]
+    fn request_decode_cache_key_ignores_synthesized_subject_cutout_layers() {
+        let first = request();
+        let mut second = first.clone();
+        let mut cutout_layer = first.project.video_layers[0].clone();
+        cutout_layer.layer_id = format!("{}:subject-cutout", cutout_layer.layer_id);
+        cutout_layer.z_index = 2;
+        second.project.video_layers.push(cutout_layer);
 
         assert_eq!(first.decode_cache_key().unwrap(), second.decode_cache_key().unwrap());
     }

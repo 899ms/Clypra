@@ -49,6 +49,9 @@ impl NativeRenderSession {
         let mut streams = HashSet::new();
         let mut leases = Vec::new();
         for layer in &snapshot.project.video_layers {
+            if layer.layer_id.ends_with(":subject-cutout") {
+                continue;
+            }
             let key = (layer.video_path.clone(), layer.layer_id.clone());
             if streams.insert(key) {
                 leases.push(
@@ -158,29 +161,131 @@ impl NativeRenderSession {
             .map_err(|_| "Native render snapshot lock is poisoned".to_string())?
             .clone();
         if let Some(demand) = demand {
-            if demand.video_layers.len() != request.project.video_layers.len() {
-                return Err(
-                    "Native playback demand does not match the configured render snapshot".to_string(),
-                );
-            }
             request.request_id = demand.request_id.clone();
             request.frame_time = demand.frame_time;
             request.generation = demand.generation;
             request.mode = demand.mode.clone();
-            for (layer, update) in request
+
+            let base_snapshot_video_count = request
                 .project
                 .video_layers
-                .iter_mut()
-                .zip(&demand.video_layers)
-            {
-                layer.source_time = update.source_time;
-                layer.x = update.x;
-                layer.y = update.y;
-                layer.width = update.width;
-                layer.height = update.height;
-                layer.rotation = update.rotation;
-                layer.opacity = update.opacity;
-                layer.z_index = update.z_index;
+                .iter()
+                .filter(|l| !l.layer_id.ends_with(":subject-cutout"))
+                .count();
+            let base_demand_video_count = demand
+                .video_layers
+                .iter()
+                .filter(|l| !l.layer_id.as_deref().map(|id| id.ends_with(":subject-cutout")).unwrap_or(false))
+                .count();
+
+            if demand.video_layers.len() == request.project.video_layers.len() {
+                for (layer, update) in request
+                    .project
+                    .video_layers
+                    .iter_mut()
+                    .zip(&demand.video_layers)
+                {
+                    if let Some(layer_id) = &update.layer_id {
+                        layer.layer_id = layer_id.clone();
+                    }
+                    layer.source_time = update.source_time;
+                    layer.x = update.x;
+                    layer.y = update.y;
+                    layer.width = update.width;
+                    layer.height = update.height;
+                    layer.rotation = update.rotation;
+                    layer.opacity = update.opacity;
+                    layer.z_index = update.z_index;
+                    if update.color_grade.is_some() {
+                        layer.color_grade = update.color_grade.clone();
+                    }
+                    if update.body_effect.is_some() {
+                        layer.body_effect = update.body_effect.clone();
+                    } else if layer.layer_id.ends_with(":subject-cutout") && layer.body_effect.is_none() {
+                        let base_id = layer.layer_id.strip_suffix(":subject-cutout").unwrap_or(&layer.layer_id);
+                        layer.body_effect = Some(crate::native_core::BodyEffectSnapshot {
+                            mask_asset_id: format!("{}_fx-body-cutout-{}", layer.layer_id, base_id),
+                            renderer: "body_cutout".to_string(),
+                            color_r: 1.0,
+                            color_g: 1.0,
+                            color_b: 1.0,
+                            strength: 1.0,
+                            radius: 4.0,
+                            time: 0.0,
+                        });
+                    }
+                }
+            } else if base_demand_video_count == base_snapshot_video_count {
+                // Dynamic cutout addition or removal
+                let mut new_video_layers = Vec::with_capacity(demand.video_layers.len());
+                for update in &demand.video_layers {
+                    let lid = update.layer_id.as_deref().unwrap_or("");
+                    if let Some(existing) = request.project.video_layers.iter().find(|l| {
+                        if !lid.is_empty() {
+                            l.layer_id == lid
+                        } else {
+                            false
+                        }
+                    }) {
+                        let mut layer = existing.clone();
+                        layer.source_time = update.source_time;
+                        layer.x = update.x;
+                        layer.y = update.y;
+                        layer.width = update.width;
+                        layer.height = update.height;
+                        layer.rotation = update.rotation;
+                        layer.opacity = update.opacity;
+                        layer.z_index = update.z_index;
+                        if update.color_grade.is_some() {
+                            layer.color_grade = update.color_grade.clone();
+                        }
+                        if update.body_effect.is_some() {
+                            layer.body_effect = update.body_effect.clone();
+                        }
+                        new_video_layers.push(layer);
+                    } else if lid.ends_with(":subject-cutout") {
+                        let base_id = lid.strip_suffix(":subject-cutout").unwrap_or("");
+                        if let Some(base_layer) = request.project.video_layers.iter().find(|l| l.layer_id == base_id) {
+                            let mut layer = base_layer.clone();
+                            layer.layer_id = lid.to_string();
+                            layer.source_time = update.source_time;
+                            layer.x = update.x;
+                            layer.y = update.y;
+                            layer.width = update.width;
+                            layer.height = update.height;
+                            layer.rotation = update.rotation;
+                            layer.opacity = update.opacity;
+                            layer.z_index = update.z_index;
+                            if update.color_grade.is_some() {
+                                layer.color_grade = update.color_grade.clone();
+                            }
+                            layer.body_effect = update.body_effect.clone().or_else(|| {
+                                Some(crate::native_core::BodyEffectSnapshot {
+                                    mask_asset_id: format!("{lid}_fx-body-cutout-{base_id}"),
+                                    renderer: "body_cutout".to_string(),
+                                    color_r: 1.0,
+                                    color_g: 1.0,
+                                    color_b: 1.0,
+                                    strength: 1.0,
+                                    radius: 4.0,
+                                    time: 0.0,
+                                })
+                            });
+                            new_video_layers.push(layer);
+                        }
+                    }
+                }
+                if new_video_layers.len() == demand.video_layers.len() {
+                    request.project.video_layers = new_video_layers;
+                } else {
+                    return Err(
+                        "Native playback demand video layers could not be resolved from snapshot".to_string(),
+                    );
+                }
+            } else {
+                return Err(
+                    "Native playback demand does not match the configured render snapshot".to_string(),
+                );
             }
 
             if demand.raster_layers.len() == request.project.raster_layers.len()
@@ -1248,5 +1353,240 @@ mod tests {
         // Frame 429: missed tick after exit retains empty overlay state
         let mat3 = session.materialize_request(None).unwrap();
         assert_eq!(mat3.project.raster_layers.len(), 0);
+    }
+
+    #[test]
+    fn materialize_request_dynamically_adds_and_removes_subject_cutout_layers() {
+        // Session configured with base video only (layer_id: "video-1")
+        let mut snapshot = test_snapshot();
+        snapshot.project.video_layers = vec![
+            crate::native_core::VideoLayerSnapshot {
+                layer_id: "video-1".to_string(),
+                asset_id: "video-1".to_string(),
+                video_path: "/test/video.mp4".to_string(),
+                source_time: FrameTime::new(0, 0, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                blend_mode: "normal".to_string(),
+                color_grade: None,
+                body_effect: None,
+            },
+        ];
+        let session = NativeRenderSession {
+            snapshot: Mutex::new(snapshot),
+            leases: Mutex::new(Vec::new()),
+            pending: Mutex::new(LatestPlaybackDemand::default()),
+            notify: tokio::sync::Notify::new(),
+            running: AtomicBool::new(false),
+            generation: AtomicU64::new(1),
+            worker: Mutex::new(None),
+        };
+
+        // Frame 50: Behind-subject text clip begins -> cutout synthesized
+        let mut d1 = demand("demand-cutout-enter", 50);
+        d1.video_layers = vec![
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("video-1".to_string()),
+                source_time: FrameTime::new(50, 50, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                color_grade: None,
+                body_effect: None,
+            },
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("video-1:subject-cutout".to_string()),
+                source_time: FrameTime::new(50, 50, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                rotation: 0.0,
+                opacity: 0.0, // Buffering segmentation mask
+                z_index: 2,
+                color_grade: None,
+                body_effect: None,
+            },
+        ];
+        let mat1 = session.materialize_request(Some(&d1)).expect("dynamic cutout addition should succeed");
+        assert_eq!(mat1.project.video_layers.len(), 2);
+        assert_eq!(mat1.project.video_layers[0].layer_id, "video-1");
+        assert_eq!(mat1.project.video_layers[1].layer_id, "video-1:subject-cutout");
+        assert_eq!(mat1.project.video_layers[1].opacity, 0.0);
+        assert!(mat1.project.video_layers[1].body_effect.is_some());
+        assert_eq!(
+            mat1.project.video_layers[1].body_effect.as_ref().unwrap().renderer,
+            "body_cutout"
+        );
+
+        // Frame 120: Cutout ends, reverting to single base video layer
+        let mut d2 = demand("demand-cutout-exit", 120);
+        d2.video_layers = vec![
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("video-1".to_string()),
+                source_time: FrameTime::new(120, 120, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                color_grade: None,
+                body_effect: None,
+            },
+        ];
+        let mat2 = session.materialize_request(Some(&d2)).expect("dynamic cutout removal should succeed");
+        assert_eq!(mat2.project.video_layers.len(), 1);
+        assert_eq!(mat2.project.video_layers[0].layer_id, "video-1");
+    }
+
+    #[test]
+    fn materialize_request_preserves_body_effect_on_cutout_layers_across_steady_playback() {
+        let mut snapshot = test_snapshot();
+        snapshot.project.video_layers = vec![
+            crate::native_core::VideoLayerSnapshot {
+                layer_id: "vid-main".to_string(),
+                asset_id: "vid-main".to_string(),
+                video_path: "/test/v.mp4".to_string(),
+                source_time: FrameTime::new(0, 0, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                blend_mode: "normal".to_string(),
+                color_grade: None,
+                body_effect: None,
+            },
+        ];
+        let session = NativeRenderSession {
+            snapshot: Mutex::new(snapshot),
+            leases: Mutex::new(Vec::new()),
+            pending: Mutex::new(LatestPlaybackDemand::default()),
+            notify: tokio::sync::Notify::new(),
+            running: AtomicBool::new(false),
+            generation: AtomicU64::new(1),
+            worker: Mutex::new(None),
+        };
+
+        // Tick 1: Behind-subject cutout enters with active body_effect mask
+        let mut d1 = demand("demand-1", 100);
+        d1.video_layers = vec![
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("vid-main".to_string()),
+                source_time: FrameTime::new(100, 100, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                color_grade: None,
+                body_effect: None,
+            },
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("vid-main:subject-cutout".to_string()),
+                source_time: FrameTime::new(100, 100, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 2,
+                color_grade: None,
+                body_effect: Some(crate::native_core::BodyEffectSnapshot {
+                    mask_asset_id: "vid-main:subject-cutout_fx:100".to_string(),
+                    renderer: "body_cutout".to_string(),
+                    color_r: 1.0,
+                    color_g: 1.0,
+                    color_b: 1.0,
+                    strength: 1.0,
+                    radius: 4.0,
+                    time: 3.33,
+                }),
+            },
+        ];
+        let mat1 = session.materialize_request(Some(&d1)).unwrap();
+        assert_eq!(mat1.project.video_layers.len(), 2);
+        let cutout1 = &mat1.project.video_layers[1];
+        assert_eq!(cutout1.layer_id, "vid-main:subject-cutout");
+        assert_eq!(cutout1.opacity, 1.0);
+        assert!(cutout1.body_effect.is_some());
+        assert_eq!(
+            cutout1.body_effect.as_ref().unwrap().mask_asset_id,
+            "vid-main:subject-cutout_fx:100"
+        );
+
+        // Tick 2: Steady state (video layer count unchanged, mask updated)
+        let mut d2 = demand("demand-2", 101);
+        d2.video_layers = vec![
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("vid-main".to_string()),
+                source_time: FrameTime::new(101, 101, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                color_grade: None,
+                body_effect: None,
+            },
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("vid-main:subject-cutout".to_string()),
+                source_time: FrameTime::new(101, 101, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 2,
+                color_grade: None,
+                body_effect: Some(crate::native_core::BodyEffectSnapshot {
+                    mask_asset_id: "vid-main:subject-cutout_fx:101".to_string(),
+                    renderer: "body_cutout".to_string(),
+                    color_r: 1.0,
+                    color_g: 1.0,
+                    color_b: 1.0,
+                    strength: 1.0,
+                    radius: 4.0,
+                    time: 3.36,
+                }),
+            },
+        ];
+        let mat2 = session.materialize_request(Some(&d2)).unwrap();
+        assert_eq!(mat2.project.video_layers.len(), 2);
+        let cutout2 = &mat2.project.video_layers[1];
+        assert_eq!(
+            cutout2.body_effect.as_ref().unwrap().mask_asset_id,
+            "vid-main:subject-cutout_fx:101"
+        );
+
+        // Tick 3: Synthetic missed tick (demand is None). Snapshot must retain body_effect!
+        let mat3 = session.materialize_request(None).unwrap();
+        assert_eq!(mat3.project.video_layers.len(), 2);
+        let cutout3 = &mat3.project.video_layers[1];
+        assert!(cutout3.body_effect.is_some());
+        assert_eq!(
+            cutout3.body_effect.as_ref().unwrap().mask_asset_id,
+            "vid-main:subject-cutout_fx:101"
+        );
+        assert_eq!(cutout3.opacity, 1.0);
     }
 }
