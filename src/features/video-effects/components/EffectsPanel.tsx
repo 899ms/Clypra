@@ -94,7 +94,7 @@ export function EffectsPanel({ onAddToTimeline }: EffectsPanelProps) {
       {/* Tab Content */}
       <div className="grow overflow-y-auto scrollbar-thin">
         {activeTab === "video" && <RendererEffectsBrowser onEffectSelect={handleRendererEffectSelect} onAddToTimeline={onAddToTimeline} showApplyButton={true} selectedCategory={selectedCategory} />}
-        {activeTab === "body" && <EffectPicker onSelect={handleEffectSelect} />}
+        {activeTab === "body" && <EffectPicker selectedCategory={selectedCategory} onSelect={handleEffectSelect} />}
       </div>
     </div>
   );

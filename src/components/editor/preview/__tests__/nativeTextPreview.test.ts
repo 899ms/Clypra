@@ -311,7 +311,7 @@ describe("browser preview blend mode painting", () => {
     canvas.width = 800;
     canvas.height = 600;
     const ctx = canvas.getContext("2d")!;
-    vi.spyOn(canvas, "getContext").mockReturnValue(ctx);
+    vi.spyOn(canvas, "getContext").mockReturnValue(ctx as any);
     let capturedBlendMode = "";
     ctx.drawImage = vi.fn().mockImplementation(() => {
       capturedBlendMode = ctx.globalCompositeOperation;

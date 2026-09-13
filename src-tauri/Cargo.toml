@@ -60,6 +60,7 @@ rtrb = "0.3"
 wgpu = "24.0"
 bytemuck = { version = "1.21", features = ["derive"] }
 memmap2 = "0.9"
+lz4_flex = "0.11"
 
 # Native FFmpeg bindings for fast thumbnail extraction
 # ffmpeg-next "9" / ffmpeg-sys-next "9" target FFmpeg 8.x libraries

@@ -105,6 +105,7 @@ pub struct NativePreviewSession {
     mask_registration_history: HashSet<String>,
     pub text_cache: TextLayerCache,
     pub text_pipeline: TextEffectPipeline,
+    matte_prefetchers: HashMap<String, Arc<crate::clymatte::MattePrefetcher>>,
     compositors: Vec<CachedCompositor>,
 }
 
@@ -222,6 +223,7 @@ impl NativePreviewSession {
             mask_registration_history: HashSet::new(),
             text_cache,
             text_pipeline,
+            matte_prefetchers: HashMap::new(),
             compositors: Vec::new(),
         }
     }
@@ -677,6 +679,25 @@ impl NativePreviewSession {
 
     pub fn transparent_mask_placeholder(&self) -> Arc<wgpu::Texture> {
         Arc::clone(&self.transparent_mask_placeholder)
+    }
+
+    pub fn register_matte_prefetcher(
+        &mut self,
+        clip_id: String,
+        prefetcher: Arc<crate::clymatte::MattePrefetcher>,
+    ) {
+        self.matte_prefetchers.insert(clip_id, prefetcher);
+    }
+
+    pub fn unregister_matte_prefetcher(&mut self, clip_id: &str) {
+        self.matte_prefetchers.remove(clip_id);
+    }
+
+    pub fn get_matte_prefetcher(
+        &self,
+        clip_id: &str,
+    ) -> Option<Arc<crate::clymatte::MattePrefetcher>> {
+        self.matte_prefetchers.get(clip_id).cloned()
     }
 
     /// Retrieve a cached text layer GPU texture or render it via the SDF pipeline.
