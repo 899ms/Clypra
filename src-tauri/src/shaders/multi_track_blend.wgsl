@@ -338,7 +338,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // 2. Chroma Key & Despill Extraction
-    let keyed_color = process_chroma_key(sample_color, layer.chroma_key);
+    var keyed_color = process_chroma_key(sample_color, layer.chroma_key);
     if (keyed_color.a <= 0.0001) {
         discard;
     }
@@ -346,8 +346,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var rgb = keyed_color.rgb;
 
     // Body effects use the segmentation alpha channel as a native texture
-    // binding. Type 1 is outline, type 2 is glow, and type 3 is particles;
-    // zero means no mask node.
+    // binding. Type 1 is outline, type 2 is glow, type 3 is particles,
+    // and type 4 is body_cutout / subject isolation.
     let body_type = layer.body_effect.params.x;
     if (body_type > 0.0 && layer.body_effect.params.y > 0.0) {
         let body_dimensions = vec2<f32>(textureDimensions(t_mask));
@@ -365,7 +365,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else if (body_type < 2.5) {
             let halo = (neighbor_max + center_mask) * 0.5 * layer.body_effect.params.y;
             rgb = clamp(rgb + layer.body_effect.color.xyz * halo, vec3<f32>(0.0), vec3<f32>(1.0));
-        } else {
+        } else if (body_type < 3.5) {
             // One candidate particle per deterministic grid cell. The native
             // count is bounded to 40 by the frontend, keeping this pass cheap
             // while retaining animated, mask-constrained particles.
@@ -387,6 +387,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let particle_mask = sample_body_mask(particle_uv);
                 let particles = particle_shape * particle_mask * layer.body_effect.params.y;
                 rgb = clamp(rgb + layer.body_effect.color.xyz * particles, vec3<f32>(0.0), vec3<f32>(1.0));
+            }
+        } else {
+            // Type 4: body_cutout / subject isolation
+            // Adjustable feathering from params.z (default 4px)
+            let feather = clamp(layer.body_effect.params.z * 0.05, 0.001, 0.49);
+            let cutout_alpha = smoothstep(0.5 - feather, 0.5 + feather, center_mask) * layer.body_effect.params.y;
+            keyed_color.a = keyed_color.a * cutout_alpha;
+            if (keyed_color.a <= 0.0001) {
+                discard;
             }
         }
     }

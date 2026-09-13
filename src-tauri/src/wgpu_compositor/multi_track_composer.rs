@@ -439,7 +439,7 @@ impl MultiTrackCompositor {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &[255, 255, 255, 255],
+            &[0, 0, 0, 0],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
