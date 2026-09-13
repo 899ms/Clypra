@@ -55,7 +55,9 @@ export type EffectRenderer =
   | "body-segmentation-glow"
   | "body_glow"
   | "body_outline"
-  | "body_particles";
+  | "body_particles"
+  | "body_cutout"
+  | "subject_cutout";
 
 export interface EffectPreset {
   id: string;

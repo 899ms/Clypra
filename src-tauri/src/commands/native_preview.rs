@@ -28,7 +28,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 type DecodedNativeVideoFrame = (Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata);
 static NATIVE_SURFACE_PRESENTATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -703,7 +703,12 @@ fn validate_video_project_request(request: &NativeVideoProjectFrameRequest) -> R
             if effect.mask_asset_id.trim().is_empty()
                 || !matches!(
                     effect.renderer.as_str(),
-                    "body_outline" | "body_glow" | "body_segmentation_glow" | "body_particles"
+                    "body_outline"
+                        | "body_glow"
+                        | "body_segmentation_glow"
+                        | "body_particles"
+                        | "body_cutout"
+                        | "subject_cutout"
                 )
                 || !effect.color_r.is_finite()
                 || !effect.color_g.is_finite()
@@ -721,10 +726,18 @@ fn validate_video_project_request(request: &NativeVideoProjectFrameRequest) -> R
                 || effect.strength > 1.0
                 || effect.radius < 0.0
                 || effect.time < 0.0
-                || !request
-                    .raster_layers
-                    .iter()
-                    .any(|mask| mask.is_mask && mask.asset_id == effect.mask_asset_id)
+                || {
+                    let prefix = effect
+                        .mask_asset_id
+                        .split(':')
+                        .next()
+                        .unwrap_or(&effect.mask_asset_id);
+                    !request.raster_layers.iter().any(|mask| {
+                        mask.is_mask
+                            && (mask.asset_id == effect.mask_asset_id
+                                || mask.asset_id.starts_with(prefix))
+                    })
+                }
             {
                 return Err(
                     "Native body effect contains an invalid or missing mask asset".to_string(),
@@ -1004,6 +1017,7 @@ fn body_effect_from_snapshot(snapshot: Option<&BodyEffectSnapshot>) -> BodyEffec
         "body_outline" => 1.0,
         "body_glow" | "body_segmentation_glow" => 2.0,
         "body_particles" => 3.0,
+        "body_cutout" | "subject_cutout" => 4.0,
         _ => 0.0,
     };
     BodyEffectUniforms {
@@ -1558,6 +1572,56 @@ struct NativeRenderStageTimings {
     decoder_mutex_wait_us: u64,
 }
 
+fn resolve_mask_view<'a>(
+    effect: &BodyEffectSnapshot,
+    mask_views: &'a HashMap<&'a str, &'a wgpu::TextureView>,
+    is_continuous: bool,
+) -> Option<&'a wgpu::TextureView> {
+    if let Some(view) = mask_views.get(effect.mask_asset_id.as_str()).copied() {
+        return Some(view);
+    }
+    if let Some((matched_id, view)) = mask_views.iter().find(|(k, _)| {
+        k.starts_with(&effect.mask_asset_id) || effect.mask_asset_id.starts_with(**k)
+    }) {
+        if !is_continuous {
+            diagnostics::info(
+                "wgpu_compositor",
+                "cutout_mask_prefix_match",
+                format!(
+                    "Bound mask via asset prefix match (target: '{}', matched: '{}')",
+                    effect.mask_asset_id, matched_id
+                ),
+            );
+        }
+        return Some(*view);
+    }
+    if let Some(prefix) = effect.mask_asset_id.split(':').next() {
+        if let Some((matched_id, view)) = mask_views.iter().find(|(k, _)| k.starts_with(prefix)) {
+            if !is_continuous {
+                diagnostics::info(
+                    "wgpu_compositor",
+                    "cutout_mask_prefix_match",
+                    format!(
+                        "Bound mask via prefix '{}' (target: '{}', matched: '{}')",
+                        prefix, effect.mask_asset_id, matched_id
+                    ),
+                );
+            }
+            return Some(*view);
+        }
+    }
+    diagnostics::warn(
+        "wgpu_compositor",
+        "cutout_mask_missing",
+        format!(
+            "Mask asset '{}' not found in raster layers (available: {}). Falling back to transparent cutout.",
+            effect.mask_asset_id,
+            mask_views.keys().copied().collect::<Vec<_>>().join(", ")
+        ),
+    );
+    None
+}
+
 async fn render_native_video_project_frame_bytes(
     app: tauri::AppHandle,
     request: NativeVideoProjectFrameRequest,
@@ -1749,15 +1813,42 @@ async fn render_native_video_project_frame_bytes_timed(
             textures.push(texture);
         }
     }
+    let mut evicted_mask_ids: Vec<String> = Vec::new();
+    let mut evicted_raster_ids: Vec<String> = Vec::new();
     for layer in &request.raster_layers {
-        let texture = session.get_or_upload_rgba_layer_to_texture(
-            &layer.asset_id,
-            layer.width,
-            layer.height,
-            layer.rgba.as_deref(),
-        )?;
+        let texture = if layer.rgba.is_none() && !session.is_rgba_layer_resident(&layer.asset_id) {
+            if layer.is_mask {
+                // Mask is missing from GPU LRU. Only treat as an eviction if it was
+                // ever registered previously. Otherwise, it is a cold start or an in-flight
+                // segmentation mask that hasn't completed registration yet.
+                if session.was_mask_ever_registered(&layer.asset_id) {
+                    evicted_mask_ids.push(layer.asset_id.clone());
+                    session.forget_mask_registration(&layer.asset_id);
+                }
+            } else {
+                evicted_raster_ids.push(layer.asset_id.clone());
+            }
+            // Substitute a transparent placeholder so the frame still renders without crashing —
+            // the missing layer will be restored upon re-registration.
+            session.transparent_mask_placeholder()
+        } else {
+            session
+                .get_or_upload_rgba_layer_to_texture(
+                    &layer.asset_id,
+                    layer.width,
+                    layer.height,
+                    layer.rgba.as_deref(),
+                )
+                .map_err(|e| e.to_string())?
+        };
         views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
         textures.push(texture);
+    }
+    if !evicted_mask_ids.is_empty() {
+        let _ = app.emit("native-mask-evicted", &evicted_mask_ids);
+    }
+    if !evicted_raster_ids.is_empty() {
+        let _ = app.emit("native-raster-evicted", &evicted_raster_ids);
     }
     let mut text_views = Vec::with_capacity(request.text_layers.len());
     let mut text_dims = Vec::with_capacity(request.text_layers.len());
@@ -1784,7 +1875,12 @@ async fn render_native_video_project_frame_bytes_timed(
         .raster_layers
         .iter()
         .zip(views.iter().skip(request.layers.len()))
-        .filter(|(layer, _)| layer.is_mask)
+        .filter(|(layer, _)| {
+            layer.is_mask
+                && !evicted_mask_ids
+                    .iter()
+                    .any(|id| id == &layer.asset_id)
+        })
         .map(|(layer, view)| (layer.asset_id.as_str(), view))
         .collect();
     for (layer, view) in request.layers.iter().zip(views.iter()) {
@@ -1802,7 +1898,7 @@ async fn render_native_video_project_frame_bytes_timed(
             mask_view: layer
                 .body_effect
                 .as_ref()
-                .and_then(|effect| mask_views.get(effect.mask_asset_id.as_str()).copied()),
+                .and_then(|effect| resolve_mask_view(effect, &mask_views, false)),
             body_effect: body_effect_from_snapshot(layer.body_effect.as_ref()),
             lut: resolve_native_lut(layer.color_grade.as_ref(), lut_cache.as_ref())?,
             grain_seed: ((layer.time_secs.max(0.0) * 60.0).floor() * 0.37) as f32,
@@ -1995,55 +2091,87 @@ async fn decode_native_video_layers(
     }
 
     // Professional NLE concurrent multi-stream decoding:
-    // Each layer is assigned an isolated stream decoder reader so stacked clips
-    // (even using the same video file) decode independently in parallel without GOP thrashing.
+    // Each distinct layer is assigned an isolated stream decoder reader so stacked clips
+    // decode independently in parallel without GOP thrashing.
+    // Layers sharing the exact same video file and timestamp (such as synthesized
+    // :subject-cutout foreground layers) share the decoded NV12 planes without leasing
+    // a second FFmpeg decoder.
     let decode_wall_started = Instant::now();
-    let mut tasks = Vec::with_capacity(request.layers.len());
-    for layer in &request.layers {
-        let video_path = layer.video_path.clone();
-        let layer_id = layer.layer_id.clone();
-        let time_secs = layer.time_secs;
-        let cancel = cancellation.clone();
+    let mut unique_tasks = Vec::new();
+    let mut layer_to_unique_idx = Vec::with_capacity(request.layers.len());
 
-        tasks.push(tauri::async_runtime::spawn(async move {
-            let stream_id = if !layer_id.is_empty() {
-                layer_id.as_str()
-            } else {
-                ""
-            };
-            let decoder = get_preview_decoder_for_stream(&video_path, stream_id).await?;
-            let mutex_started = Instant::now();
-            let mut guard = decoder.lock().await;
-            let mutex_wait_us = mutex_started.elapsed().as_micros() as u64;
-            let decode_started = Instant::now();
-            let stream_color = guard.metadata().color;
-            let (y_plane, uv_plane, width, height, frame_color) = guard
-                .decode_frame_raw_nv12_with_options(time_secs, decode_options, || {
-                    cancel
-                        .as_ref()
-                        .map(|(latest, generation)| latest.load(Ordering::Acquire) > *generation)
-                        .unwrap_or(false)
-                })?;
-            let decode_us =
-                decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
-            let color = merge_color_metadata(frame_color, &stream_color);
-            Ok::<_, String>(((y_plane, uv_plane, width, height, color), decode_us, mutex_wait_us, width, height, layer_id))
-        }));
+    for (layer_idx, layer) in request.layers.iter().enumerate() {
+        let duplicate_of = request.layers[..layer_idx].iter().position(|prev| {
+            prev.video_path == layer.video_path
+                && (prev.time_secs - layer.time_secs).abs() < 0.0001
+        });
+
+        if let Some(prev_idx) = duplicate_of {
+            let unique_idx = layer_to_unique_idx[prev_idx];
+            layer_to_unique_idx.push(unique_idx);
+        } else {
+            let unique_idx = unique_tasks.len();
+            layer_to_unique_idx.push(unique_idx);
+
+            let video_path = layer.video_path.clone();
+            let layer_id = layer.layer_id.clone();
+            let time_secs = layer.time_secs;
+            let cancel = cancellation.clone();
+
+            unique_tasks.push(tauri::async_runtime::spawn(async move {
+                let stream_id = if !layer_id.is_empty() {
+                    layer_id.as_str()
+                } else {
+                    ""
+                };
+                let decoder = get_preview_decoder_for_stream(&video_path, stream_id).await?;
+                let mutex_started = Instant::now();
+                let mut guard = decoder.lock().await;
+                let mutex_wait_us = mutex_started.elapsed().as_micros() as u64;
+                let decode_started = Instant::now();
+                let stream_color = guard.metadata().color;
+                let (y_plane, uv_plane, width, height, frame_color) = guard
+                    .decode_frame_raw_nv12_with_options(time_secs, decode_options, || {
+                        cancel
+                            .as_ref()
+                            .map(|(latest, generation)| latest.load(Ordering::Acquire) > *generation)
+                            .unwrap_or(false)
+                    })?;
+                let decode_us =
+                    decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                let color = merge_color_metadata(frame_color, &stream_color);
+                Ok::<_, String>(((y_plane, uv_plane, width, height, color), decode_us, mutex_wait_us, width, height, layer_id))
+            }));
+        }
     }
 
-    let mut decoded_frames = Vec::with_capacity(tasks.len());
+    let mut unique_results = Vec::with_capacity(unique_tasks.len());
     let mut max_decode_us = 0u32;
     let mut total_mutex_wait_us = 0u64;
-    let mut layer_details = Vec::with_capacity(tasks.len());
 
-    for task in tasks {
-        let (frame, decode_us, mutex_wait_us, width, height, layer_id) = task
+    for task in unique_tasks {
+        let res = task
             .await
             .map_err(|e| format!("Decode worker task failed: {e}"))??;
-        decoded_frames.push(frame);
-        max_decode_us = max_decode_us.max(decode_us);
-        total_mutex_wait_us = total_mutex_wait_us.saturating_add(mutex_wait_us);
-        layer_details.push((layer_id, width, height, decode_us, mutex_wait_us));
+        max_decode_us = max_decode_us.max(res.1);
+        total_mutex_wait_us = total_mutex_wait_us.saturating_add(res.2);
+        unique_results.push(res);
+    }
+
+    let mut decoded_frames = Vec::with_capacity(request.layers.len());
+    let mut layer_details = Vec::with_capacity(request.layers.len());
+
+    for (layer_idx, &unique_idx) in layer_to_unique_idx.iter().enumerate() {
+        let (ref frame, decode_us, mutex_wait_us, width, height, ref task_layer_id) = unique_results[unique_idx];
+        let layer_id = &request.layers[layer_idx].layer_id;
+        let is_duplicate = task_layer_id != layer_id;
+
+        decoded_frames.push(frame.clone());
+        if is_duplicate {
+            layer_details.push((layer_id.clone(), width, height, 0u32, 0u64));
+        } else {
+            layer_details.push((layer_id.clone(), width, height, decode_us, mutex_wait_us));
+        }
     }
 
     let decode_wall_time_ms = decode_wall_started.elapsed().as_secs_f64() * 1000.0;
@@ -2778,41 +2906,79 @@ pub(crate) async fn present_native_frame_internal(
     let canvas_width = legacy_request.canvas_width as f32;
     let canvas_height = legacy_request.canvas_height as f32;
     let conversion_started = Instant::now();
-    let mut textures =
+    let mut textures: Vec<Arc<wgpu::Texture>> =
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
-    let mut views =
+    let mut views: Vec<wgpu::TextureView> =
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
-    for (layer, (y_plane, uv_plane, width, height, color)) in
-        legacy_request.layers.iter().zip(decoded_frames.iter())
+    for (layer_idx, (layer, (y_plane, uv_plane, width, height, color))) in
+        legacy_request.layers.iter().zip(decoded_frames.iter()).enumerate()
     {
-        let params = color_params(color)?;
-        let layer_key = if !layer.layer_id.is_empty() {
-            &layer.layer_id
+        let duplicate_of = legacy_request.layers[..layer_idx].iter().enumerate().position(|(prev_idx, prev)| {
+            prev.video_path == layer.video_path
+                && (prev.time_secs - layer.time_secs).abs() < 0.0001
+                && Arc::ptr_eq(&decoded_frames[prev_idx].0, y_plane)
+        });
+
+        if let Some(prev_idx) = duplicate_of {
+            views.push(views[prev_idx].clone());
+            textures.push(textures[prev_idx].clone());
         } else {
-            &layer.video_path
+            let params = color_params(color)?;
+            let layer_key = if !layer.layer_id.is_empty() {
+                &layer.layer_id
+            } else {
+                &layer.video_path
+            };
+            let texture = session.render_nv12_frame_to_texture(
+                layer_key,
+                *width,
+                *height,
+                *width,
+                *height,
+                y_plane,
+                uv_plane,
+                &params,
+            )?;
+            views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+            textures.push(texture);
+        }
+    }
+    let mut evicted_mask_ids: Vec<String> = Vec::new();
+    let mut evicted_raster_ids: Vec<String> = Vec::new();
+    for layer in &legacy_request.raster_layers {
+        let texture = if layer.rgba.is_none() && !session.is_rgba_layer_resident(&layer.asset_id) {
+            if layer.is_mask {
+                // Mask is missing from GPU LRU. Only treat as an eviction if it was
+                // ever registered previously. Otherwise, it is a cold start or an in-flight
+                // segmentation mask that hasn't completed registration yet.
+                if session.was_mask_ever_registered(&layer.asset_id) {
+                    evicted_mask_ids.push(layer.asset_id.clone());
+                    session.forget_mask_registration(&layer.asset_id);
+                }
+            } else {
+                evicted_raster_ids.push(layer.asset_id.clone());
+            }
+            // Substitute a transparent placeholder so the frame still renders without crashing —
+            // the missing layer will be restored upon re-registration.
+            session.transparent_mask_placeholder()
+        } else {
+            session
+                .get_or_upload_rgba_layer_to_texture(
+                    &layer.asset_id,
+                    layer.width,
+                    layer.height,
+                    layer.rgba.as_deref(),
+                )
+                .map_err(|e| e.to_string())?
         };
-        let texture = session.render_nv12_frame_to_texture(
-            layer_key,
-            *width,
-            *height,
-            *width,
-            *height,
-            y_plane,
-            uv_plane,
-            &params,
-        )?;
         views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
         textures.push(texture);
     }
-    for layer in &legacy_request.raster_layers {
-        let texture = session.get_or_upload_rgba_layer_to_texture(
-            &layer.asset_id,
-            layer.width,
-            layer.height,
-            layer.rgba.as_deref(),
-        )?;
-        views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        textures.push(texture);
+    if !evicted_mask_ids.is_empty() {
+        let _ = app.emit("native-mask-evicted", &evicted_mask_ids);
+    }
+    if !evicted_raster_ids.is_empty() {
+        let _ = app.emit("native-raster-evicted", &evicted_raster_ids);
     }
     let mut text_views = Vec::with_capacity(legacy_request.text_layers.len());
     let mut text_dims = Vec::with_capacity(legacy_request.text_layers.len());
@@ -2839,7 +3005,12 @@ pub(crate) async fn present_native_frame_internal(
         .raster_layers
         .iter()
         .zip(views.iter().skip(legacy_request.layers.len()))
-        .filter(|(layer, _)| layer.is_mask)
+        .filter(|(layer, _)| {
+            layer.is_mask
+                && !evicted_mask_ids
+                    .iter()
+                    .any(|id| id == &layer.asset_id)
+        })
         .map(|(layer, view)| (layer.asset_id.as_str(), view))
         .collect();
     for (layer, view) in legacy_request.layers.iter().zip(views.iter()) {
@@ -2857,7 +3028,7 @@ pub(crate) async fn present_native_frame_internal(
             mask_view: layer
                 .body_effect
                 .as_ref()
-                .and_then(|effect| mask_views.get(effect.mask_asset_id.as_str()).copied()),
+                .and_then(|effect| resolve_mask_view(effect, &mask_views, true)),
             body_effect: body_effect_from_snapshot(layer.body_effect.as_ref()),
             lut: resolve_native_lut(layer.color_grade.as_ref(), lut_cache.as_ref())?,
             grain_seed: ((layer.time_secs.max(0.0) * 60.0).floor() * 0.37) as f32,

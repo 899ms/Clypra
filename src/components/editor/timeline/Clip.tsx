@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Layers, Sparkles } from "lucide-react";
+import { Layers, Sparkles, User } from "lucide-react";
 import { useUIStore } from "@/store/uiStore";
 import { useTimelineStore } from "@/store/timelineStore";
 import {
@@ -940,8 +940,18 @@ const ClipInner: React.FC<ClipProps> = ({
               {isCaption ? "CC" : "T"}
             </div>
           )}
-          <div className="text-[12px] text-clypra-clip-fg font-medium tracking-[0.01em] truncate max-w-full select-none pointer-events-none pl-4">
-            {getClipDisplayText(clip)}
+          <div className="text-[12px] text-clypra-clip-fg font-medium tracking-[0.01em] truncate max-w-full select-none pointer-events-none pl-4 flex items-center gap-1.5">
+            <span className="truncate">{getClipDisplayText(clip)}</span>
+            {(clip as any).behindSubject && (
+              <span
+                data-testid="clip-behind-subject-badge"
+                title="Behind Subject (AI Cutout)"
+                className="flex items-center gap-0.5 rounded bg-purple-500/30 border border-purple-500/50 px-1 py-0.5 text-[8px] font-bold text-purple-200 backdrop-blur-sm shrink-0"
+              >
+                <User className="w-2.5 h-2.5" />
+                <span>Behind</span>
+              </span>
+            )}
           </div>
         </div>
       ) : isClipFilter ? (

@@ -13,6 +13,7 @@ import {
   Layers,
   Layout,
   AlertTriangle,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { normalizeFontFamily } from "@/core/evaluation/evaluator";
@@ -1349,6 +1350,51 @@ export const TextStyleSection: React.FC<TextStyleSectionProps> = ({
       )}
         </div>
       )}
+
+      {/* Behind Subject (AI Cutout) Section */}
+      <div className="p-3 bg-surface-raised/40 border border-border/50 rounded-xl space-y-2.5 select-none">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className={`p-1.5 rounded-md transition-colors ${(textClip as any).behindSubject ? "bg-purple-500/20 text-purple-400" : "bg-surface-raised text-text-muted"}`}>
+              <User className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-text-primary block">
+                Behind Subject
+              </span>
+              <span className="text-[10px] text-text-muted block">
+                Place text behind the person using AI cutout
+              </span>
+            </div>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={(textClip as any).behindSubject ?? false}
+              onChange={(e) => handleUpdate("behindSubject", e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-8 h-4 bg-surface-raised border border-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-4 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-500" />
+          </label>
+        </div>
+
+        {(textClip as any).behindSubject && (
+          <div className="pt-2 border-t border-border/30 space-y-2">
+            <PropertySlider
+              label="Edge Softness"
+              value={(textClip as any).subjectFeather ?? 4}
+              min={0}
+              max={20}
+              step={1}
+              suffix="px"
+              onChange={(v) => handleUpdate("subjectFeather", v)}
+            />
+            <p className="text-[9px] text-text-muted">
+              Feathers the edge between the foreground person and behind-subject text.
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Section F: Batch Styling (for captions) */}
       {textClip.textRole === "caption" && (

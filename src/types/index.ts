@@ -194,6 +194,8 @@ export interface ThumbnailOverlayLayer {
   rotation?: number;
   opacity?: number;
   align?: "left" | "center" | "right";
+  /** When true, composites behind the foreground subject cutout */
+  behindSubject?: boolean;
 }
 
 export interface CreatorThumbnail {
@@ -369,6 +371,10 @@ export interface Clip {
   /** Base unscaled dimensions for GPU quad transform calculation */
   baseWidth?: number;
   baseHeight?: number;
+  /** When true, places this overlay clip behind foreground segmented subject(s) */
+  behindSubject?: boolean;
+  /** Soft edge feathering in pixels for subject cutout (default 4) */
+  subjectFeather?: number;
   // Transform constraints
   aspectRatioLocked?: boolean; // Default true for video/images
   sourceAspectRatio?: number; // Original aspect ratio (width/height)

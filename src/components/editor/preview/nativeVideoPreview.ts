@@ -7,6 +7,7 @@ import type {
 import { parseColor } from "@/core/evaluation/animation";
 import { resolveFilterToIR, type FilterIR } from "@/core/render/filterIR";
 import { buildNativeImageAssetId } from "@/core/render/nativeRasterAssetIds";
+import { traceCutoutEvent } from "@/core/playback/cutoutPipelineTrace";
 
 function parseColorToRgba(color: string): [number, number, number, number] {
   if (!color) return [1, 1, 1, 1];
@@ -115,12 +116,20 @@ const NATIVE_COLOR_GRADE_KEYS = new Set([
   "brightness", "sepia", "grayscale", "hue", "vignette", "invert", "grain", "vibrance",
   "lift", "crossProcess", "channelMix", "duotone", "splitTone",
 ]);
-const NATIVE_BODY_EFFECT_RENDERERS = new Set(["body_outline", "body_glow", "body_segmentation_glow", "body_particles"]);
+const NATIVE_BODY_EFFECT_RENDERERS = new Set([
+  "body_outline",
+  "body_glow",
+  "body_segmentation_glow",
+  "body_particles",
+  "body_cutout",
+  "subject_cutout",
+]);
 const NATIVE_VIDEO_EFFECT_RENDERERS = new Set([
   "blur", "pixelate", "scanlines", "rgb_split", "chromatic_aberration", "chromatic",
   "vhs", "glitch", "wave", "ripple", "bulge", "twist", "fisheye", "crt", "film_grain", "grain",
   "vignette", "glow", "flash", "flicker", "strobe", "light_leak", "light_leak_2",
   "body_outline", "body_glow", "body_segmentation_glow", "body_particles",
+  "body_cutout", "subject_cutout",
   "motion_blur", "radial_blur", "zoom_blur",
   "fire", "particles", "dust_particles",
 ]);
@@ -905,25 +914,33 @@ function getNativeBodyEffect(
   if (!maskAsset) return null;
   const maskAssetId = maskAsset.assetId;
 
-  const colorValue = renderer === "body_outline"
-    ? effect.parameters.outlineColor ?? "#ffffff"
-    : renderer === "body_particles"
-      ? effect.parameters.particleColor ?? effect.parameters.glowColor ?? "#00ffff"
-      : effect.parameters.glowColor ?? "#00ffff";
+  const isCutout = renderer === "body_cutout" || renderer === "subject_cutout";
+  const colorValue = isCutout
+    ? "#ffffff"
+    : renderer === "body_outline"
+      ? effect.parameters.outlineColor ?? "#ffffff"
+      : renderer === "body_particles"
+        ? effect.parameters.particleColor ?? effect.parameters.glowColor ?? "#00ffff"
+        : effect.parameters.glowColor ?? "#00ffff";
   if (typeof colorValue !== "string") return null;
   const [red, green, blue] = parseColor(colorValue);
-  const strength = renderer === "body_outline"
-    ? effect.intensity
-    : renderer === "body_particles"
+  const strength = isCutout
+    ? Math.max(0, Math.min(1, effect.intensity))
+    : renderer === "body_outline"
       ? effect.intensity
-      : Number(effect.parameters.glowIntensity ?? 0.8) * effect.intensity;
+      : renderer === "body_particles"
+        ? effect.intensity
+        : Number(effect.parameters.glowIntensity ?? 0.8) * effect.intensity;
   // For body_particles, the third uniform slot is the bounded particle count;
+  // For body_cutout / subject_cutout, it is the edge softness / feather radius in pixels;
   // outline/glow use the same slot for their mask sampling radius.
-  const radius = renderer === "body_outline"
-    ? Number(effect.parameters.thickness ?? 5) * effect.intensity
-    : renderer === "body_particles"
-      ? Math.min(40, Math.max(1, Math.floor(Number(effect.parameters.particleCount ?? 120) * effect.intensity)))
-      : Number(effect.parameters.glowRadius ?? 22) * effect.intensity;
+  const radius = isCutout
+    ? Number(effect.parameters.feather ?? 4)
+    : renderer === "body_outline"
+      ? Number(effect.parameters.thickness ?? 5) * effect.intensity
+      : renderer === "body_particles"
+        ? Math.min(40, Math.max(1, Math.floor(Number(effect.parameters.particleCount ?? 120) * effect.intensity)))
+        : Number(effect.parameters.glowRadius ?? 22) * effect.intensity;
   if (!Number.isFinite(strength) || strength < 0 || !Number.isFinite(radius) || radius < 0) return null;
 
   return {
@@ -1040,15 +1057,18 @@ export function buildNativeVideoProjectRequest(
   const transition = getNativeTransitionSnapshot(scene, mediaLayers);
   if (transition === null) return null;
   if (transition && backgroundMediaPath !== null) return null;
-  if (transition && rasterLayers.some((layer) => layer.isMask)) return null;
-  if (scene.activeFilter && mediaLayers.some((layer) => layer.filter?.id !== scene.activeFilter?.id)) return null;
-  if (!mediaLayers.every((layer) => isSupportedNativeVideoLayer(layer, scene.activeFilter?.effectStack))) {
+  const activeMediaLayers = mediaLayers;
+
+  if (scene.activeFilter && activeMediaLayers.some((layer) => layer.filter?.id !== scene.activeFilter?.id)) return null;
+  if (!activeMediaLayers.every((layer) => isSupportedNativeVideoLayer(layer, scene.activeFilter?.effectStack))) {
     return null;
   }
 
-  const layers: NativeProjectVideoLayer[] = mediaLayers.map((layer) => {
+  const layers: NativeProjectVideoLayer[] = activeMediaLayers.map((layer) => {
     const colorGrade = getNativeColorGrade(layer.adjustments, layer.colorGrade, layer.filter, layer.effects, scene.activeFilter?.effectStack);
     const bodyEffect = getNativeBodyEffect(layer, rasterLayers);
+    const isCutout = layer.layerId.endsWith(":subject-cutout");
+    const isMaskReady = !isCutout || bodyEffect !== null;
     return {
       layerId: layer.layerId,
       videoPath: layer.sourcePath,
@@ -1058,8 +1078,8 @@ export function buildNativeVideoProjectRequest(
       width: layer.width,
       height: layer.height,
       rotation: layer.rotation,
-      opacity: layer.opacity,
-      zIndex: layer.zIndex,
+      opacity: isMaskReady ? layer.opacity : 0,
+      zIndex: Math.round(layer.zIndex),
       blendMode: layer.blendMode,
       ...(colorGrade ? { colorGrade } : {}),
       ...(bodyEffect ? { bodyEffect } : {}),
@@ -1082,7 +1102,7 @@ export function buildNativeVideoProjectRequest(
     });
   }
 
-  if (mediaLayers.some((layer) => getNativeBodyEffect(layer, rasterLayers) === null)) return null;
+  if (activeMediaLayers.some((layer) => !layer.layerId.endsWith(":subject-cutout") && getNativeBodyEffect(layer, rasterLayers) === null)) return null;
 
   if (layers.some((layer) => !Number.isFinite(layer.timeSecs) || layer.timeSecs < 0)) {
     return null;
@@ -1143,14 +1163,12 @@ export function buildNativeVideoProjectRequest(
       };
     });
 
-  const visibleRasterLayers = rasterLayers.filter((layer) => !layer.isMask);
-
   return {
     canvasWidth: scene.metadata.canvasWidth || 1920,
     canvasHeight: scene.metadata.canvasHeight || 1080,
     clearColor,
     layers,
-    ...(visibleRasterLayers.length > 0 ? { rasterLayers: visibleRasterLayers } : {}),
+    ...(rasterLayers.length > 0 ? { rasterLayers } : {}),
     ...(nativeTextLayers.length > 0 ? { textLayers: nativeTextLayers } : {}),
     ...(transition ? { transition } : {}),
   };
@@ -1226,6 +1244,10 @@ export function getNativePreviewBlockers(
     add("The active filter track does not resolve consistently across native media layers.");
   }
   for (const layer of mediaLayers) {
+    if (layer.layerId.endsWith(":subject-cutout") && getNativeBodyEffect(layer, rasterLayers) === null) {
+      // In-flight cutout mask is non-blocking (base video continues rendering)
+      continue;
+    }
     for (const effect of (layer.effects ?? []).filter((item) => item.intensity > 0.001)) {
       const renderer = (effect.renderer || effect.effectId).replace(/^fx-/, "").replace(/-/g, "_").toLowerCase();
       if (!NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer)) {
@@ -1293,11 +1315,30 @@ export function buildNativeFrameRequest(
   const visualLayers = hasTransitions
     ? scene.visualLayers
     : cullOccludedVisualLayers(scene.visualLayers, request.canvasWidth, request.canvasHeight);
+  const cutoutLayer = visualLayers.find((layer) => layer.layerId.endsWith(":subject-cutout"));
+  const isCutoutMaskReady = cutoutLayer
+    ? getNativeBodyEffect(cutoutLayer as EvaluatedMediaLayer, rasterLayers) !== null
+    : true;
+  if (cutoutLayer) {
+    traceCutoutEvent(
+      "request",
+      `Frame #${frameIndex}: Cutout layer '${cutoutLayer.layerId}' is ${isCutoutMaskReady ? "INCLUDED (mask ready)" : "BUFFERING (mask in-flight, opacity zero to protect text visibility)"}`,
+      {
+        frameIndex,
+        cutoutLayerId: cutoutLayer.layerId,
+        maskReady: isCutoutMaskReady,
+        totalRasterLayers: rasterLayers?.length ?? 0,
+        stackZIndices: visualLayers.map((l) => `${l.layerId} (z:${l.zIndex})`),
+      },
+    );
+  }
   const videoLayers = visualLayers
     .filter((layer): layer is EvaluatedMediaLayer => layer.layerType === "media" && isNativeVideoGraphLayer(layer) && !isNativeAnimatedStickerLayer(layer))
     .map((layer) => {
       const colorGrade = getNativeColorGrade(layer.adjustments, layer.colorGrade, layer.filter, layer.effects, scene.activeFilter?.effectStack);
       const bodyEffect = getNativeBodyEffect(layer, rasterLayers);
+      const isCutout = layer.layerId.endsWith(":subject-cutout");
+      const isMaskReady = !isCutout || bodyEffect !== null;
       return {
         assetId: layer.mediaId,
         layerId: layer.layerId,
@@ -1308,8 +1349,8 @@ export function buildNativeFrameRequest(
         width: layer.width,
         height: layer.height,
         rotation: layer.rotation,
-        opacity: layer.opacity,
-        zIndex: layer.zIndex,
+        opacity: isMaskReady ? layer.opacity : 0,
+        zIndex: Math.round(layer.zIndex),
         blendMode: layer.blendMode,
         ...(colorGrade ? { colorGrade } : {}),
         ...(bodyEffect ? { bodyEffect } : {}),
@@ -1338,7 +1379,6 @@ export function buildNativeFrameRequest(
   // Reusing it here is important: remapping the scene would reintroduce all
   // text layers after the raster/native partitioning decision.
   const textLayers = request.textLayers ?? [];
-  const visibleRasterLayers = rasterLayers.filter((layer) => !layer.isMask);
 
   return createNativeFrameRequest({
     requestId: `${projectRevision}:${frameIndex}:${outputWidth}x${outputHeight}`,
@@ -1351,7 +1391,7 @@ export function buildNativeFrameRequest(
       canvasHeight: request.canvasHeight,
       clearColor: request.clearColor ?? [0, 0, 0, 1],
       videoLayers,
-      ...(visibleRasterLayers.length > 0 ? { rasterLayers: visibleRasterLayers } : {}),
+      ...(rasterLayers.length > 0 ? { rasterLayers } : {}),
       ...(textLayers.length > 0 ? { textLayers } : {}),
       ...(request.transition ? { transition: request.transition } : {}),
     },

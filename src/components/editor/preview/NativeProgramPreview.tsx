@@ -76,6 +76,8 @@ import {
   registerNativeRasterAsset,
   renderNativeFrame,
   listenForNativePlaybackStats,
+  listenForNativeMaskEviction,
+  listenForNativeRasterEviction,
   type NativePlaybackStatsPayload,
 } from "@/lib/platform/tauri";
 import { telemetryCollector } from "@/services/telemetryCollector";
@@ -88,6 +90,8 @@ import { paintTextLayersToCanvas } from "./nativeTextPreview";
 import { useCaptionStore } from "@/store/captionStore";
 import type { EvaluatedScene } from "@/core/evaluation/types";
 import { makeBodyMaskCacheKey, segmentBodyMask } from "@/features/body-effects";
+import { traceCutoutEvent } from "@/core/playback/cutoutPipelineTrace";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffectsStore } from "@/features/text-effects/store/effectsStore";
 
 import {
@@ -1197,11 +1201,100 @@ export const NativeProgramPreview: React.FC = () => {
     >();
     const nativeBodyMaskAssetsById = new Map<
       string,
-      NativeRasterLayerSnapshot & { rgba: number[] }
+      NativeRasterLayerSnapshot
     >();
-    const registeredNativeBodyMaskAssets = new Set<string>();
     const nativeFrontendPerfSpans = new Map<string, NativePerfSpan>();
-    const maxNativeBodyMaskCacheEntries = 90;
+
+    const standaloneVideoCache = new Map<string, HTMLVideoElement>();
+    const standaloneImageCache = new Map<string, HTMLImageElement>();
+
+    const getOrCreateStandaloneVideo = (
+      clipId: string,
+      sourcePath: string,
+    ): HTMLVideoElement => {
+      let video = standaloneVideoCache.get(clipId);
+      if (!video) {
+        video = document.createElement("video");
+        video.crossOrigin = "anonymous";
+        video.preload = "auto";
+        video.muted = true;
+        video.volume = 0;
+        video.playsInline = true;
+        video.style.cssText =
+          "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0.001;pointer-events:none;";
+        video.src = sourcePath;
+        document.body.appendChild(video);
+        video.load();
+        standaloneVideoCache.set(clipId, video);
+      } else if (video.src !== sourcePath) {
+        video.src = sourcePath;
+        video.load();
+      }
+      return video;
+    };
+
+    const getOrCreateStandaloneImage = (
+      sourcePath: string,
+    ): HTMLImageElement => {
+      let img = standaloneImageCache.get(sourcePath);
+      if (!img) {
+        img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = sourcePath;
+        standaloneImageCache.set(sourcePath, img);
+      }
+      return img;
+    };
+
+    const ensureVideoReady = async (
+      video: HTMLVideoElement,
+      targetTime: number,
+      timeoutMs = 120,
+    ): Promise<boolean> => {
+      if (
+        Number.isFinite(targetTime) &&
+        Math.abs(video.currentTime - targetTime) > 0.04
+      ) {
+        try {
+          video.currentTime = Math.max(0, targetTime);
+        } catch {
+          // ignore
+        }
+      }
+      if (
+        !video.seeking &&
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        return true;
+      }
+      return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const cleanup = () => {
+          video.removeEventListener("seeked", onReady);
+          video.removeEventListener("loadeddata", onReady);
+          video.removeEventListener("canplay", onReady);
+          clearTimeout(timer);
+        };
+        const onReady = () => {
+          if (settled) return;
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            settled = true;
+            cleanup();
+            resolve(true);
+          }
+        };
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+        }, timeoutMs);
+
+        video.addEventListener("seeked", onReady, { once: true });
+        video.addEventListener("loadeddata", onReady, { once: true });
+        video.addEventListener("canplay", onReady, { once: true });
+      });
+    };
 
     const getNativeRenderTarget = (
       state: typeof renderStateRef.current,
@@ -1238,22 +1331,100 @@ export const NativeProgramPreview: React.FC = () => {
       };
     };
 
+    const GLOBAL_MAX_BODY_MASKS = 16; // ~59MB at 3.68MB/mask — well under the shared 128MB Rust pool
+
+    // Insertion-ordered (JS Maps preserve insertion order), so delete+re-set = LRU touch.
+    const globalMaskRegistry = new Map<
+      string,
+      { baseAssetId: string; time: number }
+    >();
+    // Index only — never independently decides what to evict.
+    const maskIdsByBaseId = new Map<string, Set<string>>();
+
+    function extractMaskTime(assetId: string): number {
+      const parts = assetId.split(":");
+      return parseFloat(parts[parts.length - 2]) || 0;
+    }
+
+    function purgeMaskFromRegistry(assetId: string): void {
+      const entry = globalMaskRegistry.get(assetId);
+      if (!entry) return;
+      globalMaskRegistry.delete(assetId);
+      maskIdsByBaseId.get(entry.baseAssetId)?.delete(assetId);
+      nativeBodyMaskAssetsById.delete(assetId);
+    }
+
+    function touchGlobalMask(
+      assetId: string,
+      baseAssetId: string,
+      time: number,
+    ): void {
+      if (globalMaskRegistry.has(assetId)) {
+        globalMaskRegistry.delete(assetId); // bump recency
+      } else {
+        let ids = maskIdsByBaseId.get(baseAssetId);
+        if (!ids) {
+          ids = new Set();
+          maskIdsByBaseId.set(baseAssetId, ids);
+        }
+        ids.add(assetId);
+      }
+      globalMaskRegistry.set(assetId, { baseAssetId, time });
+
+      while (globalMaskRegistry.size > GLOBAL_MAX_BODY_MASKS) {
+        const oldestId = globalMaskRegistry.keys().next().value;
+        if (!oldestId) break;
+        purgeMaskFromRegistry(oldestId);
+      }
+    }
+
+    function findNewestMaskForClip(baseAssetId: string): string | null {
+      const ids = maskIdsByBaseId.get(baseAssetId);
+      if (!ids || ids.size === 0) return null;
+      let newestId: string | null = null;
+      let newestTime = -Infinity;
+      for (const id of ids) {
+        const entry = globalMaskRegistry.get(id);
+        if (entry && entry.time > newestTime) {
+          newestTime = entry.time;
+          newestId = id;
+        }
+      }
+      return newestId;
+    }
+
     const ensureNativeBodyMaskAssetRegistered = async (
-      asset: NativeRasterLayerSnapshot & { rgba: number[] },
+      baseAssetId: string,
+      asset: NativeRasterLayerSnapshot & {
+        rgba: Uint8ClampedArray | number[];
+      },
       force = false,
     ): Promise<void> => {
-      nativeBodyMaskAssetsById.set(asset.assetId, asset);
-      while (nativeBodyMaskAssetsById.size > maxNativeBodyMaskCacheEntries) {
-        const oldestId = nativeBodyMaskAssetsById.keys().next().value as
-          | string
-          | undefined;
-        if (!oldestId) break;
-        nativeBodyMaskAssetsById.delete(oldestId);
-        registeredNativeBodyMaskAssets.delete(oldestId);
+      if (!force && globalMaskRegistry.has(asset.assetId)) {
+        touchGlobalMask(
+          asset.assetId,
+          baseAssetId,
+          extractMaskTime(asset.assetId),
+        );
+        return;
       }
-      if (!force && registeredNativeBodyMaskAssets.has(asset.assetId)) return;
-      await registerNativeRasterAsset(asset);
-      registeredNativeBodyMaskAssets.add(asset.assetId);
+
+      try {
+        await registerNativeRasterAsset(asset);
+        // Discard massive 3.6MB raw rgba array; keep only ~120-byte metadata
+        nativeBodyMaskAssetsById.set(asset.assetId, {
+          ...asset,
+          rgba: undefined,
+        });
+        touchGlobalMask(
+          asset.assetId,
+          baseAssetId,
+          extractMaskTime(asset.assetId),
+        );
+      } catch (err) {
+        purgeMaskFromRegistry(asset.assetId);
+        throw err;
+      }
     };
 
     /**
@@ -1287,18 +1458,133 @@ export const NativeProgramPreview: React.FC = () => {
               "body_glow",
               "body_segmentation_glow",
               "body_particles",
+              "body_cutout",
+              "subject_cutout",
             ].includes(renderer)
           );
         });
         if (bodyEffects.length === 0) continue;
 
-        const source = videoElements.get(`${layer.clipId}-${layer.mediaId}`);
-        if (!source || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)
+        let source: CanvasImageSource | null = null;
+        let matchType: "exact" | "prefix" | "standalone" | "image" | "none" =
+          "none";
+
+        if (layer.mediaType === "image") {
+          const img = getOrCreateStandaloneImage(layer.sourcePath);
+          if (img.complete && img.naturalWidth > 0) {
+            source = img;
+            matchType = "image";
+          }
+        } else {
+          source = videoElements.get(`${layer.clipId}-${layer.mediaId}`) ?? null;
+          if (source) {
+            matchType = "exact";
+          } else {
+            for (const [key, el] of videoElements.entries()) {
+              if (key === layer.clipId || key.startsWith(`${layer.clipId}-`)) {
+                source = el;
+                matchType = "prefix";
+                break;
+              }
+            }
+          }
+          if (!source && layer.sourcePath) {
+            source = getOrCreateStandaloneVideo(layer.clipId, layer.sourcePath);
+            matchType = "standalone";
+          }
+        }
+
+        if (!source) {
+          traceCutoutEvent(
+            "source",
+            `No media source element found for clip '${layer.clipId}' (media: '${layer.mediaId}', type: '${layer.mediaType}')`,
+            {
+              clipId: layer.clipId,
+              mediaId: layer.mediaId,
+              mediaType: layer.mediaType,
+              availableKeys: Array.from(videoElements.keys()),
+            },
+            "warn",
+          );
           continue;
-        const width = Math.max(1, Math.floor(source.videoWidth || layer.width));
+        }
+
+        if (source instanceof HTMLVideoElement) {
+          const targetTime = Math.max(0, layer.sourceTime);
+          if (Math.abs(source.currentTime - targetTime) > 0.04) {
+            try {
+              source.currentTime = targetTime;
+            } catch {
+              // ignore
+            }
+          }
+
+          if (source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            source.addEventListener(
+              "seeked",
+              () => {
+                if (isActive) scheduleNextFrame();
+              },
+              { once: true },
+            );
+            traceCutoutEvent(
+              "source",
+              `Video element for '${layer.clipId}' buffering frame (readyState: ${source.readyState}); using latest confirmed mask`,
+              {
+                clipId: layer.clipId,
+                readyState: source.readyState,
+                matchType,
+              },
+            );
+            for (const effect of bodyEffects) {
+              const baseAssetId = `${layer.layerId}_${effect.effectId}`;
+              const fallbackId = findNewestMaskForClip(baseAssetId);
+              const fallbackAsset = fallbackId
+                ? nativeBodyMaskAssetsById.get(fallbackId)
+                : null;
+              if (fallbackAsset) {
+                assets.push({ ...fallbackAsset });
+              }
+            }
+            continue;
+          }
+        } else if (source instanceof HTMLImageElement) {
+          if (!source.complete || source.naturalWidth === 0) {
+            traceCutoutEvent(
+              "source",
+              `Image element for '${layer.clipId}' not loaded yet`,
+              { clipId: layer.clipId, sourcePath: layer.sourcePath },
+              "warn",
+            );
+            continue;
+          }
+        }
+
+        const videoWidth =
+          source instanceof HTMLVideoElement
+            ? source.videoWidth
+            : (source as HTMLImageElement).naturalWidth;
+        const videoHeight =
+          source instanceof HTMLVideoElement
+            ? source.videoHeight
+            : (source as HTMLImageElement).naturalHeight;
+
+        traceCutoutEvent(
+          "source",
+          `Source element ready for '${layer.clipId}' (${videoWidth}x${videoHeight}, match: ${matchType})`,
+          {
+            clipId: layer.clipId,
+            mediaId: layer.mediaId,
+            width: videoWidth,
+            height: videoHeight,
+            matchType,
+          },
+        );
+
+        const width = Math.max(1, Math.floor(videoWidth || layer.width));
         const height = Math.max(
           1,
-          Math.floor(source.videoHeight || layer.height),
+          Math.floor(videoHeight || layer.height),
         );
 
         for (const effect of bodyEffects) {
@@ -1318,12 +1604,33 @@ export const NativeProgramPreview: React.FC = () => {
           const assetId = `${baseAssetId}:${maskKey}`;
           const cachedAsset = nativeBodyMaskAssetsById.get(assetId);
           if (cachedAsset) {
+            traceCutoutEvent("segment", `Mask cache HIT for '${assetId}'`, {
+              assetId,
+              width: cachedAsset.width,
+              height: cachedAsset.height,
+            });
+            touchGlobalMask(
+              assetId,
+              baseAssetId,
+              extractMaskTime(assetId),
+            );
             assets.push({ ...cachedAsset, rgba: undefined });
             continue;
           }
 
           let pending = nativeBodyMaskInFlight.get(assetId);
           if (!pending) {
+            traceCutoutEvent(
+              "segment",
+              `Dispatching AI segmentation for '${assetId}' at time ${layer.sourceTime.toFixed(2)}s`,
+              {
+                assetId,
+                clipId: layer.clipId,
+                width,
+                height,
+                time: layer.sourceTime,
+              },
+            );
             pending = segmentBodyMask(source, {
               clipId: layer.clipId,
               effectId: effect.effectId,
@@ -1333,12 +1640,44 @@ export const NativeProgramPreview: React.FC = () => {
               height,
             })
               .then(async (mask) => {
-                if (!mask) return null;
+                if (!mask) {
+                  traceCutoutEvent(
+                    "segment",
+                    `Segmentation returned null mask for '${assetId}'`,
+                    { assetId },
+                    "warn",
+                  );
+                  return null;
+                }
+                // Compute subject pixel coverage
+                let nonZeroAlpha = 0;
+                const data = mask.data;
+                const step = Math.max(4, Math.floor(data.length / 10000) * 4);
+                let sampled = 0;
+                for (let i = 3; i < data.length; i += step) {
+                  sampled++;
+                  if (data[i] > 32) nonZeroAlpha++;
+                }
+                const coveragePercent =
+                  sampled > 0
+                    ? ((nonZeroAlpha / sampled) * 100).toFixed(1)
+                    : "0.0";
+                traceCutoutEvent(
+                  "segment",
+                  `Segmentation completed: ${mask.width}x${mask.height} (coverage: ${coveragePercent}%)`,
+                  {
+                    assetId,
+                    width: mask.width,
+                    height: mask.height,
+                    coveragePercent: Number(coveragePercent),
+                  },
+                );
+
                 const nativeAsset: NativeRasterLayerSnapshot & {
-                  rgba: number[];
+                  rgba: Uint8ClampedArray | number[];
                 } = {
                   assetId,
-                  rgba: Array.from(mask.data),
+                  rgba: mask.data,
                   width: mask.width,
                   height: mask.height,
                   x: 0,
@@ -1349,10 +1688,31 @@ export const NativeProgramPreview: React.FC = () => {
                   blendMode: "normal",
                   isMask: true,
                 };
-                await ensureNativeBodyMaskAssetRegistered(nativeAsset);
+                const bridgeStart = performance.now();
+                await ensureNativeBodyMaskAssetRegistered(
+                  baseAssetId,
+                  nativeAsset,
+                );
+                traceCutoutEvent(
+                  "bridge",
+                  `Registered mask asset '${assetId}' (${(nativeAsset.rgba.length / 1024).toFixed(1)} KB) in ${(performance.now() - bridgeStart).toFixed(1)}ms`,
+                  {
+                    assetId,
+                    bytes: nativeAsset.rgba.length,
+                  },
+                );
                 return nativeAsset;
               })
-              .catch(() => {
+              .catch((err) => {
+                traceCutoutEvent(
+                  "segment",
+                  `Segmentation error for '${assetId}': ${err instanceof Error ? err.message : String(err)}`,
+                  {
+                    assetId,
+                    error: String(err),
+                  },
+                  "error",
+                );
                 return null;
               })
               .finally(() => {
@@ -1365,8 +1725,22 @@ export const NativeProgramPreview: React.FC = () => {
               // frameScheduled guard (risking a concurrent render loop), skipped
               // setting rafId (so unmount cleanup couldn't cancel it), and left
               // frameScheduled in an inconsistent state for the rest of the loop's life.
-              if (isActive) scheduleNextFrame();
+              if (
+                isActive &&
+                renderStateRef.current.clock.state !== "playing"
+              ) {
+                scheduleNextFrame();
+              }
             });
+          }
+
+          // Fallback during playback or seeking: reuse newest confirmed mask for THIS clip
+          const fallbackId = findNewestMaskForClip(baseAssetId);
+          const fallbackAsset = fallbackId
+            ? nativeBodyMaskAssetsById.get(fallbackId)
+            : null;
+          if (fallbackAsset) {
+            assets.push({ ...fallbackAsset });
           }
         }
       }
@@ -1381,26 +1755,14 @@ export const NativeProgramPreview: React.FC = () => {
       const bridgeReferences = references.filter(
         (reference) =>
           reference.isText ||
+          reference.assetId.startsWith("native-text:") ||
           reference.assetId.startsWith("native-background:") ||
           reference.assetId.startsWith("native-image:") ||
           reference.assetId.startsWith("native-sticker:") ||
           reference.assetId.startsWith("native-smart-overlay:"),
       );
-      const maskAssets = references
-        .map((reference) => nativeBodyMaskAssetsById.get(reference.assetId))
-        .filter(
-          (asset): asset is NativeRasterLayerSnapshot & { rgba: number[] } =>
-            Boolean(asset),
-        );
-      if (bridgeReferences.length + maskAssets.length !== references.length)
-        return false;
-      const [bridgeReregistered] = await Promise.all([
-        nativeRasterBridge.reregister(bridgeReferences),
-        ...maskAssets.map((asset) =>
-          ensureNativeBodyMaskAssetRegistered(asset, true),
-        ),
-      ]);
-      return bridgeReregistered;
+      if (bridgeReferences.length === 0) return false;
+      return nativeRasterBridge.reregister(bridgeReferences);
     };
 
     const ensureNativeRequestFonts = async (
@@ -1668,7 +2030,18 @@ export const NativeProgramPreview: React.FC = () => {
             layer.stickerFormat !== "gif" &&
             layer.stickerFormat !== "lottie",
         );
-        if (textLayers.length === 0 && imageLayers.length === 0) return;
+        const stickerLayers = scene.visualLayers.filter(
+          (layer) =>
+            layer.layerType === "media" &&
+            layer.clipKind === "sticker" &&
+            layer.stickerFormat === "lottie",
+        );
+        if (
+          textLayers.length === 0 &&
+          imageLayers.length === 0 &&
+          stickerLayers.length === 0
+        )
+          return;
 
         await Promise.all([
           textLayers.length > 0
@@ -1681,6 +2054,9 @@ export const NativeProgramPreview: React.FC = () => {
             : Promise.resolve(),
           imageLayers.length > 0
             ? nativeRasterBridge.prewarmImageAssets(scene)
+            : Promise.resolve(),
+          stickerLayers.length > 0
+            ? nativeRasterBridge.prewarmStickerAssets(scene, "sticker-prefetch")
             : Promise.resolve(),
         ]);
 
@@ -1924,6 +2300,26 @@ export const NativeProgramPreview: React.FC = () => {
               }
             : state.sceneVersions;
 
+        const effectiveFrameRate: 24 | 30 | 60 =
+          frameRate === 24 || frameRate === 30 || frameRate === 60
+            ? frameRate
+            : 30;
+        if (typeof capturedSession.syncPreviewMedia === "function") {
+          capturedSession.syncPreviewMedia(
+            renderClips,
+            state.mediaAssets ?? [],
+            state.tracks ?? [],
+            {
+              time: frameStartTime,
+              state: isPlaying ? "playing" : "paused",
+              speed: state.clockState?.speed ?? 1,
+              muted: true,
+              volume: 0,
+              frameRate: effectiveFrameRate,
+            },
+          );
+        }
+
         const evaluationStartedAt = performance.now();
         const scene = evaluateTimelineSceneCached(
           frameStartTime,
@@ -1951,10 +2347,11 @@ export const NativeProgramPreview: React.FC = () => {
         const nativeBridgeRasters = await nativeRasterBridge.rasterize(scene, {
           frameKey: frameIndex,
           phase: isPlaying ? "visible-playback" : "interactive-preview",
-          // A cold text asset must not block the native playback clock. The
-          // bridge returns the previous bitmap/native text fallback and
+          // Cold text or sticker assets must not block the native playback clock.
+          // The bridge returns the previous bitmap/native fallback and
           // publishes the prepared asset for a later frame.
-          nonBlockingText: isPlaying,
+          nonBlockingText: isPlaying || Boolean(requestIntent?.isScrubbing) || requestIntent?.mode === "scrub",
+          nonBlockingStickers: isPlaying || Boolean(requestIntent?.isScrubbing) || requestIntent?.mode === "scrub",
         });
         traceSlowPlaybackStage("visible-raster-bridge", bridgeStartedAt, {
           frameIndex,
@@ -2982,6 +3379,44 @@ export const NativeProgramPreview: React.FC = () => {
       scheduleNextFrame();
     });
 
+    let unlistenMaskEviction: (() => void) | undefined;
+    let unlistenRasterEviction: (() => void) | undefined;
+    if (isTauriRuntime()) {
+      listenForNativeMaskEviction((assetIds) => {
+        for (const assetId of assetIds) {
+          purgeMaskFromRegistry(assetId);
+          traceCutoutEvent(
+            "bridge",
+            `Purged evicted mask asset '${assetId}' from JS cache`,
+          );
+        }
+        if (
+          isActive &&
+          renderStateRef.current.clock.state !== "playing"
+        ) {
+          scheduleNextFrame();
+        }
+      })
+        .then((unlisten) => {
+          unlistenMaskEviction = unlisten;
+        })
+        .catch(() => undefined);
+
+      listenForNativeRasterEviction((assetIds) => {
+        nativeRasterBridge.evict(assetIds);
+        if (
+          isActive &&
+          renderStateRef.current.clock.state !== "playing"
+        ) {
+          scheduleNextFrame();
+        }
+      })
+        .then((unlisten) => {
+          unlistenRasterEviction = unlisten;
+        })
+        .catch(() => undefined);
+    }
+
     scheduleNextFrame();
     return () => {
       // tracePlayback("playback-loop-stop", {
@@ -2993,6 +3428,8 @@ export const NativeProgramPreview: React.FC = () => {
       //   renderInFlight,
       // });
       isActive = false;
+      if (unlistenMaskEviction) unlistenMaskEviction();
+      if (unlistenRasterEviction) unlistenRasterEviction();
       unsubscribeClock();
       unsubscribeSeekIntent?.();
       unsubscribeTransformGeometry();
@@ -3007,6 +3444,18 @@ export const NativeProgramPreview: React.FC = () => {
       }
       if (rafId !== null) cancelAnimationFrame(rafId);
       frameScheduled = false;
+      standaloneVideoCache.forEach((video) => {
+        try {
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+          video.remove();
+        } catch {
+          // ignore
+        }
+      });
+      standaloneVideoCache.clear();
+      standaloneImageCache.clear();
     };
     // Bug 3 fix: viewport values (scale, offsetX, offsetY, canvasWidth, canvasHeight) are
     // now read from renderStateRef inside the loop, so they are NOT listed as deps here.

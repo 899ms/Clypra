@@ -43,6 +43,7 @@ import {
   resolveTextTemplateArtifact,
 } from "@clypra-studio/engine";
 import { resolveCanonicalFamily } from "@/core/fonts/fontRegistry";
+import { traceCutoutEvent } from "@/core/playback/cutoutPipelineTrace";
 
 const isExternalOrDataUrl = (value: string) =>
   value.startsWith("data:") ||
@@ -546,6 +547,76 @@ export function evaluateTimelineScene(
     };
 
     visualLayers.push(mediaLayer);
+  }
+
+  // ─── 3.1 Synthesize Foreground Subject Cutouts for "Behind Subject" Overlays ───
+  const behindSubjectClips = sortedClips.filter((c) => Boolean((c as any).behindSubject));
+  if (behindSubjectClips.length > 0) {
+    const synthesizedCutouts: EvaluatedMediaLayer[] = [];
+    const mediaLayers = visualLayers.filter(
+      (layer): layer is EvaluatedMediaLayer =>
+        layer.layerType === "media" &&
+        !layer.layerId.endsWith(":subject-cutout") &&
+        (layer.mediaType === "video" || layer.mediaType === "image"),
+    );
+
+    for (const behindClip of behindSubjectClips) {
+      const overlayLayers = visualLayers.filter((layer) => layer.clipId === behindClip.id);
+      for (const overlayLayer of overlayLayers) {
+        const feather = typeof (behindClip as any).subjectFeather === "number"
+          ? (behindClip as any).subjectFeather
+          : 4;
+
+        const underlyingMedia = mediaLayers.filter((media) => media.zIndex < overlayLayer.zIndex);
+        for (const media of underlyingMedia) {
+          const cutoutLayerId = `${media.layerId}:subject-cutout`;
+          if (synthesizedCutouts.some((s) => s.layerId === cutoutLayerId)) continue;
+
+          synthesizedCutouts.push({
+            ...media,
+            layerId: cutoutLayerId,
+            zIndex: overlayLayer.zIndex + 0.5,
+            effects: [
+              ...(media.effects ?? []),
+              {
+                effectId: `fx-body-cutout-${media.layerId}`,
+                type: "body_effect" as const,
+                renderer: "body_cutout",
+                parameters: {
+                  feather,
+                },
+                intensity: 1.0,
+                localTime: media.sourceTime,
+              },
+            ],
+          });
+
+          traceCutoutEvent(
+            "eval",
+            `Synthesized cutout layer '${cutoutLayerId}' behind '${behindClip.id}'`,
+            {
+              behindClipId: behindClip.id,
+              targetMediaId: media.mediaId,
+              cutoutLayerId,
+              feather,
+              textZIndex: overlayLayer.zIndex,
+              cutoutZIndex: overlayLayer.zIndex + 0.5,
+            },
+          );
+        }
+      }
+    }
+
+    if (synthesizedCutouts.length > 0) {
+      const allVisual = [...visualLayers, ...synthesizedCutouts].sort((a, b) => a.zIndex - b.zIndex);
+      visualLayers.length = 0;
+      for (let idx = 0; idx < allVisual.length; idx++) {
+        visualLayers.push({
+          ...allVisual[idx],
+          zIndex: idx,
+        });
+      }
+    }
   }
 
   // ─── 4. Evaluate Audio Layers ─────────────────────────────────────────────

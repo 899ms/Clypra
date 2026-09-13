@@ -7,7 +7,7 @@
 
 use clypra_native_core::contracts::TextLayerSnapshot;
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -101,6 +101,8 @@ pub struct NativePreviewSession {
     rings: HashMap<String, YuvTextureRingBuffer>,
     layer_textures: HashMap<String, Arc<wgpu::Texture>>,
     rgba_layers: RgbaLayerTextureCache,
+    transparent_mask_placeholder: Arc<wgpu::Texture>,
+    mask_registration_history: HashSet<String>,
     pub text_cache: TextLayerCache,
     pub text_pipeline: TextEffectPipeline,
     compositors: Vec<CachedCompositor>,
@@ -113,7 +115,7 @@ struct CachedCompositor {
     compositor: MultiTrackCompositor,
 }
 
-const RGBA_LAYER_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const RGBA_LAYER_CACHE_BYTES: usize = 384 * 1024 * 1024;
 const TEXT_LAYER_CACHE_BYTES: usize = 256 * 1024 * 1024;
 
 struct RgbaLayerTextureCacheEntry {
@@ -206,6 +208,7 @@ impl NativePreviewSession {
         let text_pipeline =
             TextEffectPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8UnormSrgb);
         let text_cache = TextLayerCache::new(TEXT_LAYER_CACHE_BYTES);
+        let transparent_mask_placeholder = Self::create_transparent_mask_placeholder(&gpu);
 
         Self {
             gpu,
@@ -215,6 +218,8 @@ impl NativePreviewSession {
             rings: HashMap::new(),
             layer_textures: HashMap::new(),
             rgba_layers: RgbaLayerTextureCache::new(),
+            transparent_mask_placeholder,
+            mask_registration_history: HashSet::new(),
             text_cache,
             text_pipeline,
             compositors: Vec::new(),
@@ -606,6 +611,7 @@ impl NativePreviewSession {
         if !asset_id.trim().is_empty() {
             self.rgba_layers
                 .insert(asset_id.to_string(), Arc::clone(&texture), width, height);
+            self.mask_registration_history.insert(asset_id.to_string());
         }
         Ok(texture)
     }
@@ -615,6 +621,62 @@ impl NativePreviewSession {
             return false;
         }
         self.rgba_layers.get(asset_id, width, height).is_some()
+    }
+
+    fn create_transparent_mask_placeholder(gpu: &GpuContext) -> Arc<wgpu::Texture> {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("transparent-mask-placeholder"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0, 0, 0, 0],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        Arc::new(texture)
+    }
+
+    /// Checks residency WITHOUT triggering an upload attempt — this is the
+    /// call that lets the render loop tell "evicted" apart from "never sent"
+    /// before it ever calls get_or_upload_rgba_layer_to_texture.
+    pub fn is_rgba_layer_resident(&self, asset_id: &str) -> bool {
+        self.rgba_layers.entries.contains_key(asset_id)
+    }
+
+    pub fn was_mask_ever_registered(&self, asset_id: &str) -> bool {
+        self.mask_registration_history.contains(asset_id)
+    }
+
+    pub fn forget_mask_registration(&mut self, asset_id: &str) {
+        self.mask_registration_history.remove(asset_id);
+    }
+
+    pub fn transparent_mask_placeholder(&self) -> Arc<wgpu::Texture> {
+        Arc::clone(&self.transparent_mask_placeholder)
     }
 
     /// Retrieve a cached text layer GPU texture or render it via the SDF pipeline.

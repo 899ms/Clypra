@@ -70,3 +70,8 @@ pub fn warning(source: &'static str, code: &'static str, message: impl Into<Stri
 
 pub use warning as warn;
 
+pub fn info(source: &'static str, code: &'static str, message: impl Into<String>) {
+    report("info", source, code, message);
+}
+
+

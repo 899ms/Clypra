@@ -6,6 +6,7 @@ import {
   renderTimelineFrameAt,
   compositeThumbnailCanvas,
   saveThumbnailDialog,
+  generateThumbnailCutout,
 } from "./thumbnailExport";
 import { computeThumbnailSeekTime } from "@/lib/media/thumbnailHeuristic";
 import { generateId } from "@/lib/utils/id";
@@ -87,6 +88,8 @@ export function useThumbnailWorkspace() {
 
   // Preview & Render Status
   const [baseCanvas, setBaseCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [cutoutCanvas, setCutoutCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [isSegmenting, setIsSegmenting] = useState(false);
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [isRenderingFrame, setIsRenderingFrame] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -133,7 +136,39 @@ export function useThumbnailWorkspace() {
     return () => clearTimeout(timer);
   }, [activeVariant.timestampMs, fetchBaseFrame]);
 
-  // Composite Preview whenever baseCanvas, overlayLayers, or platformPreset changes
+  // Generate subject cutout canvas whenever baseCanvas changes or behindSubject layers are present
+  const hasBehindSubject = activeVariant.overlayLayers.some((l) => Boolean(l.behindSubject));
+
+  useEffect(() => {
+    if (!baseCanvas || !hasBehindSubject) {
+      setCutoutCanvas(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsSegmenting(true);
+
+    generateThumbnailCutout(baseCanvas, { time: activeVariant.timestampMs / 1000 })
+      .then((cutout) => {
+        if (!cancelled) {
+          setCutoutCanvas(cutout);
+        }
+      })
+      .catch((err) => {
+        console.warn("[useThumbnailWorkspace] Subject cutout error:", err);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsSegmenting(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [baseCanvas, hasBehindSubject, activeVariant.timestampMs]);
+
+  // Composite Preview whenever baseCanvas, overlayLayers, platformPreset, or cutoutCanvas changes
   useEffect(() => {
     const { width, height } = activeVariant.platformPreset;
     const composited = compositeThumbnailCanvas(
@@ -141,6 +176,7 @@ export function useThumbnailWorkspace() {
       activeVariant.overlayLayers,
       width,
       height,
+      cutoutCanvas,
     );
     try {
       const url = composited.toDataURL("image/jpeg", 0.9);
@@ -148,7 +184,7 @@ export function useThumbnailWorkspace() {
     } catch {
       // Ignored
     }
-  }, [baseCanvas, activeVariant.overlayLayers, activeVariant.platformPreset]);
+  }, [baseCanvas, activeVariant.overlayLayers, activeVariant.platformPreset, cutoutCanvas]);
 
   // Persist Variant Helper
   const persistVariant = useCallback(
@@ -296,12 +332,21 @@ export function useThumbnailWorkspace() {
       setExportMessage(null);
 
       try {
+        let effectiveCutout = cutoutCanvas;
+        if (hasBehindSubject && !effectiveCutout && baseCanvas) {
+          setExportMessage("Isolating foreground subject...");
+          effectiveCutout = await generateThumbnailCutout(baseCanvas, {
+            time: activeVariant.timestampMs / 1000,
+          });
+        }
+
         const { width, height } = activeVariant.platformPreset;
         const composited = compositeThumbnailCanvas(
           baseCanvas,
           activeVariant.overlayLayers,
           width,
           height,
+          effectiveCutout,
         );
 
         const defaultFileName = `${project?.name || "video"}-thumbnail-${activeVariant.platformPreset.kind}`;
@@ -329,7 +374,7 @@ export function useThumbnailWorkspace() {
         setIsExporting(false);
       }
     },
-    [baseCanvas, activeVariant, project?.name, updateCreatorThumbnail],
+    [baseCanvas, cutoutCanvas, hasBehindSubject, activeVariant, project?.name, updateCreatorThumbnail],
   );
 
   return {
@@ -337,6 +382,7 @@ export function useThumbnailWorkspace() {
     activeVariant,
     variants: existingThumbnails.length > 0 ? existingThumbnails : [activeVariant],
     activeVariantId,
+    isSegmenting,
     setActiveVariantId: (id: string) => {
       setActiveVariantId(id);
       const match = existingThumbnails.find((t) => t.id === id);

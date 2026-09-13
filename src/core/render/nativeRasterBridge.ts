@@ -33,20 +33,18 @@ import {
   traceTextRenderTiming,
   type TextRenderTracePhase,
 } from "@/core/render/textRenderTrace";
+import type { TelemetryStickerPhase } from "@/services/telemetryCollector";
 import { LatestTextPreparationScheduler } from "@/core/render/latestTextPreparationScheduler";
-import {
-  NativeAnimatedStickerRenderer,
-  type NativeAnimatedStickerRaster,
-} from "@/components/editor/preview/nativeStickerPreview";
+import type { NativeAnimatedStickerRaster } from "@/components/editor/preview/nativeStickerPreview";
+import { StickerRasterizerWorkerClient } from "@/core/render/stickerRasterizerWorkerClient";
 import { TemplateRasterizerWorkerClient } from "@/core/render/templateRasterizerWorkerClient";
 
 type UploadableNativeRaster = NativeRasterLayerSnapshot & {
   /**
    * Pixel data as Uint8ClampedArray (from rasterizeTextLayerForNative) or
-   * number[] (from legacy smart-overlay / background paths). The register()
-   * method converts to number[] only at the Tauri IPC boundary.
+   * number[] (from Canvas image data / gradient rasterizer).
    */
-  rgba: Uint8ClampedArray | number[];
+  rgba?: Uint8ClampedArray | number[];
   /** Text-only metadata used to reapply current compositor placement. */
   bleedX?: number;
   bleedY?: number;
@@ -54,7 +52,7 @@ type UploadableNativeRaster = NativeRasterLayerSnapshot & {
   timing?: NativeTextRasterAsset["timing"];
 };
 
-interface NativeRasterBridgeOptions {
+export interface NativeRasterBridgeOptions {
   frameKey: number;
   phase?: TextRenderTracePhase;
   /**
@@ -63,6 +61,11 @@ interface NativeRasterBridgeOptions {
    * Paused/seeked renders leave this false so the requested frame is exact.
    */
   nonBlockingText?: boolean;
+  /**
+   * Playback must not block on sticker Lottie evaluation or worker rasterization.
+   * When true, uses latest prepared snapshot while worker computes in background.
+   */
+  nonBlockingStickers?: boolean;
 }
 
 const MAX_TEXT_CACHE_ENTRIES = 96;
@@ -110,6 +113,12 @@ type TextPreparationInput = {
   key: string;
   phase: TextRenderTracePhase;
   generation: number;
+};
+
+type StickerPreparationInput = {
+  layer: EvaluatedMediaLayer;
+  key: string;
+  phase: TelemetryStickerPhase;
 };
 
 function textKind(layer: NativeTextLayer): "plain" | "effect" | "template" {
@@ -160,6 +169,7 @@ export class NativeRasterBridge {
     { sourcePath: string; width: number; height: number }
   >();
   private readonly assetsById = new Map<string, UploadableNativeRaster>();
+  private readonly textAssetsById = new Map<string, UploadableNativeRaster>();
   private readonly registeredAssetIds = new Set<string>();
   /**
    * Reference-equality cache for smart-overlay stableSerialize.
@@ -172,7 +182,21 @@ export class NativeRasterBridge {
   private _lastSmartOverlayClipsRef: readonly unknown[] | null = null;
   private _lastSmartOverlayClipsSerial = "";
   private readonly animatedStickerRenderer =
-    new NativeAnimatedStickerRenderer();
+    new StickerRasterizerWorkerClient();
+  private readonly stickerSnapshotsByLayerId = new Map<
+    string,
+    NativeRasterLayerSnapshot
+  >();
+  private readonly stickerSnapshotKeysByLayerId = new Map<string, string>();
+  private readonly stickerPreparationScheduler =
+    new LatestTextPreparationScheduler<StickerPreparationInput>(
+      (input) => this.prepareStickerAsset(input),
+      (error, input) =>
+        console.error("[NativeRasterBridge] background sticker frame failed", {
+          layerId: input.layer.layerId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    );
   private textPreparationGeneration = 0;
   /** One active raster plus one latest replacement for real-time playback. */
   private readonly textPreparationScheduler =
@@ -230,7 +254,11 @@ export class NativeRasterBridge {
         ? this.rasterizeBackground(scene, options.frameKey)
         : Promise.resolve([]),
       hasVisualLayers
-        ? this.rasterizeAnimatedStickers(scene)
+        ? this.rasterizeAnimatedStickers(
+            scene,
+            (options.phase as TelemetryStickerPhase) ?? "visible-playback",
+            options.nonBlockingStickers ?? options.nonBlockingText ?? false,
+          )
         : Promise.resolve([]),
       hasVisualLayers ? this.rasterizeImages(scene) : Promise.resolve([]),
     ]);
@@ -357,23 +385,61 @@ export class NativeRasterBridge {
 
   /** Re-upload request assets after native device/cache recovery. */
   async reregister(references: NativeRasterLayerSnapshot[]): Promise<boolean> {
-    const registrations = references.map((reference) => {
-      const imageSource = this.imageSourcesById.get(reference.assetId);
-      if (imageSource) {
-        return registerNativeImageAsset({
-          assetId: reference.assetId,
-          ...imageSource,
-        }).then(() => {
+    const registrations = await Promise.all(
+      references.map(async (reference) => {
+        const imageSource = this.imageSourcesById.get(reference.assetId);
+        if (imageSource) {
+          await registerNativeImageAsset({
+            assetId: reference.assetId,
+            ...imageSource,
+          });
           this.registeredAssetIds.add(reference.assetId);
-        });
-      }
-      const asset = this.assetsById.get(reference.assetId);
-      return asset ? this.register(asset, true) : null;
-    });
-    if (registrations.some((registration) => registration === null))
-      return false;
-    await Promise.all(registrations as Promise<void>[]);
-    return true;
+          return true;
+        }
+
+        let asset =
+          this.textAssetsById.get(reference.assetId) ??
+          this.assetsById.get(reference.assetId);
+
+        if (!asset && reference.assetId.startsWith("native-text:")) {
+          for (const promise of this.textCache.values()) {
+            try {
+              const cached = await promise;
+              if (
+                cached &&
+                cached.assetId === reference.assetId &&
+                cached.rgba &&
+                cached.rgba.length > 0
+              ) {
+                asset = {
+                  ...cached,
+                  isText: true,
+                };
+                this.textAssetsById.set(reference.assetId, asset);
+                break;
+              }
+            } catch {
+              // Ignore failed promises in textCache
+            }
+          }
+        }
+
+        if (asset && asset.rgba && asset.rgba.length > 0) {
+          await this.register(asset, true);
+          return true;
+        }
+        return false;
+      }),
+    );
+    return registrations.every(Boolean);
+  }
+
+  /** Handle out-of-band GPU cache eviction events from Rust compositor. */
+  evict(assetIds: string[]): void {
+    for (const assetId of assetIds) {
+      this.registeredAssetIds.delete(assetId);
+      this.animatedStickerRenderer.evictFrame(assetId);
+    }
   }
 
   dispose(): void {
@@ -388,7 +454,11 @@ export class NativeRasterBridge {
     this.imageCache.clear();
     this.imageSourcesById.clear();
     this.assetsById.clear();
+    this.textAssetsById.clear();
     this.registeredAssetIds.clear();
+    this.stickerPreparationScheduler.dispose();
+    this.stickerSnapshotsByLayerId.clear();
+    this.stickerSnapshotKeysByLayerId.clear();
     this.animatedStickerRenderer.dispose();
   }
 
@@ -848,8 +918,59 @@ export class NativeRasterBridge {
     });
   }
 
+  private async prepareStickerAsset(
+    input: StickerPreparationInput,
+  ): Promise<void> {
+    try {
+      const asset = await this.animatedStickerRenderer.render(
+        input.layer,
+        input.phase,
+      );
+      if (!asset) return;
+      await this.register(asset);
+      const snap = snapshot(asset);
+      this.stickerSnapshotsByLayerId.set(input.layer.layerId, snap);
+      this.stickerSnapshotKeysByLayerId.set(input.layer.layerId, input.key);
+    } catch {
+      // Best-effort background preparation: never throw
+    }
+  }
+
+  /**
+   * Pre-warms upcoming sticker frames on the timeline ahead of the playhead.
+   * Registers the native GPU texture so playback never misses a frame.
+   */
+  async prewarmStickerAssets(
+    scene: EvaluatedScene,
+    phase: TelemetryStickerPhase = "sticker-prefetch",
+  ): Promise<void> {
+    if (!isTauriRuntime()) return;
+    const layers = scene.visualLayers.filter(
+      (layer): layer is EvaluatedMediaLayer =>
+        layer.layerType === "media" &&
+        layer.clipKind === "sticker" &&
+        layer.stickerFormat === "lottie",
+    );
+    if (layers.length === 0) return;
+    await Promise.all(
+      layers.map(async (layer) => {
+        try {
+          const asset = await this.animatedStickerRenderer.render(layer, phase);
+          if (asset) {
+            await this.register(asset);
+            this.stickerSnapshotsByLayerId.set(layer.layerId, snapshot(asset));
+          }
+        } catch {
+          // prewarm is best-effort, never throw
+        }
+      }),
+    );
+  }
+
   private async rasterizeAnimatedStickers(
     scene: EvaluatedScene,
+    phase: TelemetryStickerPhase = "visible-playback",
+    nonBlocking = false,
   ): Promise<NativeRasterLayerSnapshot[]> {
     const layers = scene.visualLayers.filter(
       (layer): layer is EvaluatedMediaLayer =>
@@ -858,14 +979,94 @@ export class NativeRasterBridge {
         layer.stickerFormat === "lottie",
     );
     if (layers.length === 0) return [];
+
+    if (nonBlocking) {
+      const results: NativeRasterLayerSnapshot[] = [];
+      for (const layer of layers) {
+        const stickerId =
+          layer.stickerSourceId || layer.mediaId.replace("sticker-", "");
+        const speed = Number(layer.stickerSettings?.speed ?? 1);
+        const rawFrame = Math.max(
+          0,
+          Math.floor(layer.sourceTime * Math.max(0, speed) * 30),
+        );
+        const key = `${layer.layerId}:${stickerId}:${rawFrame}:${Math.ceil(layer.width)}x${Math.ceil(layer.height)}`;
+
+        const hasCurrentSnapshot =
+          this.stickerSnapshotKeysByLayerId.get(layer.layerId) === key;
+        const previous = this.stickerSnapshotsByLayerId.get(layer.layerId);
+
+        if (!hasCurrentSnapshot) {
+          this.stickerPreparationScheduler.enqueue(key, {
+            layer,
+            key,
+            phase,
+          });
+        }
+
+        if (previous) {
+          const updated: NativeRasterLayerSnapshot = {
+            ...previous,
+            x: typeof layer.x === "number" ? layer.x : previous.x,
+            y: typeof layer.y === "number" ? layer.y : previous.y,
+            rotation:
+              typeof layer.rotation === "number"
+                ? layer.rotation
+                : previous.rotation,
+            opacity:
+              typeof layer.opacity === "number"
+                ? layer.opacity
+                : previous.opacity,
+            zIndex:
+              typeof layer.zIndex === "number" ? layer.zIndex : previous.zIndex,
+            blendMode:
+              typeof layer.blendMode === "string"
+                ? layer.blendMode
+                : previous.blendMode,
+          };
+          this.stickerSnapshotsByLayerId.set(layer.layerId, updated);
+          results.push(updated);
+        } else {
+          // Await initial render if no previous frame exists so it displays on entry
+          try {
+            const asset = await this.animatedStickerRenderer.render(
+              layer,
+              phase,
+            );
+            if (asset) {
+              await this.register(asset);
+              const snap = snapshot(asset);
+              this.stickerSnapshotsByLayerId.set(layer.layerId, snap);
+              this.stickerSnapshotKeysByLayerId.set(layer.layerId, key);
+              results.push(snap);
+            }
+          } catch {
+            // Best-effort: do not throw to caller
+          }
+        }
+      }
+      return results;
+    }
+
     const assets = await Promise.all(
-      layers.map((layer) => this.animatedStickerRenderer.render(layer)),
+      layers.map(async (layer) => {
+        try {
+          const asset = await this.animatedStickerRenderer.render(layer, phase);
+          if (asset) {
+            await this.register(asset);
+            const snap = snapshot(asset);
+            this.stickerSnapshotsByLayerId.set(layer.layerId, snap);
+            return snap;
+          }
+        } catch {
+          // Best-effort: return null on failure
+        }
+        return null;
+      }),
     );
-    const resolved = assets.filter(
-      (asset): asset is NativeAnimatedStickerRaster => asset !== null,
+    return assets.filter(
+      (snap): snap is NativeRasterLayerSnapshot => snap !== null,
     );
-    await Promise.all(resolved.map((asset) => this.register(asset)));
-    return resolved.map(snapshot);
   }
 
   /**
@@ -1018,20 +1219,39 @@ export class NativeRasterBridge {
     asset: UploadableNativeRaster,
     force = false,
   ): Promise<void> {
-    this.assetsById.delete(asset.assetId);
-    this.assetsById.set(asset.assetId, asset);
-    while (this.assetsById.size > MAX_REGISTERED_ASSETS) {
-      const oldestId = this.assetsById.keys().next().value as
-        | string
-        | undefined;
-      if (!oldestId) break;
-      this.assetsById.delete(oldestId);
-      this.registeredAssetIds.delete(oldestId);
+    const isText = asset.isText || asset.assetId.startsWith("native-text:");
+    if (isText) {
+      this.textAssetsById.delete(asset.assetId);
+      this.textAssetsById.set(asset.assetId, asset);
+      while (this.textAssetsById.size > MAX_TEXT_CACHE_ENTRIES) {
+        const oldestId = this.textAssetsById.keys().next().value as
+          | string
+          | undefined;
+        if (!oldestId) break;
+        this.textAssetsById.delete(oldestId);
+        this.registeredAssetIds.delete(oldestId);
+      }
+    } else {
+      this.assetsById.delete(asset.assetId);
+      this.assetsById.set(asset.assetId, asset);
+      while (this.assetsById.size > MAX_REGISTERED_ASSETS) {
+        const oldestId = this.assetsById.keys().next().value as
+          | string
+          | undefined;
+        if (!oldestId) break;
+        this.assetsById.delete(oldestId);
+        this.registeredAssetIds.delete(oldestId);
+      }
     }
+
     if (!force && this.registeredAssetIds.has(asset.assetId)) return;
     if (asset.rgba && asset.rgba.length > 0) {
-      await registerNativeRasterAsset(asset);
+      await registerNativeRasterAsset(
+        asset as NativeRasterLayerSnapshot & {
+          rgba: number[] | Uint8ClampedArray;
+        },
+      );
+      this.registeredAssetIds.add(asset.assetId);
     }
-    this.registeredAssetIds.add(asset.assetId);
   }
 }

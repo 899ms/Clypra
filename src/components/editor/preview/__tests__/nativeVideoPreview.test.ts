@@ -1080,4 +1080,111 @@ describe("buildNativeFrameRequest", () => {
     });
     expect(text?.runs?.find((run) => run.highlighted)?.text).toBe("world");
   });
+
+  it("keeps synthesized subject-cutout layer in videoLayers with opacity 0 when its segmentation mask is in-flight", () => {
+    const baseVideo = makeVideoLayer({ layerId: "video-1", zIndex: 0 });
+    const textLayer = {
+      ...makeVideoLayer(),
+      layerId: "text-1",
+      layerType: "text",
+      text: "Headline Behind Person",
+      zIndex: 1,
+    } as never;
+    const cutoutLayer = {
+      ...makeVideoLayer(),
+      layerId: "video-1:subject-cutout",
+      layerType: "media",
+      zIndex: 2,
+      effects: [{
+        effectId: "fx-body-cutout-video-1",
+        type: "body_effect" as const,
+        renderer: "body_cutout",
+        parameters: { feather: 4 },
+        intensity: 1.0,
+      }],
+    } as never;
+
+    // Call buildNativeFrameRequest with NO masks in rasterLayers
+    const request = buildNativeFrameRequest(
+      makeScene([baseVideo, textLayer, cutoutLayer]),
+      "project-1:1",
+      0,
+      30,
+      1920,
+      1080,
+      [],
+    )!;
+
+    expect(request).not.toBeNull();
+    // Both base video and cutout layer are present to avoid layer count churn
+    expect(request.project.videoLayers).toHaveLength(2);
+    expect(request.project.videoLayers[0].layerId).toBe("video-1");
+    expect(request.project.videoLayers[1].layerId).toBe("video-1:subject-cutout");
+    // Cutout layer opacity is 0 to protect text visibility while mask is in flight
+    expect(request.project.videoLayers[1].opacity).toBe(0);
+    // Text layer is present and unoccluded
+    expect(request.project.textLayers).toHaveLength(1);
+    expect(request.project.textLayers?.[0].layerId).toBe("text-1");
+  });
+
+  it("includes synthesized subject-cutout layer with bodyEffect when its segmentation mask is available", () => {
+    const baseVideo = makeVideoLayer({ layerId: "video-1", zIndex: 0 });
+    const textLayer = {
+      ...makeVideoLayer(),
+      layerId: "text-1",
+      layerType: "text",
+      text: "Headline Behind Person",
+      zIndex: 1,
+    } as never;
+    const cutoutLayer = {
+      ...makeVideoLayer(),
+      layerId: "video-1:subject-cutout",
+      layerType: "media",
+      zIndex: 2,
+      effects: [{
+        effectId: "fx-body-cutout-video-1",
+        type: "body_effect" as const,
+        renderer: "body_cutout",
+        parameters: { feather: 4 },
+        intensity: 1.0,
+      }],
+    } as never;
+
+    const maskAsset: import("@/lib/platform/nativeCore").NativeRasterLayerSnapshot = {
+      assetId: "video-1:subject-cutout_fx-body-cutout-video-1:frame-0",
+      width: 1920,
+      height: 1080,
+      x: 0,
+      y: 0,
+      rotation: 0,
+      opacity: 1,
+      zIndex: -1_000_000,
+      blendMode: "normal",
+      isMask: true,
+    };
+
+    const request = buildNativeFrameRequest(
+      makeScene([baseVideo, textLayer, cutoutLayer]),
+      "project-1:1",
+      0,
+      30,
+      1920,
+      1080,
+      [maskAsset],
+    )!;
+
+    expect(request).not.toBeNull();
+    // Both base video and cutout layer are present
+    expect(request.project.videoLayers).toHaveLength(2);
+    expect(request.project.videoLayers[0].layerId).toBe("video-1");
+    expect(request.project.videoLayers[1].layerId).toBe("video-1:subject-cutout");
+    expect(request.project.videoLayers[1].bodyEffect).toMatchObject({
+      renderer: "body_cutout",
+      maskAssetId: maskAsset.assetId,
+    });
+    // Z-indices ensure text is sandwiched between base video (0) and cutout (2)
+    expect(request.project.videoLayers[0].zIndex).toBe(0);
+    expect(request.project.textLayers?.[0].zIndex).toBe(1);
+    expect(request.project.videoLayers[1].zIndex).toBe(2);
+  });
 });

@@ -344,7 +344,9 @@ export interface NativeBodyEffectSnapshot {
     | "body_outline"
     | "body_glow"
     | "body_segmentation_glow"
-    | "body_particles";
+    | "body_particles"
+    | "body_cutout"
+    | "subject_cutout";
   colorR: number;
   colorG: number;
   colorB: number;
@@ -589,6 +591,7 @@ export interface NativePlaybackFrameDemand {
   generation?: number;
   mode?: NativeFrameRequest["mode"];
   videoLayers: Array<{
+    layerId?: string;
     sourceTime: NativeFrameTime;
     x: number;
     y: number;
@@ -597,6 +600,8 @@ export interface NativePlaybackFrameDemand {
     rotation: number;
     opacity: number;
     zIndex: number;
+    colorGrade?: NativeColorGradeSnapshot;
+    bodyEffect?: NativeBodyEffectSnapshot;
   }>;
   rasterLayers: Array<{
     layerId?: string;
@@ -635,6 +640,7 @@ export function createNativePlaybackFrameDemand(
     generation: request.generation,
     mode: request.mode,
     videoLayers: request.project.videoLayers.map((layer) => ({
+      layerId: layer.layerId,
       sourceTime: layer.sourceTime,
       x: layer.x,
       y: layer.y,
@@ -643,6 +649,8 @@ export function createNativePlaybackFrameDemand(
       rotation: layer.rotation,
       opacity: layer.opacity,
       zIndex: layer.zIndex,
+      colorGrade: layer.colorGrade,
+      bodyEffect: layer.bodyEffect,
     })),
     rasterLayers: (request.project.rasterLayers ?? []).map((layer) => ({
       layerId: layer.layerId,
