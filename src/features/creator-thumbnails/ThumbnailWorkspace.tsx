@@ -35,6 +35,7 @@ export const ThumbnailWorkspace: React.FC<ThumbnailWorkspaceProps> = ({
     setSelectedLayerId,
     previewDataUrl,
     isRenderingFrame,
+    isSegmenting,
     isExporting,
     exportMessage,
     setTimestamp,
@@ -142,6 +143,18 @@ export const ThumbnailWorkspace: React.FC<ThumbnailWorkspaceProps> = ({
                     {activeVariant.platformPreset.height} (
                     {activeVariant.platformPreset.aspectRatioLabel})
                   </span>
+                  {activeVariant.overlayLayers.some((l) => l.behindSubject) && (
+                    <span className="text-[11px] font-medium flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-purple-950/80 text-purple-300 border border-purple-800/80 backdrop-blur-sm shadow-sm">
+                      <Sparkles className="w-3 h-3 text-purple-400" />
+                      Subject Cutout
+                    </span>
+                  )}
+                  {isSegmenting && (
+                    <span className="text-[11px] font-medium flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-sky-950/80 text-sky-300 border border-sky-800/80 backdrop-blur-sm shadow-sm animate-pulse">
+                      <Loader2 className="w-3 h-3 animate-spin text-sky-400" />
+                      Segmenting...
+                    </span>
+                  )}
                 </div>
 
                 {/* Canvas Display Viewport */}

@@ -9,6 +9,7 @@ import type {
 import { evaluateTimelineSceneCached } from "@/core/evaluation/evaluator";
 import { buildNativeFrameRequest } from "@/components/editor/preview/nativeVideoPreview";
 import { isTauriRuntime, renderNativeFrame, exportCreatorThumbnail } from "@/lib/platform/tauri";
+import { segmentBodyMask, createCutoutCanvas } from "@/features/body-effects";
 
 export interface RenderFrameOptions {
   timestampSeconds: number;
@@ -105,13 +106,107 @@ export async function renderTimelineFrameAt(
 }
 
 /**
- * Composite the base video frame with graphic and text overlay layers at target resolution.
+ * Generates an isolated foreground subject cutout canvas from a base video frame.
+ */
+export async function generateThumbnailCutout(
+  baseCanvas: HTMLCanvasElement,
+  options: { time: number },
+): Promise<HTMLCanvasElement | null> {
+  const mask = await segmentBodyMask(baseCanvas, {
+    effectId: "thumbnail_cutout",
+    renderer: "subject_cutout",
+    time: options.time,
+    width: baseCanvas.width,
+    height: baseCanvas.height,
+  });
+  if (!mask) return null;
+  return createCutoutCanvas(baseCanvas, mask);
+}
+
+function renderOverlayLayer(
+  ctx: CanvasRenderingContext2D,
+  layer: ThumbnailOverlayLayer,
+  targetWidth: number,
+  targetHeight: number,
+): void {
+  if (!layer.text) return;
+
+  ctx.save();
+
+  const posX = layer.x * targetWidth;
+  const posY = layer.y * targetHeight;
+  const opacity = layer.opacity ?? 1.0;
+  ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+
+  ctx.translate(posX, posY);
+  if (layer.rotation) {
+    ctx.rotate((layer.rotation * Math.PI) / 180);
+  }
+
+  // Configure text styling
+  const fontSize = layer.fontSize || Math.round(targetHeight * 0.08);
+  const fontWeight = layer.fontWeight || "bold";
+  const fontFamily = layer.fontFamily || "Impact, Inter, system-ui, sans-serif";
+  ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  ctx.textAlign = layer.align || "center";
+  ctx.textBaseline = "middle";
+
+  const textMetrics = ctx.measureText(layer.text);
+  const textW = textMetrics.width;
+  const textH = fontSize * 1.2;
+
+  // Optional Badge / Background container
+  if (layer.kind === "badge" || layer.backgroundColor) {
+    const padding = layer.backgroundPadding ?? Math.round(fontSize * 0.25);
+    const bgW = textW + padding * 2;
+    const bgH = textH + padding * 0.5;
+    const bgX = layer.align === "left" ? -padding : layer.align === "right" ? -textW - padding : -bgW / 2;
+    const bgY = -bgH / 2;
+    const radius = layer.borderRadius ?? Math.round(fontSize * 0.15);
+
+    ctx.fillStyle = layer.backgroundColor || "rgba(220, 38, 38, 0.9)";
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(bgX, bgY, bgW, bgH, radius);
+      ctx.fill();
+    } else {
+      ctx.fillRect(bgX, bgY, bgW, bgH);
+    }
+  }
+
+  // Shadow
+  if (layer.shadowColor) {
+    ctx.shadowColor = layer.shadowColor;
+    ctx.shadowBlur = layer.shadowBlur ?? 12;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 4;
+  }
+
+  // Stroke / Outline
+  if (layer.outlineColor && (layer.outlineWidth ?? 0) > 0) {
+    ctx.strokeStyle = layer.outlineColor;
+    ctx.lineWidth = layer.outlineWidth!;
+    ctx.lineJoin = "round";
+    ctx.strokeText(layer.text, 0, 0);
+  }
+
+  // Fill
+  ctx.fillStyle = layer.color || "#ffffff";
+  ctx.fillText(layer.text, 0, 0);
+
+  ctx.restore();
+}
+
+/**
+ * Composite the base video frame with graphic and text overlay layers at target resolution,
+ * supporting 4-pass sandwich compositing: Base Frame -> Behind Overlays -> Subject Cutout -> Front Overlays.
  */
 export function compositeThumbnailCanvas(
   baseCanvas: HTMLCanvasElement | null,
   overlayLayers: ThumbnailOverlayLayer[],
   targetWidth: number,
   targetHeight: number,
+  cutoutCanvas?: HTMLCanvasElement | null,
 ): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = targetWidth;
@@ -123,6 +218,11 @@ export function compositeThumbnailCanvas(
   ctx.fillStyle = "#09090b";
   ctx.fillRect(0, 0, targetWidth, targetHeight);
 
+  let drawW = targetWidth;
+  let drawH = targetHeight;
+  let offsetX = 0;
+  let offsetY = 0;
+
   // 1. Draw base video frame with "Cover" crop/scaling
   if (baseCanvas && baseCanvas.width > 0 && baseCanvas.height > 0) {
     const srcW = baseCanvas.width;
@@ -130,17 +230,10 @@ export function compositeThumbnailCanvas(
     const srcRatio = srcW / srcH;
     const dstRatio = targetWidth / targetHeight;
 
-    let drawW = targetWidth;
-    let drawH = targetHeight;
-    let offsetX = 0;
-    let offsetY = 0;
-
     if (srcRatio > dstRatio) {
-      // Source is wider than target
       drawW = targetHeight * srcRatio;
       offsetX = (targetWidth - drawW) / 2;
     } else {
-      // Source is taller than target
       drawH = targetWidth / srcRatio;
       offsetY = (targetHeight - drawH) / 2;
     }
@@ -150,74 +243,24 @@ export function compositeThumbnailCanvas(
     ctx.restore();
   }
 
-  // 2. Render each overlay layer
-  for (const layer of overlayLayers) {
-    if (!layer.text) continue;
+  const behindLayers = overlayLayers.filter((l) => Boolean(l.behindSubject));
+  const frontLayers = overlayLayers.filter((l) => !l.behindSubject);
 
+  // 2. Render layers marked as "Behind Subject"
+  for (const layer of behindLayers) {
+    renderOverlayLayer(ctx, layer, targetWidth, targetHeight);
+  }
+
+  // 3. Draw subject cutout on top of behind-subject layers
+  if (cutoutCanvas && cutoutCanvas.width > 0 && cutoutCanvas.height > 0 && behindLayers.length > 0) {
     ctx.save();
-
-    const posX = layer.x * targetWidth;
-    const posY = layer.y * targetHeight;
-    const opacity = layer.opacity ?? 1.0;
-    ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
-
-    ctx.translate(posX, posY);
-    if (layer.rotation) {
-      ctx.rotate((layer.rotation * Math.PI) / 180);
-    }
-
-    // Configure text styling
-    const fontSize = layer.fontSize || Math.round(targetHeight * 0.08);
-    const fontWeight = layer.fontWeight || "bold";
-    const fontFamily = layer.fontFamily || "Impact, Inter, system-ui, sans-serif";
-    ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-    ctx.textAlign = layer.align || "center";
-    ctx.textBaseline = "middle";
-
-    const textMetrics = ctx.measureText(layer.text);
-    const textW = textMetrics.width;
-    const textH = fontSize * 1.2;
-
-    // Optional Badge / Background container
-    if (layer.kind === "badge" || layer.backgroundColor) {
-      const padding = layer.backgroundPadding ?? Math.round(fontSize * 0.25);
-      const bgW = textW + padding * 2;
-      const bgH = textH + padding * 0.5;
-      const bgX = layer.align === "left" ? -padding : layer.align === "right" ? -textW - padding : -bgW / 2;
-      const bgY = -bgH / 2;
-      const radius = layer.borderRadius ?? Math.round(fontSize * 0.15);
-
-      ctx.fillStyle = layer.backgroundColor || "rgba(220, 38, 38, 0.9)"; // High-energy red default for badge
-      if (ctx.roundRect) {
-        ctx.beginPath();
-        ctx.roundRect(bgX, bgY, bgW, bgH, radius);
-        ctx.fill();
-      } else {
-        ctx.fillRect(bgX, bgY, bgW, bgH);
-      }
-    }
-
-    // Shadow
-    if (layer.shadowColor) {
-      ctx.shadowColor = layer.shadowColor;
-      ctx.shadowBlur = layer.shadowBlur ?? 12;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 4;
-    }
-
-    // Stroke / Outline
-    if (layer.outlineColor && (layer.outlineWidth ?? 0) > 0) {
-      ctx.strokeStyle = layer.outlineColor;
-      ctx.lineWidth = layer.outlineWidth!;
-      ctx.lineJoin = "round";
-      ctx.strokeText(layer.text, 0, 0);
-    }
-
-    // Fill
-    ctx.fillStyle = layer.color || "#ffffff";
-    ctx.fillText(layer.text, 0, 0);
-
+    ctx.drawImage(cutoutCanvas, offsetX, offsetY, drawW, drawH);
     ctx.restore();
+  }
+
+  // 4. Render foreground overlay layers
+  for (const layer of frontLayers) {
+    renderOverlayLayer(ctx, layer, targetWidth, targetHeight);
   }
 
   return canvas;

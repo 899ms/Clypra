@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PLATFORM_PRESETS } from "../platformPresets";
-import { compositeThumbnailCanvas } from "../thumbnailExport";
+import { compositeThumbnailCanvas, generateThumbnailCutout } from "../thumbnailExport";
 import { useProjectStore } from "@/store/projectStore";
 import type { CreatorThumbnail, Project, ThumbnailOverlayLayer } from "@/types";
+import * as bodyEffects from "@/features/body-effects";
+
+vi.mock("@/features/body-effects", () => ({
+  segmentBodyMask: vi.fn(),
+  createCutoutCanvas: vi.fn(),
+}));
 
 describe("Thumbnail Generator (Creator Thumbnails)", () => {
   describe("PLATFORM_PRESETS", () => {
@@ -87,6 +93,87 @@ describe("Thumbnail Generator (Creator Thumbnails)", () => {
       const canvas = compositeThumbnailCanvas(null, layers, 1080, 1920);
       expect(canvas.width).toBe(1080);
       expect(canvas.height).toBe(1920);
+    });
+
+    it("composites sandwich layers (behind-subject, cutout, front) correctly", () => {
+      const baseCanvas = document.createElement("canvas");
+      baseCanvas.width = 1280;
+      baseCanvas.height = 720;
+
+      const cutoutCanvas = document.createElement("canvas");
+      cutoutCanvas.width = 1280;
+      cutoutCanvas.height = 720;
+
+      const layers: ThumbnailOverlayLayer[] = [
+        {
+          id: "layer-behind",
+          kind: "text",
+          text: "BEHIND HEADLINE",
+          fontFamily: "Impact, sans-serif",
+          fontSize: 100,
+          fontWeight: "bold",
+          color: "#ffff00",
+          behindSubject: true,
+          x: 0.5,
+          y: 0.3,
+        },
+        {
+          id: "layer-front",
+          kind: "badge",
+          text: "TOP RATED",
+          fontFamily: "Inter, sans-serif",
+          fontSize: 30,
+          fontWeight: "bold",
+          color: "#ffffff",
+          behindSubject: false,
+          x: 0.8,
+          y: 0.1,
+        },
+      ];
+
+      const canvas = compositeThumbnailCanvas(baseCanvas, layers, 1280, 720, cutoutCanvas);
+      expect(canvas).toBeInstanceOf(HTMLCanvasElement);
+      expect(canvas.width).toBe(1280);
+      expect(canvas.height).toBe(720);
+    });
+  });
+
+  describe("generateThumbnailCutout", () => {
+    it("calls segmentBodyMask and createCutoutCanvas when segmentation succeeds", async () => {
+      const mockCanvas = document.createElement("canvas");
+      mockCanvas.width = 1280;
+      mockCanvas.height = 720;
+
+      const mockMask = {
+        mask: new Uint8Array([255, 0, 255]),
+        width: 1280,
+        height: 720,
+      };
+      const mockCutout = document.createElement("canvas");
+
+      vi.mocked(bodyEffects.segmentBodyMask).mockResolvedValueOnce(mockMask as any);
+      vi.mocked(bodyEffects.createCutoutCanvas).mockReturnValueOnce(mockCutout);
+
+      const result = await generateThumbnailCutout(mockCanvas, { time: 5.0 });
+      expect(bodyEffects.segmentBodyMask).toHaveBeenCalledWith(
+        mockCanvas,
+        expect.objectContaining({
+          renderer: "subject_cutout",
+          time: 5.0,
+          width: 1280,
+          height: 720,
+        }),
+      );
+      expect(bodyEffects.createCutoutCanvas).toHaveBeenCalledWith(mockCanvas, mockMask);
+      expect(result).toBe(mockCutout);
+    });
+
+    it("returns null if segmentation fails or yields no mask", async () => {
+      const mockCanvas = document.createElement("canvas");
+      vi.mocked(bodyEffects.segmentBodyMask).mockResolvedValueOnce(null);
+
+      const result = await generateThumbnailCutout(mockCanvas, { time: 5.0 });
+      expect(result).toBeNull();
     });
   });
 
