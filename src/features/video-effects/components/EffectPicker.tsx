@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Search, Sparkles, AlertCircle, Star, Download, Plus } from "lucide-react";
+import { Search, Sparkles, AlertCircle, Star, Download, Plus, AlertTriangle } from "lucide-react";
 import type { EffectPreset } from "../types";
 import { VideoEffectsApi } from "../api/videoEffectsApi";
 import { useFavoritesStore } from "@/store/favoritesStore";
+import { evaluateEffectCompatibility, LOCAL_ENGINE_CAPABILITIES } from "@/features/body-effects/capabilities";
 
 interface EffectPickerProps {
+  selectedCategory?: string;
   onSelect: (effect: EffectPreset) => void;
 }
 
-export function EffectPicker({ onSelect }: EffectPickerProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string>("trending"); // Default to "autrendingra" since that's where the default effects are
+export function EffectPicker({ selectedCategory: propCategory, onSelect }: EffectPickerProps) {
+  const [internalCategory, setInternalCategory] = useState<string>("trending");
+  const activeCategory = (propCategory ?? internalCategory).toLowerCase();
   const [searchQuery, setSearchQuery] = useState("");
   const [effects, setEffects] = useState<EffectPreset[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,10 +62,10 @@ export function EffectPicker({ onSelect }: EffectPickerProps) {
   const filteredEffects = useMemo(() => {
     let filtered = effects;
 
-    if (selectedCategory) {
+    if (activeCategory && activeCategory !== "all") {
       filtered = filtered.filter((e: EffectPreset) => {
         const cat = e.category?.toLowerCase() === "body" ? "aura" : e.category?.toLowerCase();
-        return cat === selectedCategory;
+        return cat === activeCategory;
       });
     }
 
@@ -72,7 +75,7 @@ export function EffectPicker({ onSelect }: EffectPickerProps) {
     }
 
     return filtered;
-  }, [effects, selectedCategory, searchQuery]);
+  }, [effects, activeCategory, searchQuery]);
 
   return (
     <div className="flex flex-col h-full bg-transparent">
@@ -108,23 +111,54 @@ export function EffectPicker({ onSelect }: EffectPickerProps) {
 
         {!loading && !error && filteredEffects.length > 0 && (
           <div className="grid grid-cols-3 gap-1.5">
-            {filteredEffects.map((effect) => (
-              <EffectCard
-                key={effect.id}
-                effect={effect}
-                isFavorite={favorites.includes(effect.id)}
-                isDownloaded={downloadedEffects.includes(effect.id)}
-                isDownloading={downloadingIds.includes(effect.id)}
-                onFavorite={(e) => {
-                  e.stopPropagation();
-                  toggleFavorite(effect.id);
-                }}
-                onApply={(e) => {
-                  e.stopPropagation();
-                  handleDownloadAndApply(effect);
-                }}
-              />
-            ))}
+            {filteredEffects.map((effect) => {
+              // Evaluate compatibility against local engine capabilities
+              let isCompatible = true;
+              let incompatibleReason: string | undefined;
+
+              if (effect.requirements?.captureType && effect.compositing?.primitive) {
+                const evalResult = evaluateEffectCompatibility(
+                  {
+                    requirements: {
+                      minEngineVersion: effect.requirements.minEngineVersion ?? "1.0.0",
+                      captureType: effect.requirements.captureType as any,
+                      maskCategory: (effect.requirements.maskCategory as any) ?? "person",
+                      requiredLandmarks: effect.requirements.keypoints,
+                    },
+                    compositing: {
+                      primitive: effect.compositing.primitive as any,
+                      layerZOrder: effect.compositing.layerZOrder,
+                      blendMode: (effect.compositing.blendMode as any) ?? "normal",
+                    },
+                  },
+                  LOCAL_ENGINE_CAPABILITIES,
+                );
+                isCompatible = evalResult.compatible;
+                incompatibleReason = evalResult.reason;
+              }
+
+              return (
+                <EffectCard
+                  key={effect.id}
+                  effect={effect}
+                  isCompatible={isCompatible}
+                  incompatibleReason={incompatibleReason}
+                  isFavorite={favorites.includes(effect.id)}
+                  isDownloaded={downloadedEffects.includes(effect.id)}
+                  isDownloading={downloadingIds.includes(effect.id)}
+                  onFavorite={(e) => {
+                    e.stopPropagation();
+                    toggleFavorite(effect.id);
+                  }}
+                  onApply={(e) => {
+                    e.stopPropagation();
+                    if (isCompatible) {
+                      handleDownloadAndApply(effect);
+                    }
+                  }}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -134,6 +168,8 @@ export function EffectPicker({ onSelect }: EffectPickerProps) {
 
 interface EffectCardProps {
   effect: EffectPreset;
+  isCompatible?: boolean;
+  incompatibleReason?: string;
   isFavorite: boolean;
   isDownloaded: boolean;
   isDownloading: boolean;
@@ -141,11 +177,35 @@ interface EffectCardProps {
   onApply: (e: React.MouseEvent) => void;
 }
 
-function EffectCard({ effect, isFavorite, isDownloaded, isDownloading, onFavorite, onApply }: EffectCardProps) {
+function EffectCard({
+  effect,
+  isCompatible = true,
+  incompatibleReason,
+  isFavorite,
+  isDownloaded,
+  isDownloading,
+  onFavorite,
+  onApply,
+}: EffectCardProps) {
   const [isHovered, setIsHovered] = useState(false);
 
+  const isSkeletal =
+    effect.requirements?.captureType === "skeletal_pose" ||
+    effect.requirements?.captureType === "hybrid_body";
+  const isBehindSubject = effect.compositing?.layerZOrder === "behind-subject";
+
   return (
-    <div onClick={onApply} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} className="w-full aspect-square bg-surface-raised/40 hover:bg-surface-raised/80 border border-border/40 hover:border-accent/40 rounded-xl relative overflow-hidden flex flex-col justify-between p-1 transition-all duration-300 group cursor-pointer shadow-[0_4px_16px_rgba(0,0,0,0.3)]">
+    <div
+      onClick={isCompatible ? onApply : undefined}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      title={!isCompatible ? `Incompatible: ${incompatibleReason}` : effect.name}
+      className={`w-full aspect-square bg-surface-raised/40 hover:bg-surface-raised/80 border rounded-xl relative overflow-hidden flex flex-col justify-between p-1 transition-all duration-300 group shadow-[0_4px_16px_rgba(0,0,0,0.3)] ${
+        !isCompatible
+          ? "opacity-50 grayscale border-red-500/30 cursor-not-allowed"
+          : "border-border/40 hover:border-accent/40 cursor-pointer"
+      }`}
+    >
       {/* Downloading Overlay */}
       {isDownloading && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center z-20 pointer-events-none">
@@ -156,17 +216,42 @@ function EffectCard({ effect, isFavorite, isDownloaded, isDownloading, onFavorit
         </div>
       )}
 
-      {/* Premium badge */}
-      {effect.isPremium && (
-        <div className="absolute top-1 left-1 z-10 pointer-events-none">
+      {/* Badges container (top-left) */}
+      <div className="absolute top-1 left-1 z-10 flex items-center gap-0.5 pointer-events-none">
+        {/* Premium badge */}
+        {effect.isPremium && (
           <div className="bg-linear-to-r from-purple-500 to-pink-500 rounded-full p-0.5">
             <Sparkles className="w-2.5 h-2.5 text-white" />
           </div>
-        </div>
-      )}
+        )}
+        {/* Skeletal Pose requirement badge */}
+        {isSkeletal && (
+          <span className="bg-sky-500/80 text-[7px] font-bold text-white px-1 py-0.2 rounded tracking-wide shadow-xs">
+            POSE
+          </span>
+        )}
+        {/* Behind subject badge */}
+        {isBehindSubject && (
+          <span className="bg-purple-600/80 text-[7px] font-bold text-white px-1 py-0.2 rounded tracking-wide shadow-xs">
+            BEHIND
+          </span>
+        )}
+        {/* Incompatibility badge */}
+        {!isCompatible && (
+          <span className="bg-red-500/90 text-[7px] font-bold text-white px-1 py-0.2 rounded tracking-wide shadow-xs flex items-center gap-0.5">
+            <AlertTriangle className="w-2 h-2" />
+            UNSUPPORTED
+          </span>
+        )}
+      </div>
 
       {/* Favorite Star */}
-      <button onClick={onFavorite} className={`absolute top-1 right-1 p-1 cursor-pointer rounded-full bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary transition-all duration-200 z-10 ${isFavorite ? "opacity-100 text-yellow-400!" : "opacity-0 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2"}`}>
+      <button
+        onClick={onFavorite}
+        className={`absolute top-1 right-1 p-1 cursor-pointer rounded-full bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary transition-all duration-200 z-10 ${
+          isFavorite ? "opacity-100 text-yellow-400!" : "opacity-0 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2"
+        }`}
+      >
         <Star className={`w-3 h-3 ${isFavorite ? "fill-yellow-400 text-yellow-400!" : ""}`} />
       </button>
 
@@ -176,18 +261,41 @@ function EffectCard({ effect, isFavorite, isDownloaded, isDownloading, onFavorit
           <img src={effect.thumbnail} alt={effect.name} className="w-full h-full object-cover rounded-lg" />
         ) : (
           <div className="flex flex-col items-center justify-center h-full w-full bg-linear-to-br from-accent/10 to-accent/0 text-center rounded-lg p-2">
-            <span className="text-4xl filter drop-shadow-[0_4px_8px_rgba(0,0,0,0.3)] group-hover:scale-[1.05] transition-transform duration-300">{getCategoryIcon(effect.category || "aura")}</span>
+            <span className="text-4xl filter drop-shadow-[0_4px_8px_rgba(0,0,0,0.3)] group-hover:scale-[1.05] transition-transform duration-300">
+              {getCategoryIcon(effect.category || "aura")}
+            </span>
           </div>
         )}
       </div>
 
       {/* Footer Title / Apply Button */}
       <div className="flex items-center justify-between w-full mt-0.5 z-10 px-0.5">
-        <span className="text-[9px] text-text-muted font-medium group-hover:text-text-primary transition-colors truncate max-w-[65px]" title={effect.name}>
+        <span
+          className="text-[9px] text-text-muted font-medium group-hover:text-text-primary transition-colors truncate max-w-[65px]"
+          title={effect.name}
+        >
           {effect.name}
         </span>
-        <button onClick={onApply} disabled={isDownloading} className={`w-4 h-4 rounded-full flex items-center justify-center transition-all relative ${isDownloaded ? "bg-accent hover:bg-accent/85 border border-accent text-white cursor-pointer" : isDownloading ? "bg-accent/20 border border-accent cursor-wait" : "bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary cursor-pointer"}`}>
-          {isDownloading ? <div className="w-2 h-2 rounded-full border-2 border-accent border-t-transparent animate-spin" /> : isDownloaded ? <Plus className="w-3 h-3 group-hover:scale-110 transition-transform" /> : <Download className="w-2 h-2 group-hover:scale-115 transition-transform" />}
+        <button
+          onClick={onApply}
+          disabled={!isCompatible || isDownloading}
+          className={`w-4 h-4 rounded-full flex items-center justify-center transition-all relative ${
+            !isCompatible
+              ? "bg-surface/20 border border-border/30 text-text-muted/40 cursor-not-allowed"
+              : isDownloaded
+              ? "bg-accent hover:bg-accent/85 border border-accent text-white cursor-pointer"
+              : isDownloading
+              ? "bg-accent/20 border border-accent cursor-wait"
+              : "bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary cursor-pointer"
+          }`}
+        >
+          {isDownloading ? (
+            <div className="w-2 h-2 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+          ) : isDownloaded ? (
+            <Plus className="w-3 h-3 group-hover:scale-110 transition-transform" />
+          ) : (
+            <Download className="w-2 h-2 group-hover:scale-115 transition-transform" />
+          )}
         </button>
       </div>
     </div>
