@@ -26,6 +26,7 @@ import {
   Ungroup,
   Pencil,
   Link2,
+  Sparkles,
 } from "lucide-react";
 import type { ClipCommand, ClipCommandContext } from "./types";
 import { clipboardService } from "@/core/clipboard/clipboardService";
@@ -41,6 +42,7 @@ import { useMediaJobStore } from "@/store/mediaJobStore";
 import { validateGroupSelection } from "@/core/history/commands/CompoundClipCommands";
 import { formatSplitMessage } from "@/lib/timeline/clipName";
 import { getClipDisplayName } from "@/lib/timeline/clipName";
+import { bakeClymatteClip } from "@/features/body-effects";
 
 function getTargetClipIds(ctx: ClipCommandContext): string[] {
   if (ctx.selectedClipIds.length > 0) {
@@ -533,6 +535,38 @@ export const clipCommands: ClipCommand[] = [
       const clip = ctx.clips.find((c) => c.id === ids[0]);
       if (clip?.mediaId) {
         void useProjectStore.getState().promptRelinkMedia(clip.mediaId);
+      }
+    },
+  },
+  {
+    id: "clip.bakeSubjectMask",
+    label: "Bake Subject Mask (Render in Place)",
+    icon: Sparkles,
+    group: "media",
+    isVisible: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      if (ids.length !== 1) return false;
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      if (!clip) return false;
+      return clip.kind === "video" || (!clip.id.startsWith("text-clip-") && clip.kind !== "text" && clip.kind !== "filter" && clip.kind !== "audio");
+    },
+    isEnabled: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      return !!clip && (clip.kind === "video" || !!clip.mediaId);
+    },
+    execute: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      if (clip) {
+        const asset = clip.mediaId
+          ? useProjectStore.getState().mediaAssets.find((candidate) => candidate.id === clip.mediaId)
+          : undefined;
+        const videoPath = (asset as any)?.path || (asset as any)?.url || clip.mediaId || clip.id;
+        void bakeClymatteClip({
+          clipId: clip.id,
+          videoPath,
+        });
       }
     },
   },
