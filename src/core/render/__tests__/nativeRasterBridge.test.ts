@@ -374,5 +374,67 @@ describe("NativeRasterBridge", () => {
 
     bridge.dispose();
   });
+
+  it("evict() purges cached assets and layer snapshots so subsequent frames re-rasterize", async () => {
+    const scene = {
+      visualLayers: [{ layerType: "text", layerId: "title", x: 10, y: 20, width: 1, height: 1 }],
+      metadata: { canvasWidth: 1920, canvasHeight: 1080 },
+    } as unknown as EvaluatedScene;
+    mocks.rasterizeText.mockResolvedValue({
+      assetId: "native-text:title:hash-1",
+      rgba: [255, 255, 255, 255],
+      width: 1,
+      height: 1,
+      x: 10,
+      y: 20,
+      rotation: 0,
+      opacity: 1,
+      zIndex: 0,
+      blendMode: "normal",
+      isText: true,
+    });
+    const bridge = new NativeRasterBridge();
+
+    const rasters = await bridge.rasterize(scene, { frameKey: 0 });
+    expect(rasters[0].assetId).toBe("native-text:title:hash-1");
+    expect(bridge.getTextSnapshot("title")).toBeDefined();
+
+    // Evict the asset
+    bridge.evict(["native-text:title:hash-1"]);
+    expect(bridge.getTextSnapshot("title")).toBeUndefined();
+
+    bridge.dispose();
+  });
+
+  it("reregister() re-registers text assets and recovers from textCache", async () => {
+    const scene = {
+      visualLayers: [{ layerType: "text", layerId: "title", x: 10, y: 20, width: 1, height: 1 }],
+      metadata: { canvasWidth: 1920, canvasHeight: 1080 },
+    } as unknown as EvaluatedScene;
+    mocks.rasterizeText.mockResolvedValue({
+      assetId: "native-text:title:hash-2",
+      rgba: [255, 255, 255, 255],
+      width: 1,
+      height: 1,
+      x: 10,
+      y: 20,
+      rotation: 0,
+      opacity: 1,
+      zIndex: 0,
+      blendMode: "normal",
+      isText: true,
+    });
+    const bridge = new NativeRasterBridge();
+
+    const rasters = await bridge.rasterize(scene, { frameKey: 0 });
+    expect(mocks.register).toHaveBeenCalledTimes(1);
+
+    // Call reregister
+    const success = await bridge.reregister(rasters);
+    expect(success).toBe(true);
+    expect(mocks.register).toHaveBeenCalledTimes(2);
+
+    bridge.dispose();
+  });
 });
 

@@ -3,6 +3,16 @@ import { getApiHeaders, getApiBaseUrl } from "@/lib/api";
 
 const API_BASE = getApiBaseUrl();
 
+const DEFAULT_CONFIG: BodySegmentationRuntimeConfig = {
+  runtime: "mediapipe",
+  modelUrl: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
+  runtimeScriptUrl: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs",
+  wasmBaseUrl: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm",
+  minConfidence: 0.5,
+  requestTimeoutMs: 8000,
+  cacheMaxEntries: 128,
+};
+
 let configPromise: Promise<BodySegmentationRuntimeConfig> | null = null;
 
 function getEnvValue(key: string): string | undefined {
@@ -39,12 +49,12 @@ async function fetchRemoteConfig(): Promise<BodySegmentationRuntimeConfig> {
 
   return {
     runtime,
-    modelUrl: config.modelUrl,
-    runtimeScriptUrl: config.runtimeScriptUrl,
-    wasmBaseUrl: config.wasmBaseUrl,
-    minConfidence: config.minConfidence,
-    requestTimeoutMs: config.requestTimeoutMs,
-    cacheMaxEntries: config.cacheMaxEntries,
+    modelUrl: config.modelUrl || DEFAULT_CONFIG.modelUrl,
+    runtimeScriptUrl: config.runtimeScriptUrl || DEFAULT_CONFIG.runtimeScriptUrl,
+    wasmBaseUrl: config.wasmBaseUrl || DEFAULT_CONFIG.wasmBaseUrl,
+    minConfidence: config.minConfidence ?? DEFAULT_CONFIG.minConfidence,
+    requestTimeoutMs: config.requestTimeoutMs ?? DEFAULT_CONFIG.requestTimeoutMs,
+    cacheMaxEntries: config.cacheMaxEntries ?? DEFAULT_CONFIG.cacheMaxEntries,
   };
 }
 
@@ -52,10 +62,14 @@ export async function getBodySegmentationConfig(): Promise<BodySegmentationRunti
   if (!configPromise) {
     configPromise = fetchRemoteConfig()
       .catch((error) => {
-        console.warn("[BodySegmentation] Falling back to local runtime config:", error);
-        return { runtime: "heuristic" as const };
+        console.warn("[BodySegmentation] Falling back to default MediaPipe runtime config:", error);
+        return DEFAULT_CONFIG;
       })
-      .then((remoteConfig) => ({ ...remoteConfig, ...envOverrides() }));
+      .then((remoteConfig) => ({
+        ...DEFAULT_CONFIG,
+        ...remoteConfig,
+        ...envOverrides(),
+      }));
   }
 
   return configPromise;

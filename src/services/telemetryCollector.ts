@@ -109,7 +109,65 @@ export type TelemetryOperationMode =
   | "ai-inference"
   | "filmstrip-extraction";
 
-export type TelemetrySubsystem = "preview" | "audio" | "text";
+export type TelemetrySubsystem = "preview" | "audio" | "text" | "sticker";
+
+export type TelemetryStickerFormat = "lottie" | "gif" | "static";
+export type TelemetryStickerRendererPath =
+  | "worker-offscreen"
+  | "native-raster"
+  | "webview-canvas";
+export type TelemetryStickerPhase =
+  | "sticker-prefetch"
+  | "visible-playback"
+  | "interactive-preview";
+export type TelemetryStickerOperation = "render" | "prefetch" | "decode";
+
+export interface TelemetryStickerPercentiles {
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+export interface TelemetryStickerStagePercentiles {
+  decodeUs?: TelemetryStickerPercentiles;
+  rasterUs?: TelemetryStickerPercentiles;
+  readbackUs?: TelemetryStickerPercentiles;
+  transferUs?: TelemetryStickerPercentiles;
+  totalTimeUs?: TelemetryStickerPercentiles;
+}
+
+export interface TelemetryStickerMetrics {
+  format: TelemetryStickerFormat;
+  rendererPath: TelemetryStickerRendererPath;
+  phase: TelemetryStickerPhase;
+  operation: TelemetryStickerOperation;
+  runtimeEnvironment: "development" | "production";
+  windowDurationMs: number;
+  renderCount: number;
+  cacheHits: number;
+  cacheMisses: number;
+  cacheHitRatio: number;
+  layerCount: number;
+  outputPixels: number;
+  renderPercentiles: TelemetryStickerPercentiles;
+  stagePercentiles: TelemetryStickerStagePercentiles;
+}
+
+export interface TelemetryStickerRenderInput {
+  format: TelemetryStickerFormat;
+  rendererPath: TelemetryStickerRendererPath;
+  phase: TelemetryStickerPhase;
+  operation?: TelemetryStickerOperation;
+  sessionId?: string;
+  decodeUs?: number;
+  rasterUs?: number;
+  readbackUs?: number;
+  transferUs?: number;
+  totalTimeUs: number;
+  cacheHit?: boolean;
+  layerCount?: number;
+  outputPixels?: number;
+}
 
 export type TelemetryTextKind = "plain" | "effect" | "template";
 export type TelemetryTextRendererPath =
@@ -306,14 +364,22 @@ export interface TelemetryEvent {
     failureReason?: string;
   };
   aiMetrics?: {
-    task: "auto-reframe" | "whisper-captions" | "silence-detector";
+    task:
+      | "auto-reframe"
+      | "whisper-captions"
+      | "silence-detector"
+      | "body-segmentation"
+      | "subject-cutout";
     inferenceDurationMs: number;
     throughputFps?: number;
     realTimeFactor?: number;
     success: boolean;
+    runtimeUsed?: string;
+    target?: string;
   };
   audioMetrics?: TelemetryAudioMetrics;
   textMetrics?: TelemetryTextMetrics;
+  stickerMetrics?: TelemetryStickerMetrics;
   fallbackEvent?: {
     triggered: boolean;
     fromBackend: string;
@@ -450,6 +516,7 @@ function resolvePerfLogKind(event: TelemetryEvent): PerfLogKind {
   if (event.aiMetrics) return "ai-inference";
   if (event.audioMetrics) return "audio-snapshot";
   if (event.textMetrics) return "text-rollup";
+  if (event.stickerMetrics) return "sticker-rollup";
   if (
     event.workload.mode === "seek-cold" ||
     event.workload.mode === "seek-warm"
@@ -860,6 +927,105 @@ class TextWindowAccumulator {
   }
 }
 
+class StickerWindowAccumulator {
+  private windowStartMs = Date.now();
+  private totalTimeUs: number[] = [];
+  private stages = new Map<string, number[]>();
+  private renderCount = 0;
+  private cacheHits = 0;
+  private cacheMisses = 0;
+  private layerCount = 0;
+  private outputPixels = 0;
+
+  record(input: TelemetryStickerRenderInput): void {
+    this.renderCount += 1;
+    if (input.cacheHit) this.cacheHits += 1;
+    else this.cacheMisses += 1;
+    this.layerCount += Math.max(0, input.layerCount ?? 1);
+    this.outputPixels += Math.max(0, input.outputPixels ?? 0);
+    this.totalTimeUs.push(Math.max(0, input.totalTimeUs));
+    for (const [key, value] of Object.entries({
+      decodeUs: input.decodeUs,
+      rasterUs: input.rasterUs,
+      readbackUs: input.readbackUs,
+      transferUs: input.transferUs,
+      totalTimeUs: input.totalTimeUs,
+    })) {
+      if (typeof value !== "number") continue;
+      const values = this.stages.get(key) || [];
+      if (values.length < 1000) values.push(Math.max(0, value));
+      this.stages.set(key, values);
+    }
+  }
+
+  recordCacheHit(): void {
+    this.cacheHits += 1;
+  }
+
+  shouldEmit(): boolean {
+    return (
+      Date.now() - this.windowStartMs >= (import.meta.env.DEV ? 5000 : 30000) &&
+      this.renderCount > 0
+    );
+  }
+
+  extract():
+    | (Omit<
+        TelemetryStickerMetrics,
+        | "format"
+        | "rendererPath"
+        | "phase"
+        | "runtimeEnvironment"
+        | "windowDurationMs"
+        | "operation"
+      > & { windowStartMs: number; windowDurationMs: number })
+    | null {
+    if (this.renderCount === 0) {
+      this.windowStartMs = Date.now();
+      return null;
+    }
+    const percentile = (values: number[]): TelemetryStickerPercentiles => {
+      if (values.length === 0) return { p50: 0, p95: 0, p99: 0 };
+      const sorted = [...values].sort((a, b) => a - b);
+      const at = (pct: number) =>
+        sorted[
+          Math.min(sorted.length - 1, Math.round((sorted.length - 1) * pct))
+        ] ?? 0;
+      return { p50: at(0.5), p95: at(0.95), p99: at(0.99) };
+    };
+    const stagePercentiles: TelemetryStickerStagePercentiles = {};
+    for (const [key, values] of this.stages) {
+      stagePercentiles[key as keyof TelemetryStickerStagePercentiles] =
+        percentile(values);
+    }
+    const result = {
+      windowStartMs: this.windowStartMs,
+      windowDurationMs: Math.max(1, Date.now() - this.windowStartMs),
+      renderCount: this.renderCount,
+      cacheHits: this.cacheHits,
+      cacheMisses: this.cacheMisses,
+      cacheHitRatio: Number(
+        (
+          this.cacheHits / Math.max(1, this.cacheHits + this.cacheMisses)
+        ).toFixed(4),
+      ),
+      layerCount: this.layerCount,
+      outputPixels: this.outputPixels,
+      renderPercentiles: percentile(this.totalTimeUs),
+      stagePercentiles,
+    };
+    this.windowStartMs = Date.now();
+    this.totalTimeUs = [];
+    this.stages.clear();
+    this.renderCount = 0;
+    this.cacheHits = 0;
+    this.cacheMisses = 0;
+    this.layerCount = 0;
+    this.outputPixels = 0;
+    return result;
+  }
+}
+
 class TelemetryCollector {
   private queue: TelemetryEvent[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -875,7 +1041,9 @@ class TelemetryCollector {
   private reportedNativeMeasurementIds = new Set<string>();
   private reportedAudioMeasurementIds = new Set<string>();
   private reportedTextMeasurementIds = new Set<string>();
+  private reportedStickerMeasurementIds = new Set<string>();
   private textAccumulators = new Map<string, TextWindowAccumulator>();
+  private stickerAccumulators = new Map<string, StickerWindowAccumulator>();
   private transportStatus: TelemetryTransportStatus = {
     // Batch endpoint is gone — all data flows through perfLogService session file.
     endpoint: "session-file",
@@ -896,6 +1064,7 @@ class TelemetryCollector {
         if (document.visibilityState === "hidden") {
           this.flushRollupIfPending();
           this.flushTextWindowsIfPending();
+          this.flushStickerWindowsIfPending();
           this.flush();
         }
       });
@@ -1411,6 +1580,136 @@ class TelemetryCollector {
   }
 
   /**
+   * Records one sticker render into a bounded in-memory cohort window.
+   */
+  public recordStickerRender(input: TelemetryStickerRenderInput): void {
+    if (!this.isEnabled || input.totalTimeUs < 0) return;
+    const runtimeEnvironment = import.meta.env.DEV
+      ? "development"
+      : "production";
+    const key = JSON.stringify([
+      input.sessionId || "sticker-runtime",
+      input.format,
+      input.rendererPath,
+      input.phase,
+      input.operation || "render",
+      runtimeEnvironment,
+    ]);
+    let accumulator = this.stickerAccumulators.get(key);
+    if (!accumulator) {
+      accumulator = new StickerWindowAccumulator();
+      this.stickerAccumulators.set(key, accumulator);
+    }
+    accumulator.record(input);
+    if (accumulator.shouldEmit()) this.flushStickerWindowsIfPending();
+  }
+
+  public recordStickerCacheHit(
+    input: Pick<
+      TelemetryStickerRenderInput,
+      "format" | "rendererPath" | "phase" | "sessionId"
+    >,
+  ): void {
+    if (!this.isEnabled) return;
+    const runtimeEnvironment = import.meta.env.DEV
+      ? "development"
+      : "production";
+    const key = JSON.stringify([
+      input.sessionId || "sticker-runtime",
+      input.format,
+      input.rendererPath,
+      input.phase,
+      "render",
+      runtimeEnvironment,
+    ]);
+    let accumulator = this.stickerAccumulators.get(key);
+    if (!accumulator) {
+      accumulator = new StickerWindowAccumulator();
+      this.stickerAccumulators.set(key, accumulator);
+    }
+    accumulator.recordCacheHit();
+  }
+
+  public flushStickerWindowsIfPending(): void {
+    for (const [key, accumulator] of this.stickerAccumulators) {
+      if (!accumulator.shouldEmit()) continue;
+      const values = JSON.parse(key) as [
+        string,
+        TelemetryStickerFormat,
+        TelemetryStickerRendererPath,
+        TelemetryStickerPhase,
+        TelemetryStickerOperation,
+        "development" | "production",
+      ];
+      const [
+        sessionId,
+        format,
+        rendererPath,
+        phase,
+        operation,
+        runtimeEnvironment,
+      ] = values;
+      const summary = accumulator.extract();
+      if (!summary) continue;
+      const measurementId = `sticker:${sessionId}:${format}:${rendererPath}:${phase}:${operation}:${summary.windowStartMs}`;
+      if (this.reportedStickerMeasurementIds.has(measurementId)) continue;
+      if (this.reportedStickerMeasurementIds.size >= 10000) {
+        const oldest = this.reportedStickerMeasurementIds.values().next().value;
+        if (oldest) this.reportedStickerMeasurementIds.delete(oldest);
+      }
+      this.reportedStickerMeasurementIds.add(measurementId);
+      const totalTimeUs = summary.renderPercentiles.p95;
+      this.enqueueEvent({
+        eventId: `evt_sticker_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        measurementId,
+        measurementSource: "session-rollup",
+        sampleKind: "window-rollup",
+        subsystem: "sticker",
+        sessionId,
+        appVersion: this.appVersion,
+        appBuildNumber: import.meta.env.MODE || "prod",
+        appEnvironment: import.meta.env.DEV ? "beta" : "production",
+        device: this.initHardwareContext(),
+        video: this.sanitizeVideoProfile({ nominalFps: 60 }),
+        workload: {
+          mode: phase === "interactive-preview" ? "frame-step" : "playback",
+          durationMs: Math.round(summary.windowDurationMs),
+          targetFps: 60,
+          renderedFps:
+            totalTimeUs > 0 ? Math.min(60, 1_000_000 / totalTimeUs) : 60,
+          totalFrames: summary.renderCount,
+          droppedFrames: 0,
+          droppedFramesRatio: 0,
+          staleFrames: 0,
+          cancelledFrames: 0,
+          peakRamMb: 0,
+          cacheHitRatio: summary.cacheHitRatio,
+          stageTimings: { totalTimeUs },
+          renderPercentiles: summary.renderPercentiles,
+          isSessionRollup: true,
+        },
+        stickerMetrics: {
+          format,
+          rendererPath,
+          phase,
+          operation,
+          runtimeEnvironment,
+          windowDurationMs: summary.windowDurationMs,
+          renderCount: summary.renderCount,
+          cacheHits: summary.cacheHits,
+          cacheMisses: summary.cacheMisses,
+          cacheHitRatio: summary.cacheHitRatio,
+          layerCount: summary.layerCount,
+          outputPixels: summary.outputPixels,
+          renderPercentiles: summary.renderPercentiles,
+          stagePercentiles: summary.stagePercentiles,
+        },
+        timestampMs: Date.now(),
+      });
+    }
+  }
+
+  /**
    * Records one completed user interaction as a bounded text event. Pointer
    * movement stays local; only the completed burst is sent to the API.
    */
@@ -1637,11 +1936,18 @@ class TelemetryCollector {
    * Records an AI / Smart Feature inference task (Whisper, Auto-Reframe, Silence detection).
    */
   public recordAIInferenceSpan(
-    task: "auto-reframe" | "whisper-captions" | "silence-detector",
+    task:
+      | "auto-reframe"
+      | "whisper-captions"
+      | "silence-detector"
+      | "body-segmentation"
+      | "subject-cutout",
     inferenceDurationMs: number,
     throughputFps?: number,
     realTimeFactor?: number,
     success: boolean = true,
+    runtimeUsed?: string,
+    target?: string,
   ): void {
     if (!this.isEnabled) return;
 
@@ -1675,6 +1981,8 @@ class TelemetryCollector {
         throughputFps,
         realTimeFactor,
         success,
+        runtimeUsed,
+        target,
       },
       timestampMs: Date.now(),
     };
@@ -1904,6 +2212,7 @@ class TelemetryCollector {
       });
     }
     this.flushTextWindowsIfPending();
+    this.flushStickerWindowsIfPending();
   }
 
   private getRollupAccumulator(
@@ -1945,6 +2254,7 @@ class TelemetryCollector {
     this.flushTimer = setInterval(() => {
       this.flushRollupIfPending();
       this.flushTextWindowsIfPending();
+      this.flushStickerWindowsIfPending();
       this.flush();
     }, FLUSH_INTERVAL_MS);
   }

@@ -2,9 +2,18 @@ import type { BodySegmentationRequest, BodySegmentationResponse, BodySegmentatio
 
 declare const self: {
   ort?: any;
+  document?: any;
   onmessage: ((event: MessageEvent<BodySegmentationRequest>) => void | Promise<void>) | null;
   postMessage: (message: BodySegmentationResponse) => void;
 };
+
+// WebKit in Worker safeguard (MediaPipe Issue #5292):
+// On WKWebView, MediaPipe's Ph() helper fails to detect Safari version, falling back to document.createElement("canvas").
+if (typeof (self as any).document === "undefined" && typeof OffscreenCanvas !== "undefined") {
+  (self as any).document = {
+    createElement: (tag: string) => (tag === "canvas" ? new OffscreenCanvas(1, 1) : null),
+  };
+}
 
 let loadedRuntimeScriptUrl: string | null = null;
 let onnxSession: any = null;
@@ -105,6 +114,7 @@ async function segmentWithMediaPipe(request: BodySegmentationRequest): Promise<I
       runningMode: "IMAGE",
       outputCategoryMask: true,
       outputConfidenceMasks: true,
+      canvas: typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(1, 1) : undefined,
     });
     mediaPipeConfigKey = configKey;
   }
