@@ -1664,7 +1664,9 @@ async fn render_native_video_project_frame_bytes_timed(
     // shared NT handles and import them into wgpu directly without an
     // `av_hwframe_transfer_data` (VRAM→RAM) + `queue.write_texture` (RAM→VRAM) round-trip.
     #[cfg(target_os = "windows")]
-    let dxgi_frames_result = if !request.layers.is_empty() {
+    let dxgi_frames_result = if !request.layers.is_empty()
+        && std::env::var("CLYPRA_DISABLE_DXGI_ZERO_COPY").as_deref() != Ok("1")
+    {
         use crate::thumbnail_engine::decoder::DecodeFrameOptions;
         let decode_options = DecodeFrameOptions {
             allow_keyframe_approx: request.allow_keyframe_approx.unwrap_or(false)
@@ -1740,45 +1742,51 @@ async fn render_native_video_project_frame_bytes_timed(
 
     #[cfg(target_os = "windows")]
     if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
-        use crate::wgpu_compositor::dxgi_import;
-        let mut import_all_ok = true;
-        for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
-            let layer_key = if !layer.layer_id.is_empty() {
-                &layer.layer_id
-            } else {
-                &layer.video_path
-            };
-            let params = match color_params(&color) {
-                Ok(p) => p,
-                Err(_) => {
-                    import_all_ok = false;
-                    break;
-                }
-            };
-            if let Some(imported) = dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
-                match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
-                    Ok(texture) => {
-                        views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                        textures.push(texture);
-                    }
+        if !session.gpu.device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+            log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12");
+        } else {
+            use crate::wgpu_compositor::dxgi_import;
+            let mut import_all_ok = true;
+            for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
+                let layer_key = if !layer.layer_id.is_empty() {
+                    &layer.layer_id
+                } else {
+                    &layer.video_path
+                };
+                let params = match color_params(&color) {
+                    Ok(p) => p,
                     Err(_) => {
                         import_all_ok = false;
                         break;
                     }
+                };
+                if let Some(imported) = dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
+                    match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
+                        Ok(texture) => {
+                            views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                            textures.push(texture);
+                        }
+                        Err(e) => {
+                            log::warn!("DXGI imported texture render failed for layer {}: {}", layer_key, e);
+                            import_all_ok = false;
+                            break;
+                        }
+                    }
+                } else {
+                    log::warn!("DXGI import_into_wgpu returned None for layer {}", layer_key);
+                    import_all_ok = false;
+                    break;
                 }
-            } else {
-                import_all_ok = false;
-                break;
             }
-        }
 
-        if import_all_ok {
-            decode_time_us = max_dec_us;
-            decoder_mutex_wait_us = total_wait_us;
-            dxgi_active = true;
-        } else {
-            views.clear();
-            textures.clear();
+            if import_all_ok {
+                decode_time_us = max_dec_us;
+                decoder_mutex_wait_us = total_wait_us;
+                dxgi_active = true;
+            } else {
+                views.clear();
+                textures.clear();
+            }
         }
     }
 

@@ -525,7 +525,7 @@ impl NativePreviewSession {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            pass.draw(0..6, 0..1);
         }
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
 

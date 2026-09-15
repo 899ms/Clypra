@@ -142,6 +142,9 @@ impl GpuContext {
         if available_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
             required_features |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
         }
+        if available_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
+        }
 
         let (device, queue) = best_adapter
             .request_device(
