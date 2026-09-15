@@ -1132,6 +1132,12 @@ fn color_grade_from_snapshot(snapshot: Option<&ColorGradeSnapshot>) -> ColorGrad
         particle_params: grade.particle_params,
         particle_color: grade.particle_color,
         particle_time: [grade.particle_time, 0.0, 0.0, 0.0],
+        chromatic_params: [
+            grade.chromatic_amount,
+            grade.chromatic_angle,
+            grade.chromatic_edge_feather,
+            if grade.chromatic_amount > 0.0 { 1.0 } else { 0.0 },
+        ],
         ..ColorGradeUniforms::default()
     })
 }

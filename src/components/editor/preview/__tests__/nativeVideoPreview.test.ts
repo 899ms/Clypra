@@ -577,6 +577,9 @@ describe("buildNativeVideoProjectRequest", () => {
       lightLeakStrength: 0,
       lightLeakAngle: Math.PI / 4,
       lightLeakTime: 0,
+      chromaticAmount: 0,
+      chromaticAngle: 0,
+      chromaticEdgeFeather: 0,
     });
   });
 

@@ -26,7 +26,8 @@ const SIDEBAR_TABS = [
   { id: "media" as const, icon: YouTubeIcon, label: "Media" },
   { id: "audio" as const, icon: Music, label: "Audio" },
   { id: "text" as const, icon: TextIcon, label: "Text" },
-  { id: "smart-overlays" as const, icon: Sparkles, label: "Overlays" },
+  // Overlays tab hidden for now
+  // { id: "smart-overlays" as const, icon: Sparkles, label: "Overlays" },
   { id: "stickers" as const, icon: Smile, label: "Stickers" },
   { id: "effects" as const, icon: Wand2, label: "Effects" },
   { id: "filters" as const, icon: Filter, label: "Filters" },
@@ -49,11 +50,12 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   onToggleCollapse,
   className = "",
 }) => {
-  const [activeTab, setActiveTab] = useState<TabType>(initialTab);
+  const resolvedInitialTab = initialTab === "smart-overlays" ? "media" : initialTab;
+  const [activeTab, setActiveTab] = useState<TabType>(resolvedInitialTab);
 
   React.useEffect(() => {
-    setActiveTab(initialTab);
-  }, [initialTab]);
+    setActiveTab(resolvedInitialTab);
+  }, [resolvedInitialTab]);
 
   return (
     <div
