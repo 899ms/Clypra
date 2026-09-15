@@ -334,6 +334,12 @@ pub struct ColorGradeSnapshot {
     pub particle_color: [f32; 4],
     #[serde(default)]
     pub particle_time: f32,
+    #[serde(default)]
+    pub chromatic_amount: f32,
+    #[serde(default)]
+    pub chromatic_angle: f32,
+    #[serde(default)]
+    pub chromatic_edge_feather: f32,
 }
 
 fn default_color_grade_multiplier() -> f32 {

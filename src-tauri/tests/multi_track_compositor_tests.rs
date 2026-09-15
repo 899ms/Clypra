@@ -83,6 +83,37 @@ impl HeadlessGpuContext {
         (texture, view)
     }
 
+    /// Helper to allocate a test texture with custom RGBA8 data
+    pub fn create_custom_texture(
+        &self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("Custom RGBA8 Test Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            data,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
     /// Read raw RGBA bytes back from any 2D texture
     pub async fn read_texture_bytes(
         &self,
@@ -1313,4 +1344,218 @@ async fn test_burned_in_caption_preview_vs_export_pixel_parity() {
         max_diff
     );
 }
+
+// -----------------------------------------------------------------------------
+// Test 14: Chromatic Aberration GPU Render & Channel Divergence Verification
+// -----------------------------------------------------------------------------
+#[tokio::test]
+#[ignore = "requires GPU hardware — run with cargo test -- --ignored"]
+async fn test_chromatic_aberration_render() {
+    let ctx = HeadlessGpuContext::new().await;
+    let width = 256;
+    let height = 256;
+
+    let compositor = MultiTrackCompositor::new(&ctx.device, &ctx.queue, width, height);
+
+    // Create a sharp vertical step texture: left half black [0, 0, 0, 255], right half white [255, 255, 255, 255]
+    let mut step_data = Vec::with_capacity((width * height * 4) as usize);
+    for _y in 0..height {
+        for x in 0..width {
+            if x < width / 2 {
+                step_data.extend_from_slice(&[0, 0, 0, 255]);
+            } else {
+                step_data.extend_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+    }
+
+    let (_step_tex, step_view) = ctx.create_custom_texture(width, height, &step_data);
+
+    // Case 1: Disabled (chromatic_params = [0.0, 0.0, 0.0, 0.0])
+    let layer_disabled = vec![CompositeLayer {
+        texture_view: &step_view,
+        lut: None,
+        z_index: 0,
+        opacity: 1.0,
+        blend_mode: BlendMode::Normal,
+        transform: LayerTransform::default(),
+        crop: CropMargins::default(),
+        color_grade: ColorGradeUniforms {
+            chromatic_params: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        },
+        chroma_key: ChromaKeyUniforms::default(),
+        mask_view: None,
+        body_effect: BodyEffectUniforms::default(),
+    }];
+
+    let out_disabled = compositor
+        .render_to_rgba_bytes(&ctx.device, &ctx.queue, &layer_disabled)
+        .await
+        .expect("Render disabled chromatic aberration failed");
+
+    // When disabled, Red and Blue channels MUST be identical across every single pixel (R == B)
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = get_pixel(&out_disabled, width, x, y);
+            assert_eq!(
+                pixel[0], pixel[2],
+                "When chromatic aberration is disabled, R must equal B at ({x}, {y})"
+            );
+        }
+    }
+
+    // Case 2: Active Horizontal Shift (amount = 12.0, angle = 0.0 deg, edge_feather = 0.0, enabled = 1.0)
+    let layer_aberration = vec![CompositeLayer {
+        texture_view: &step_view,
+        lut: None,
+        z_index: 0,
+        opacity: 1.0,
+        blend_mode: BlendMode::Normal,
+        transform: LayerTransform::default(),
+        crop: CropMargins::default(),
+        color_grade: ColorGradeUniforms {
+            chromatic_params: [12.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        chroma_key: ChromaKeyUniforms::default(),
+        mask_view: None,
+        body_effect: BodyEffectUniforms::default(),
+    }];
+
+    let out_aberration = compositor
+        .render_to_rgba_bytes(&ctx.device, &ctx.queue, &layer_aberration)
+        .await
+        .expect("Render active chromatic aberration failed");
+
+    // Inspect the boundary region around x = 128 (width / 2)
+    // At x = 120 (8 pixels to the left of boundary):
+    // Red samples x + 12 = 132 (white area), while Blue samples x - 12 = 108 (black area)
+    let pixel_red_fringe = get_pixel(&out_aberration, width, 120, height / 2);
+    assert!(
+        pixel_red_fringe[0] > 200,
+        "Red channel should be shifted into the left region, expected > 200, got {}",
+        pixel_red_fringe[0]
+    );
+    assert!(
+        pixel_red_fringe[2] < 50,
+        "Blue channel should remain zero in the left region, expected < 50, got {}",
+        pixel_red_fringe[2]
+    );
+    assert_ne!(
+        pixel_red_fringe[0], pixel_red_fringe[2],
+        "R and B channels must physically diverge at edge boundary"
+    );
+
+    // At x = 136 (8 pixels to the right of boundary):
+    // Red samples x + 12 = 148 (white area), while Blue samples x - 12 = 124 (black area)
+    let pixel_yellow_fringe = get_pixel(&out_aberration, width, 136, height / 2);
+    assert!(
+        pixel_yellow_fringe[0] > 200,
+        "Red channel should remain white, expected > 200, got {}",
+        pixel_yellow_fringe[0]
+    );
+    assert!(
+        pixel_yellow_fringe[2] < 50,
+        "Blue channel should lag in black region, expected < 50, got {}",
+        pixel_yellow_fringe[2]
+    );
+
+    // Count diverging pixels (|R - B| > 100) across the whole frame
+    let mut diverging_pixel_count = 0usize;
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = get_pixel(&out_aberration, width, x, y);
+            let diff = (pixel[0] as i16 - pixel[2] as i16).abs();
+            if diff > 100 {
+                diverging_pixel_count += 1;
+            }
+        }
+    }
+    println!("Detected {diverging_pixel_count} diverging R != B pixels across 256x256 frame");
+    assert!(
+        diverging_pixel_count >= 256 * 20,
+        "Expected at least 256*20 diverging pixels along the 24px wide transition zone, got {diverging_pixel_count}"
+    );
+
+    // Case 3: Angle Rotation Test (amount = 12.0, angle = 90.0 deg [vertical], edge_feather = 0.0, enabled = 1.0)
+    // Because the step edge is purely vertical (x-axis), a 90-degree shift moves along the y-axis,
+    // which has identical colors and therefore produces NO horizontal channel divergence!
+    let layer_vertical = vec![CompositeLayer {
+        texture_view: &step_view,
+        lut: None,
+        z_index: 0,
+        opacity: 1.0,
+        blend_mode: BlendMode::Normal,
+        transform: LayerTransform::default(),
+        crop: CropMargins::default(),
+        color_grade: ColorGradeUniforms {
+            chromatic_params: [12.0, 90.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        chroma_key: ChromaKeyUniforms::default(),
+        mask_view: None,
+        body_effect: BodyEffectUniforms::default(),
+    }];
+
+    let out_vertical = compositor
+        .render_to_rgba_bytes(&ctx.device, &ctx.queue, &layer_vertical)
+        .await
+        .expect("Render 90 deg chromatic aberration failed");
+
+    let mut vertical_diverging_count = 0usize;
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = get_pixel(&out_vertical, width, x, y);
+            let diff = (pixel[0] as i16 - pixel[2] as i16).abs();
+            if diff > 100 {
+                vertical_diverging_count += 1;
+            }
+        }
+    }
+    assert_eq!(
+        vertical_diverging_count, 0,
+        "90-degree shift along vertical step edge must yield 0 diverging R!=B pixels (got {vertical_diverging_count})"
+    );
+
+    // Case 4: Edge Feather Test (amount = 12.0, angle = 0.0 deg, edge_feather = 1.0, enabled = 1.0)
+    // With edge_feather = 1.0, the aberration is attenuated at the frame center (uv = [0.5, 0.5])
+    // and full strength at the frame edges.
+    let layer_feathered = vec![CompositeLayer {
+        texture_view: &step_view,
+        lut: None,
+        z_index: 0,
+        opacity: 1.0,
+        blend_mode: BlendMode::Normal,
+        transform: LayerTransform::default(),
+        crop: CropMargins::default(),
+        color_grade: ColorGradeUniforms {
+            chromatic_params: [12.0, 0.0, 1.0, 1.0],
+            ..Default::default()
+        },
+        chroma_key: ChromaKeyUniforms::default(),
+        mask_view: None,
+        body_effect: BodyEffectUniforms::default(),
+    }];
+
+    let out_feathered = compositor
+        .render_to_rgba_bytes(&ctx.device, &ctx.queue, &layer_feathered)
+        .await
+        .expect("Render feathered chromatic aberration failed");
+
+    // Center pixel at y = 128: feather_factor == 0.0, offset == 0, R == B
+    let center_pixel = get_pixel(&out_feathered, width, 120, 128);
+    let center_diff = (center_pixel[0] as i16 - center_pixel[2] as i16).abs();
+
+    // Edge pixel at y = 5: feather_factor near 1.0, offset near 12px, R != B
+    let edge_pixel = get_pixel(&out_feathered, width, 120, 5);
+    let edge_diff = (edge_pixel[0] as i16 - edge_pixel[2] as i16).abs();
+
+    println!("Edge feather test: center divergence = {center_diff}, edge divergence = {edge_diff}");
+    assert!(
+        edge_diff > center_diff + 50,
+        "Edge divergence ({edge_diff}) must significantly exceed center divergence ({center_diff}) under edge_feather = 1.0"
+    );
+}
+
 

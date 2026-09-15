@@ -35,7 +35,7 @@ function envOverrides(): Partial<BodySegmentationRuntimeConfig> {
 }
 
 async function fetchRemoteConfig(): Promise<BodySegmentationRuntimeConfig> {
-  const response = await fetch(`${API_BASE}/effects/segmentation-config`, {
+  const response = await fetch(`${API_BASE}/body-effects/segmentation-config`, {
     cache: "reload",
     headers: getApiHeaders(),
   });

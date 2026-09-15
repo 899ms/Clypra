@@ -379,6 +379,9 @@ export interface NativeColorGradeSnapshot {
   scanlineIntensity: number;
   rgbSplitX: number;
   rgbSplitY: number;
+  chromaticAmount?: number;
+  chromaticAngle?: number;
+  chromaticEdgeFeather?: number;
   vibranceAmount: number;
   vibranceProtectedHueR: number;
   vibranceProtectedHueG: number;

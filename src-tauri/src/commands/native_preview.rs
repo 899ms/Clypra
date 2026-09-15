@@ -19,8 +19,11 @@ use crate::thumbnail_engine::decoder::{
 use crate::wgpu_compositor::multi_track_composer::TransitionUniforms;
 use crate::wgpu_compositor::{
     BlendMode, BodyEffectUniforms, ChromaKeyUniforms, ColorGradeUniforms, ColorTransformUniforms,
-    CompositeLayer, CropMargins, LayerTransform, NativePreviewSession, NativeWgpuRenderer,
+    CompositeLayer, CropMargins, FrameRenderPath, LayerTransform, NativePreviewSession,
+    NativeWgpuRenderer,
 };
+#[cfg(target_os = "windows")]
+use crate::wgpu_compositor::DxgiImportState;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -1132,6 +1135,12 @@ fn color_grade_from_snapshot(snapshot: Option<&ColorGradeSnapshot>) -> ColorGrad
         particle_params: grade.particle_params,
         particle_color: grade.particle_color,
         particle_time: [grade.particle_time, 0.0, 0.0, 0.0],
+        chromatic_params: [
+            grade.chromatic_amount,
+            grade.chromatic_angle,
+            grade.chromatic_edge_feather,
+            if grade.chromatic_amount > 0.0 { 1.0 } else { 0.0 },
+        ],
         ..ColorGradeUniforms::default()
     })
 }
@@ -1653,12 +1662,20 @@ async fn render_native_video_project_frame_bytes_timed(
     let mut decode_time_us = 0u32;
     let mut decoder_mutex_wait_us = 0u64;
 
-    // ── Windows Phase 2: zero-copy D3D11VA → DXGI → wgpu ─────────────────────
-    // On Windows with D3D11VA hardware decode, attempt to decode frames into DXGI
-    // shared NT handles and import them into wgpu directly without an
-    // `av_hwframe_transfer_data` (VRAM→RAM) + `queue.write_texture` (RAM→VRAM) round-trip.
+    // ── Capability-Negotiated Render Path Selection ───────────────────────────
+    // Before decoding, inspect the session's negotiated DXGI state. If zero-copy
+    // has previously failed or was disabled, immediately bypass DXGI extraction
+    // and proceed directly via the GpuUploadRing / CPU transfer fallback.
     #[cfg(target_os = "windows")]
-    let dxgi_frames_result = if !request.layers.is_empty() {
+    let can_attempt_dxgi = !request.layers.is_empty()
+        && {
+            let session = state.lock().await;
+            session.dxgi_state == DxgiImportState::Unknown
+                || session.dxgi_state == DxgiImportState::Supported
+        };
+
+    #[cfg(target_os = "windows")]
+    let dxgi_frames_result = if can_attempt_dxgi {
         use crate::thumbnail_engine::decoder::DecodeFrameOptions;
         let decode_options = DecodeFrameOptions {
             allow_keyframe_approx: request.allow_keyframe_approx.unwrap_or(false)
@@ -1729,57 +1746,67 @@ async fn render_native_video_project_frame_bytes_timed(
     let gpu = Arc::clone(&session.gpu);
     let conversion_started = Instant::now();
 
-    #[cfg(target_os = "windows")]
-    let mut dxgi_active = false;
+    #[allow(unused_mut)]
+    let mut render_path = FrameRenderPath::GpuUploadRing;
 
     #[cfg(target_os = "windows")]
     if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
-        use crate::wgpu_compositor::dxgi_import;
-        let mut import_all_ok = true;
-        for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
-            let layer_key = if !layer.layer_id.is_empty() {
-                &layer.layer_id
-            } else {
-                &layer.video_path
-            };
-            let params = match color_params(&color) {
-                Ok(p) => p,
-                Err(_) => {
-                    import_all_ok = false;
-                    break;
-                }
-            };
-            if let Some(imported) = dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
-                match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
-                    Ok(texture) => {
-                        views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                        textures.push(texture);
-                    }
-                    Err(_) => {
+        if !session.gpu.capabilities.wgpu_nv12 {
+            log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12. Latching DXGI to Failed.");
+            session.dxgi_state = DxgiImportState::Failed;
+        } else {
+            use crate::wgpu_compositor::dxgi_import;
+            let mut import_all_ok = true;
+            for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
+                let layer_key = if !layer.layer_id.is_empty() {
+                    &layer.layer_id
+                } else {
+                    &layer.video_path
+                };
+                let params = match color_params(&color) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("Color param generation failed for layer {}: {}. Latching DXGI to Failed.", layer_key, e);
+                        session.dxgi_state = DxgiImportState::Failed;
                         import_all_ok = false;
                         break;
                     }
+                };
+                if let Some(imported) = dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
+                    match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
+                        Ok(texture) => {
+                            views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                            textures.push(texture);
+                        }
+                        Err(e) => {
+                            log::warn!("DXGI imported texture render failed for layer {}: {}. Latching DXGI to Failed.", layer_key, e);
+                            session.dxgi_state = DxgiImportState::Failed;
+                            import_all_ok = false;
+                            break;
+                        }
+                    }
+                } else {
+                    log::warn!("DXGI import_into_wgpu returned None for layer {}. Latching DXGI to Failed.", layer_key);
+                    session.dxgi_state = DxgiImportState::Failed;
+                    import_all_ok = false;
+                    break;
                 }
-            } else {
-                import_all_ok = false;
-                break;
             }
-        }
 
-        if import_all_ok {
-            decode_time_us = max_dec_us;
-            decoder_mutex_wait_us = total_wait_us;
-            dxgi_active = true;
-        } else {
-            views.clear();
-            textures.clear();
+            if import_all_ok {
+                decode_time_us = max_dec_us;
+                decoder_mutex_wait_us = total_wait_us;
+                session.dxgi_state = DxgiImportState::Supported;
+                render_path = FrameRenderPath::ZeroCopyDxgi;
+            } else {
+                views.clear();
+                textures.clear();
+                render_path = FrameRenderPath::GpuUploadRing;
+            }
         }
     }
 
-    #[cfg(target_os = "windows")]
-    let need_cpu_decode = !dxgi_active;
-    #[cfg(not(target_os = "windows"))]
-    let need_cpu_decode = true;
+    let need_cpu_decode = render_path != FrameRenderPath::ZeroCopyDxgi;
 
     if need_cpu_decode {
         // Decode before taking the GPU session lock so a slow seek cannot block

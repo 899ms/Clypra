@@ -125,8 +125,10 @@ const NATIVE_BODY_EFFECT_RENDERERS = new Set([
   "subject_cutout",
 ]);
 const NATIVE_VIDEO_EFFECT_RENDERERS = new Set([
-  "blur", "pixelate", "scanlines", "rgb_split", "chromatic_aberration", "chromatic",
-  "vhs", "glitch", "wave", "ripple", "bulge", "twist", "fisheye", "crt", "film_grain", "grain",
+  "blur", "pixelate", "scanlines", "rgb_split", "rgb-split", "rgbsplit",
+  "chromatic_aberration", "chromatic", "chromatic-aberration", "chromaticaberration",
+  "vhs", "glitch", "wave", "ripple", "bulge", "twist", "fisheye", "crt",
+  "film_grain", "film-grain", "filmgrain", "grain",
   "vignette", "glow", "flash", "flicker", "strobe", "light_leak", "light_leak_2",
   "body_outline", "body_glow", "body_segmentation_glow", "body_particles",
   "body_cutout", "subject_cutout",
@@ -464,8 +466,9 @@ function getNativeColorGrade(
   ]);
   if (preset && Object.keys(preset).some((key) => !nativePresetKeys.has(key))) return null;
   if (activeEffects.some((effect) => {
-    const renderer = (effect.renderer || effect.effectId).replace(/^fx-/, "").replace(/-/g, "_").toLowerCase();
-    return !NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer);
+    const rawRenderer = (effect as any).compositing?.primitive || effect.renderer || effect.effectId;
+    const renderer = String(rawRenderer).replace(/^fx-/, "").replace(/-/g, "_").toLowerCase();
+    return !NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer) && !NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer.replace(/_/g, ""));
   })) return null;
   const blurEffects = activeEffects.filter((effect) => {
     const renderer = (effect.renderer || effect.effectId).replace(/^fx-/, "").replace(/-/g, "_").toLowerCase();
@@ -481,6 +484,9 @@ function getNativeColorGrade(
   let scanlineIntensity = 0;
   let rgbSplitX = 0;
   let rgbSplitY = 0;
+  let chromaticAmount = 0;
+  let chromaticAngle = 0;
+  let chromaticEdgeFeather = 0;
   let effectGrainIntensity = 0;
   let effectGrainSize = 1;
   let effectVignette = 0;
@@ -534,24 +540,63 @@ function getNativeColorGrade(
       glitchSliceCount = Math.max(glitchSliceCount, Math.min(64, sliceCount));
       glitchColorShift = Math.max(glitchColorShift, colorShift * effect.intensity);
       glitchTime = Math.max(glitchTime, effect.localTime);
-    } else if (renderer === "pixelate") {
-      const amount = Number(effect.parameters.pixelSize ?? 18);
+    } else if (
+      (effect as any).compositing?.primitive === "Pixelate" ||
+      renderer === "pixelate" ||
+      effect.effectId === "pixelate"
+    ) {
+      const amount = Number(effect.parameters.pixelSize ?? effect.parameters.amount ?? 18);
       if (!Number.isFinite(amount) || amount < 0) return null;
       pixelateSize = Math.max(pixelateSize, Math.max(2, Math.floor(amount * effect.intensity)));
-    } else if (renderer === "scanlines") {
+    } else if (
+      (effect as any).compositing?.primitive === "Scanlines" ||
+      renderer === "scanlines" ||
+      effect.effectId === "scanlines"
+    ) {
       const count = Number(effect.parameters.scanlineCount ?? 120);
-      if (!Number.isFinite(count) || count <= 0) return null;
+      const intensity = effect.parameters.scanlineIntensity !== undefined
+        ? Number(effect.parameters.scanlineIntensity) * effect.intensity
+        : effect.intensity;
+      if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(intensity) || intensity < 0) return null;
       scanlineCount = Math.max(scanlineCount, count);
-      scanlineIntensity = Math.max(scanlineIntensity, effect.intensity);
-    } else if (renderer === "rgb_split" || renderer === "chromatic_aberration" || renderer === "chromatic") {
-      const shift = Number(effect.parameters.rgbSplit ?? effect.parameters.splitDistance ?? 8);
-      if (!Number.isFinite(shift) || shift < 0) return null;
-      const scaledShift = shift * effect.intensity;
-      rgbSplitX = Math.max(rgbSplitX, scaledShift);
-      rgbSplitY = Math.max(rgbSplitY, scaledShift);
-    } else if (renderer === "film_grain" || renderer === "grain") {
-      const intensity = Number(effect.parameters.grainIntensity ?? 0.1);
-      const size = Number(effect.parameters.grainSize ?? 1);
+      scanlineIntensity = Math.max(scanlineIntensity, intensity);
+    } else if (
+      (effect as any).compositing?.primitive === "ChromaticAberration" ||
+      renderer === "chromatic_aberration" ||
+      renderer === "chromatic" ||
+      renderer === "chromaticaberration" ||
+      effect.effectId === "chromatic-aberration" ||
+      (effect as any).id === "chromatic-aberration"
+    ) {
+      const amount = Number(effect.parameters.amount ?? effect.parameters.splitDistance ?? effect.parameters.rgbSplit ?? 8);
+      const angle = Number(effect.parameters.angleDegrees ?? effect.parameters.angle ?? 0);
+      const feather = Number(effect.parameters.edgeFeather ?? effect.parameters.feather ?? 0.5);
+      if (!Number.isFinite(amount) || amount < 0) return null;
+      chromaticAmount = Math.max(chromaticAmount, amount * effect.intensity);
+      chromaticAngle = angle;
+      chromaticEdgeFeather = Math.max(0, Math.min(1, feather));
+    } else if (
+      (effect as any).compositing?.primitive === "RgbSplit" ||
+      renderer === "rgb_split" ||
+      renderer === "rgb-split" ||
+      renderer === "rgbsplit" ||
+      effect.effectId === "rgb-split"
+    ) {
+      const shiftX = Number(effect.parameters.splitX ?? effect.parameters.rgbSplit ?? effect.parameters.splitDistance ?? 8);
+      const shiftY = Number(effect.parameters.splitY ?? effect.parameters.rgbSplit ?? effect.parameters.splitDistance ?? 8);
+      if (!Number.isFinite(shiftX) || shiftX < 0 || !Number.isFinite(shiftY) || shiftY < 0) return null;
+      rgbSplitX = Math.max(rgbSplitX, shiftX * effect.intensity);
+      rgbSplitY = Math.max(rgbSplitY, shiftY * effect.intensity);
+    } else if (
+      (effect as any).compositing?.primitive === "FilmGrain" ||
+      renderer === "film_grain" ||
+      renderer === "film-grain" ||
+      renderer === "filmgrain" ||
+      renderer === "grain" ||
+      effect.effectId === "film-grain"
+    ) {
+      const intensity = Number(effect.parameters.grainIntensity ?? effect.parameters.intensity ?? 0.15);
+      const size = Number(effect.parameters.grainSize ?? effect.parameters.size ?? 1);
       if (!Number.isFinite(intensity) || intensity < 0 || !Number.isFinite(size) || size <= 0) return null;
       effectGrainIntensity = Math.max(effectGrainIntensity, intensity * effect.intensity);
       effectGrainSize = Math.max(effectGrainSize, size);
@@ -831,6 +876,9 @@ function getNativeColorGrade(
     scanlineIntensity,
     rgbSplitX,
     rgbSplitY,
+    chromaticAmount,
+    chromaticAngle,
+    chromaticEdgeFeather,
     vibranceAmount,
     vibranceProtectedHueR: vibranceProtectedHue[0],
     vibranceProtectedHueG: vibranceProtectedHue[1],
@@ -1249,8 +1297,9 @@ export function getNativePreviewBlockers(
       continue;
     }
     for (const effect of (layer.effects ?? []).filter((item) => item.intensity > 0.001)) {
-      const renderer = (effect.renderer || effect.effectId).replace(/^fx-/, "").replace(/-/g, "_").toLowerCase();
-      if (!NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer)) {
+      const rawRenderer = (effect as any).compositing?.primitive || effect.renderer || effect.effectId;
+      const renderer = String(rawRenderer).replace(/^fx-/, "").replace(/-/g, "_").toLowerCase();
+      if (!NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer) && !NATIVE_VIDEO_EFFECT_RENDERERS.has(renderer.replace(/_/g, ""))) {
         add(`Video effect "${renderer}" on media layer ${layer.layerId} has no native compositor implementation.`);
       }
     }

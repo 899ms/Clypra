@@ -20,6 +20,7 @@ const VIDEO_EFFECT_CATEGORIES = [
 ];
 
 const BODY_EFFECT_CATEGORIES = [
+  { id: "all", name: "All" },
   { id: "trending", name: "Trending" },
   { id: "motion", name: "Motion" },
   { id: "aura", name: "Aura" },
