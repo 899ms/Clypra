@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use clypra_native_core::{compare_rgba8, compatibility::native_feature_manifest, FrameRequest};
 use image::{ImageFormat, RgbaImage};
 use std::{env, fs, io::Cursor, process::ExitCode};

@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+/// High-level frame render path chosen by the preview pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FrameRenderPath {
+    /// Optimal zero-copy path: D3D11VA -> DXGI NT shared handle -> wgpu HAL texture (VRAM only).
+    ZeroCopyDxgi,
+    /// Direct DMA upload path: Hardware or software decode -> CPU-accessible NV12 -> YUV ring buffer -> wgpu texture.
+    GpuUploadRing,
+    /// Software decode or CPU readback compatibility path.
+    CpuFallback,
+}
+
 /// Describes how a single decoded video layer will be sourced for GPU rendering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FrameSource {

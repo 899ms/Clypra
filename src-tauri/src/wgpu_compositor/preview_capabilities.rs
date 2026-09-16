@@ -36,6 +36,7 @@ impl PreviewCapabilities {
     }
 
     /// Returns true if the full zero-copy DXGI pipeline is available.
+    #[allow(dead_code)]
     pub fn zero_copy_available(&self) -> bool {
         self.dxgi_import && self.wgpu_nv12 && self.hw_decode
     }

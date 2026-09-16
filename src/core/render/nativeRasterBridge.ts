@@ -439,6 +439,24 @@ export class NativeRasterBridge {
     for (const assetId of assetIds) {
       this.registeredAssetIds.delete(assetId);
       this.animatedStickerRenderer.evictFrame(assetId);
+      this.assetsById.delete(assetId);
+      this.textAssetsById.delete(assetId);
+
+      for (const [layerId, snap] of this.textSnapshotsByLayerId.entries()) {
+        if (snap.assetId === assetId) {
+          this.textSnapshotsByLayerId.delete(layerId);
+          this.textSnapshotKeysByLayerId.delete(layerId);
+          this.textSnapshotBleedByLayerId.delete(layerId);
+          this.lastTextPlaybackObservationAtByLayerId.delete(layerId);
+        }
+      }
+
+      for (const [layerId, snap] of this.stickerSnapshotsByLayerId.entries()) {
+        if (snap.assetId === assetId) {
+          this.stickerSnapshotsByLayerId.delete(layerId);
+          this.stickerSnapshotKeysByLayerId.delete(layerId);
+        }
+      }
     }
   }
 

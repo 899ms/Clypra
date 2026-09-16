@@ -25,7 +25,8 @@ pub use yuv_ring_buffer::{
 
 pub mod render_path;
 pub use render_path::{
-    DisableReason, DxgiFailureReason, DxgiImportState, FrameSource, PreviewRenderError,
+    DisableReason, DxgiFailureReason, DxgiImportState, FrameRenderPath, FrameSource,
+    PreviewRenderError,
 };
 
 pub mod frame_resource;
@@ -67,8 +68,6 @@ pub use session_telemetry::{FramesBySource, SessionSnapshot, SessionTelemetryCol
 
 pub mod preview_capabilities;
 pub use preview_capabilities::PreviewCapabilities;
-pub mod capabilities;
-pub use capabilities::{DxgiImportState, FrameRenderPath, PreviewCapabilities, PreviewRenderError};
 
 pub mod adapter_selector;
 pub use adapter_selector::{GpuContext, SelectedGpuInfo};
@@ -155,7 +154,6 @@ pub struct NativePreviewSession {
     pub text_pipeline: TextEffectPipeline,
     matte_prefetchers: HashMap<String, Arc<crate::clymatte::MattePrefetcher>>,
     compositors: Vec<CachedCompositor>,
-    pub dxgi_state: DxgiImportState,
 }
 
 struct CachedCompositor {
@@ -258,12 +256,14 @@ impl NativePreviewSession {
         let text_pipeline =
             TextEffectPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8UnormSrgb);
         let text_cache = TextLayerCache::new(TEXT_LAYER_CACHE_BYTES);
-        let transparent_mask_placeholder = Self::create_transparent_mask_placeholder(&gpu);
-        let dxgi_state = if gpu.capabilities.dxgi_import_capable {
+        let dxgi_state = if gpu.capabilities.zero_copy_available() {
             DxgiImportState::Unknown
         } else {
-            DxgiImportState::Disabled
+            DxgiImportState::Disabled {
+                reason: DisableReason::UnsupportedFeature,
+            }
         };
+        let transparent_mask_placeholder = Self::create_transparent_mask_placeholder(&gpu);
 
         Self {
             gpu,
@@ -280,7 +280,6 @@ impl NativePreviewSession {
             text_pipeline,
             matte_prefetchers: HashMap::new(),
             compositors: Vec::new(),
-            dxgi_state: DxgiImportState::Unknown,
         }
     }
 
@@ -490,7 +489,7 @@ impl NativePreviewSession {
         imported: &crate::wgpu_compositor::dxgi_import::ImportedNv12Texture,
         params: &ColorTransformUniforms,
     ) -> Result<Arc<wgpu::Texture>, PreviewRenderError> {
-        if !self.gpu.nv12_supported {
+        if !self.gpu.capabilities.wgpu_nv12 {
             return Err(PreviewRenderError::UnsupportedFeature(
                 "TEXTURE_FORMAT_NV12 is not supported on this adapter".to_string(),
             ));
@@ -500,16 +499,6 @@ impl NativePreviewSession {
                 expected: (1, 1),
                 got: (source_width, source_height),
             });
-        if source_width == 0 || source_height == 0 {
-            return Err(PreviewRenderError::UnsupportedFormat(
-                "Source dimensions must be non-zero".to_string(),
-            ));
-        }
-
-        if !self.gpu.capabilities.wgpu_nv12 {
-            return Err(PreviewRenderError::UnsupportedFeature(
-                "Device missing TEXTURE_FORMAT_NV12 feature".to_string(),
-            ));
         }
 
         // Retrieve or create the output RGBA target texture.
@@ -2374,7 +2363,6 @@ mod tests {
 
         let nv12_supported = renderer.device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12);
         let capabilities = PreviewCapabilities::probe(&renderer.adapter, &renderer.device);
-        let capabilities = PreviewCapabilities::negotiate(&renderer.adapter.features(), &renderer.gpu_info.backend);
         let gpu = Arc::new(GpuContext {
             instance: renderer.instance.clone(),
             adapter: renderer.adapter,
@@ -2383,7 +2371,6 @@ mod tests {
             device: renderer.device,
             queue: renderer.queue,
             nv12_supported,
-            capabilities,
         });
         let mut session = NativePreviewSession::new(gpu);
         let source_width = 64u32;
