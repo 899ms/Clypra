@@ -174,7 +174,7 @@ fn choose_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode>
 
 fn configure_surface(
     app: AppHandle,
-    _window: Window,
+    window: Window,
     gpu: Arc<GpuContext>,
     geometry: NativeSurfaceGeometry,
     runtime: Arc<Mutex<NativeSurfaceRuntime>>,
@@ -190,6 +190,7 @@ fn configure_surface(
         let parent = app
             .get_window("main")
             .ok_or_else(|| "Main window is unavailable".to_string())?;
+            .unwrap_or(window);
         let dpr = if geometry.device_pixel_ratio > 0.0 {
             geometry.device_pixel_ratio as f64
         } else {
@@ -206,6 +207,7 @@ fn configure_surface(
             .transparent(true)
             .shadow(false)
             // The preview is a retained child surface parented to the main WebView window.
+            // The preview is a retained child surface parented to the main window.
             // It must NOT use always_on_top so it does not float over modals, dialogs,
             // or other application windows.
             .skip_taskbar(true)

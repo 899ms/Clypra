@@ -1,16 +1,30 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Search, Sparkles, AlertCircle, Star, Download, Plus, AlertTriangle } from "lucide-react";
+import {
+  Search,
+  Sparkles,
+  AlertCircle,
+  Star,
+  Download,
+  Plus,
+  AlertTriangle,
+} from "lucide-react";
 import type { EffectPreset } from "../types";
 import { VideoEffectsApi } from "../api/videoEffectsApi";
 import { useFavoritesStore } from "@/store/favoritesStore";
-import { evaluateEffectCompatibility, LOCAL_ENGINE_CAPABILITIES } from "@/features/body-effects/capabilities";
+import {
+  evaluateEffectCompatibility,
+  LOCAL_ENGINE_CAPABILITIES,
+} from "@/features/body-effects/capabilities";
 
 interface EffectPickerProps {
   selectedCategory?: string;
   onSelect: (effect: EffectPreset) => void;
 }
 
-export function EffectPicker({ selectedCategory: propCategory, onSelect }: EffectPickerProps) {
+export function EffectPicker({
+  selectedCategory: propCategory,
+  onSelect,
+}: EffectPickerProps) {
   const [internalCategory, setInternalCategory] = useState<string>("trending");
   const activeCategory = (propCategory ?? internalCategory).toLowerCase();
   const [searchQuery, setSearchQuery] = useState("");
@@ -18,7 +32,14 @@ export function EffectPicker({ selectedCategory: propCategory, onSelect }: Effec
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { favorites, downloadedEffects, downloadingIds, toggleFavorite, startDownload, completeDownload } = useFavoritesStore();
+  const {
+    favorites,
+    downloadedEffects,
+    downloadingIds,
+    toggleFavorite,
+    startDownload,
+    completeDownload,
+  } = useFavoritesStore();
 
   useEffect(() => {
     loadBodyEffects();
@@ -31,7 +52,8 @@ export function EffectPicker({ selectedCategory: propCategory, onSelect }: Effec
       const bodyEffects = await VideoEffectsApi.getBodyEffects();
       setEffects(bodyEffects);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load body effects";
+      const message =
+        err instanceof Error ? err.message : "Failed to load body effects";
       setError(message);
       console.error("Failed to load body effects:", err);
     } finally {
@@ -64,14 +86,22 @@ export function EffectPicker({ selectedCategory: propCategory, onSelect }: Effec
 
     if (activeCategory && activeCategory !== "all") {
       filtered = filtered.filter((e: EffectPreset) => {
-        const cat = e.category?.toLowerCase() === "body" ? "aura" : e.category?.toLowerCase();
+        const cat =
+          e.category?.toLowerCase() === "body"
+            ? "aura"
+            : e.category?.toLowerCase();
         return cat === activeCategory;
       });
     }
 
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
-      filtered = filtered.filter((e: EffectPreset) => e.name.toLowerCase().includes(query) || e.description.toLowerCase().includes(query) || e.tags?.some((t) => t.toLowerCase().includes(query)));
+      filtered = filtered.filter(
+        (e: EffectPreset) =>
+          e.name.toLowerCase().includes(query) ||
+          e.description.toLowerCase().includes(query) ||
+          e.tags?.some((t) => t.toLowerCase().includes(query)),
+      );
     }
 
     return filtered;
@@ -83,7 +113,13 @@ export function EffectPicker({ selectedCategory: propCategory, onSelect }: Effec
       <div className="p-1 border-b border-border shrink-0">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-          <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search body effects..." className="w-full bg-surface-raised border border-border rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search body effects..."
+            className="w-full bg-surface-raised border border-border rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+          />
         </div>
       </div>
 
@@ -116,19 +152,27 @@ export function EffectPicker({ selectedCategory: propCategory, onSelect }: Effec
               let isCompatible = true;
               let incompatibleReason: string | undefined;
 
-              if (effect.requirements?.captureType && effect.compositing?.primitive) {
+              if (effect.compositing?.primitive) {
                 const evalResult = evaluateEffectCompatibility(
                   {
                     requirements: {
-                      minEngineVersion: effect.requirements.minEngineVersion ?? "1.0.0",
-                      captureType: effect.requirements.captureType as any,
-                      maskCategory: (effect.requirements.maskCategory as any) ?? "person",
-                      requiredLandmarks: effect.requirements.keypoints,
+                      minEngineVersion:
+                        effect.requirements?.minEngineVersion ?? "1.0.0",
+                      captureType:
+                        (effect.requirements?.captureType as any) ?? "none",
+                      maskCategory:
+                        (effect.requirements?.maskCategory as any) ?? "person",
+                      requiredLandmarks: effect.requirements?.keypoints,
+                      minTextureDimension2D: (effect.requirements as any)
+                        ?.minTextureDimension2D,
+                      requiresCanonicalLimits: (effect.requirements as any)
+                        ?.requiresCanonicalLimits,
                     },
                     compositing: {
                       primitive: effect.compositing.primitive as any,
-                      layerZOrder: effect.compositing.layerZOrder,
-                      blendMode: (effect.compositing.blendMode as any) ?? "normal",
+                      layerZOrder: effect.compositing.layerZOrder ?? "in-front",
+                      blendMode:
+                        (effect.compositing.blendMode as any) ?? "normal",
                     },
                   },
                   LOCAL_ENGINE_CAPABILITIES,
@@ -199,7 +243,9 @@ function EffectCard({
       onClick={isCompatible ? onApply : undefined}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      title={!isCompatible ? `Incompatible: ${incompatibleReason}` : effect.name}
+      title={
+        !isCompatible ? `Incompatible: ${incompatibleReason}` : effect.name
+      }
       className={`w-full aspect-square bg-surface-raised/40 hover:bg-surface-raised/80 border rounded-xl relative overflow-hidden flex flex-col justify-between p-1 transition-all duration-300 group shadow-[0_4px_16px_rgba(0,0,0,0.3)] ${
         !isCompatible
           ? "opacity-50 grayscale border-red-500/30 cursor-not-allowed"
@@ -211,7 +257,9 @@ function EffectCard({
         <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center z-20 pointer-events-none">
           <div className="flex flex-col items-center gap-2">
             <div className="w-8 h-8 rounded-full border-3 border-accent border-t-transparent animate-spin" />
-            <span className="text-[10px] font-semibold text-accent">Downloading...</span>
+            <span className="text-[10px] font-semibold text-accent">
+              Downloading...
+            </span>
           </div>
         </div>
       )}
@@ -249,16 +297,24 @@ function EffectCard({
       <button
         onClick={onFavorite}
         className={`absolute top-1 right-1 p-1 cursor-pointer rounded-full bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary transition-all duration-200 z-10 ${
-          isFavorite ? "opacity-100 text-yellow-400!" : "opacity-0 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2"
+          isFavorite
+            ? "opacity-100 text-yellow-400!"
+            : "opacity-0 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2"
         }`}
       >
-        <Star className={`w-3 h-3 ${isFavorite ? "fill-yellow-400 text-yellow-400!" : ""}`} />
+        <Star
+          className={`w-3 h-3 ${isFavorite ? "fill-yellow-400 text-yellow-400!" : ""}`}
+        />
       </button>
 
       {/* Thumbnail or Category fallback */}
       <div className="flex-1 flex items-center justify-center w-full select-none relative overflow-hidden rounded-lg bg-surface">
         {effect.thumbnail ? (
-          <img src={effect.thumbnail} alt={effect.name} className="w-full h-full object-cover rounded-lg" />
+          <img
+            src={effect.thumbnail}
+            alt={effect.name}
+            className="w-full h-full object-cover rounded-lg"
+          />
         ) : (
           <div className="flex flex-col items-center justify-center h-full w-full bg-linear-to-br from-accent/10 to-accent/0 text-center rounded-lg p-2">
             <span className="text-4xl filter drop-shadow-[0_4px_8px_rgba(0,0,0,0.3)] group-hover:scale-[1.05] transition-transform duration-300">
@@ -283,10 +339,10 @@ function EffectCard({
             !isCompatible
               ? "bg-surface/20 border border-border/30 text-text-muted/40 cursor-not-allowed"
               : isDownloaded
-              ? "bg-accent hover:bg-accent/85 border border-accent text-white cursor-pointer"
-              : isDownloading
-              ? "bg-accent/20 border border-accent cursor-wait"
-              : "bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary cursor-pointer"
+                ? "bg-accent hover:bg-accent/85 border border-accent text-white cursor-pointer"
+                : isDownloading
+                  ? "bg-accent/20 border border-accent cursor-wait"
+                  : "bg-surface/40 hover:bg-surface/60 border border-border/50 text-text-muted hover:text-text-primary cursor-pointer"
           }`}
         >
           {isDownloading ? (

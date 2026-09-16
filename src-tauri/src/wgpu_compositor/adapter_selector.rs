@@ -13,10 +13,13 @@ pub struct SelectedGpuInfo {
     pub is_discrete: bool,
 }
 
+use crate::wgpu_compositor::capabilities::PreviewCapabilities;
+
 pub struct GpuContext {
     pub instance: Instance,
     pub adapter: Adapter,
     pub info: SelectedGpuInfo,
+    pub capabilities: PreviewCapabilities,
     pub device: Device,
     pub queue: Queue,
     pub nv12_supported: bool,
@@ -164,11 +167,22 @@ impl GpuContext {
 
         let nv12_supported = device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12);
         let capabilities = PreviewCapabilities::probe(&best_adapter, &device);
+        let capabilities = PreviewCapabilities::negotiate(&available_features, &gpu_info.backend);
+
+        log::info!(
+            "🚀 Negotiated Preview Capabilities: NV12={}, DXGI ZeroCopy={}, HW Decode={}, Native Surface={}, HDR={}",
+            capabilities.wgpu_nv12,
+            capabilities.dxgi_import_capable,
+            capabilities.hw_decode,
+            capabilities.native_surface,
+            capabilities.hdr,
+        );
 
         Ok(Self {
             instance: instance.clone(),
             adapter: best_adapter,
             info: gpu_info,
+            capabilities,
             device,
             queue,
             nv12_supported,

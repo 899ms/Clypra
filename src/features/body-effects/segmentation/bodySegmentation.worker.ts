@@ -152,7 +152,7 @@ function runMediaPipeSegmentation(segmenter: any, imageData: ImageData): Promise
       if (settled) return;
       settled = true;
       reject(new Error("MediaPipe segmentation timed out"));
-    }, 2000);
+    }, 4000);
     const finish = (result: any) => {
       if (settled) return;
       settled = true;
@@ -181,14 +181,18 @@ function mediaPipeResultToMask(result: any, width: number, height: number, minCo
   if (personConfidenceMask) {
     const confidenceData = getMaskFloatData(personConfidenceMask);
     if (confidenceData) {
-      return confidenceDataToMask(confidenceData, width, height, minConfidence);
+      const maskW = personConfidenceMask.width || width;
+      const maskH = personConfidenceMask.height || height;
+      return confidenceDataToMask(confidenceData, maskW, maskH, minConfidence);
     }
   }
 
   if (result.categoryMask) {
     const categoryData = getMaskByteData(result.categoryMask);
     if (categoryData) {
-      return categoryDataToMask(categoryData, width, height);
+      const maskW = result.categoryMask.width || width;
+      const maskH = result.categoryMask.height || height;
+      return categoryDataToMask(categoryData, maskW, maskH);
     }
   }
 
@@ -207,20 +211,45 @@ function getMaskByteData(mask: any): Uint8Array | null {
   return null;
 }
 
-function confidenceDataToMask(confidenceData: Float32Array, width: number, height: number, minConfidence: number): ImageData {
+function confidenceDataToMask(
+  confidenceData: Float32Array,
+  width: number,
+  height: number,
+  minConfidence: number,
+): ImageData {
   const pixelCount = width * height;
   const mask = new ImageData(width, height);
 
+  // Smoothstep transition band around minConfidence:
+  // - Subject interior (confidence >= upperBound): 100% solid opaque (alpha = 255)
+  // - Background (confidence <= lowerBound): 0% transparent (alpha = 0)
+  // - Outer boundary: cubic Hermite smoothstep anti-aliasing
+  const edgeBand = 0.08;
+  const lowerBound = Math.max(0.01, minConfidence - edgeBand);
+  const upperBound = Math.min(0.99, minConfidence + edgeBand);
+  const bandRange = upperBound - lowerBound;
+
   for (let i = 0; i < pixelCount; i++) {
     const confidence = confidenceData[i] ?? 0;
+    let alpha: number;
+
+    if (confidence >= upperBound) {
+      alpha = 255;
+    } else if (confidence <= lowerBound) {
+      alpha = 0;
+    } else {
+      const t = (confidence - lowerBound) / bandRange;
+      alpha = Math.round(t * t * (3 - 2 * t) * 255);
+    }
+
     const dst = i * 4;
     mask.data[dst] = 255;
     mask.data[dst + 1] = 255;
     mask.data[dst + 2] = 255;
-    mask.data[dst + 3] = confidence >= minConfidence ? Math.min(255, Math.max(0, Math.floor(confidence * 255))) : 0;
+    mask.data[dst + 3] = alpha;
   }
 
-  return softenMask(mask);
+  return mask;
 }
 
 function categoryDataToMask(categoryData: Uint8Array, width: number, height: number): ImageData {
@@ -266,15 +295,35 @@ function imageDataToNchwFloatTensor(imageData: ImageData, ort: any): any {
   return new ort.Tensor("float32", input, [1, 3, height, width]);
 }
 
-function tensorOutputToMask(output: Float32Array | Uint8Array | number[], width: number, height: number, minConfidence: number): ImageData {
+function tensorOutputToMask(
+  output: Float32Array | Uint8Array | number[],
+  width: number,
+  height: number,
+  minConfidence: number,
+): ImageData {
   const outputLength = output.length;
   const pixelCount = width * height;
   const channelOffset = outputLength >= pixelCount * 2 ? pixelCount : 0;
   const mask = new ImageData(width, height);
 
+  const edgeBand = 0.08;
+  const lowerBound = Math.max(0.01, minConfidence - edgeBand);
+  const upperBound = Math.min(0.99, minConfidence + edgeBand);
+  const bandRange = upperBound - lowerBound;
+
   for (let i = 0; i < pixelCount; i++) {
     const confidence = Number(output[channelOffset + i] ?? output[i] ?? 0);
-    const alpha = confidence >= minConfidence ? Math.min(255, Math.max(0, confidence * 255)) : 0;
+    let alpha: number;
+
+    if (confidence >= upperBound) {
+      alpha = 255;
+    } else if (confidence <= lowerBound) {
+      alpha = 0;
+    } else {
+      const t = (confidence - lowerBound) / bandRange;
+      alpha = Math.round(t * t * (3 - 2 * t) * 255);
+    }
+
     const dst = i * 4;
     mask.data[dst] = 255;
     mask.data[dst + 1] = 255;
@@ -311,12 +360,12 @@ function segmentWithHeuristic(imageData: ImageData, minConfidence: number): Imag
     const currentLuma = luma(data[src], data[src + 1], data[src + 2]);
     const chroma = Math.max(data[src], data[src + 1], data[src + 2]) - Math.min(data[src], data[src + 1], data[src + 2]);
     const centerBias = 1 - Math.sqrt((x - centerX) ** 2 + (y - centerY) ** 2) / maxDistance;
-    const confidence = alpha > 8 && (currentLuma > threshold || chroma > 28) ? Math.max(minConfidence, centerBias) : 0;
+    const isSubject = alpha > 8 && (currentLuma > threshold || chroma > 28) && centerBias > (1 - minConfidence);
     const dst = i * 4;
     mask.data[dst] = 255;
     mask.data[dst + 1] = 255;
     mask.data[dst + 2] = 255;
-    mask.data[dst + 3] = confidence >= minConfidence ? Math.min(255, Math.floor(confidence * 255)) : 0;
+    mask.data[dst + 3] = isSubject ? 255 : 0;
   }
 
   return softenMask(mask);

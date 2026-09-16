@@ -67,6 +67,8 @@ pub use session_telemetry::{FramesBySource, SessionSnapshot, SessionTelemetryCol
 
 pub mod preview_capabilities;
 pub use preview_capabilities::PreviewCapabilities;
+pub mod capabilities;
+pub use capabilities::{DxgiImportState, FrameRenderPath, PreviewCapabilities, PreviewRenderError};
 
 pub mod adapter_selector;
 pub use adapter_selector::{GpuContext, SelectedGpuInfo};
@@ -140,6 +142,7 @@ pub struct NativeWgpuRenderer {
 /// now because the next phase will replace CPU readback with a native surface.
 pub struct NativePreviewSession {
     pub gpu: Arc<GpuContext>,
+    pub dxgi_state: DxgiImportState,
     yuv_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pipeline: wgpu::RenderPipeline,
@@ -256,9 +259,15 @@ impl NativePreviewSession {
             TextEffectPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8UnormSrgb);
         let text_cache = TextLayerCache::new(TEXT_LAYER_CACHE_BYTES);
         let transparent_mask_placeholder = Self::create_transparent_mask_placeholder(&gpu);
+        let dxgi_state = if gpu.capabilities.dxgi_import_capable {
+            DxgiImportState::Unknown
+        } else {
+            DxgiImportState::Disabled
+        };
 
         Self {
             gpu,
+            dxgi_state,
             yuv_layout,
             sampler,
             pipeline,
@@ -491,6 +500,16 @@ impl NativePreviewSession {
                 expected: (1, 1),
                 got: (source_width, source_height),
             });
+        if source_width == 0 || source_height == 0 {
+            return Err(PreviewRenderError::UnsupportedFormat(
+                "Source dimensions must be non-zero".to_string(),
+            ));
+        }
+
+        if !self.gpu.capabilities.wgpu_nv12 {
+            return Err(PreviewRenderError::UnsupportedFeature(
+                "Device missing TEXTURE_FORMAT_NV12 feature".to_string(),
+            ));
         }
 
         // Retrieve or create the output RGBA target texture.
@@ -2355,10 +2374,12 @@ mod tests {
 
         let nv12_supported = renderer.device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12);
         let capabilities = PreviewCapabilities::probe(&renderer.adapter, &renderer.device);
+        let capabilities = PreviewCapabilities::negotiate(&renderer.adapter.features(), &renderer.gpu_info.backend);
         let gpu = Arc::new(GpuContext {
             instance: renderer.instance.clone(),
             adapter: renderer.adapter,
             info: renderer.gpu_info,
+            capabilities,
             device: renderer.device,
             queue: renderer.queue,
             nv12_supported,

@@ -168,6 +168,11 @@ pub fn import_into_wgpu(
 ) -> Result<ImportedNv12Texture, DxgiFailureReason> {
     use wgpu::hal::api::Dx12;
 
+    if !device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+        log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12");
+        return None;
+    }
+
     let nt_handle = shared.nt_handle;
     let array_index = shared.array_index;
     let width = shared.width;

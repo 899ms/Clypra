@@ -44,6 +44,9 @@ export const LOCAL_ENGINE_CAPABILITIES: EngineCapabilities = {
     "MaskedDualBlur",
     "body_particles",
     "SkeletalSpriteAnchor",
+    "ChromaticAberration",
+    "chromatic_aberration",
+    "chromatic-aberration",
   ]),
 };
 
@@ -55,6 +58,10 @@ export function evaluateEffectCompatibility(
   if (
     manifest.requirements.captureType &&
     manifest.requirements.captureType !== "none" &&
+  // Check capture type requirement (only if captureType is specified and not "none")
+  if (
+    manifest.requirements.captureType &&
+    manifest.requirements.captureType !== ("none" as any) &&
     !caps.availableProviders.has(manifest.requirements.captureType)
   ) {
     return {

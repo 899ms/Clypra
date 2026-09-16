@@ -137,6 +137,7 @@ pub struct ColorGradeUniforms {
     pub particle_params: [f32; 4], // count, size, drift speed, intensity
     pub particle_color: [f32; 4],  // RGB + mode/fade flag
     pub particle_time: [f32; 4],   // time + padding
+    pub chromatic_params: [f32; 4], // amount, angle_degrees, edge_feather, enabled
 }
 
 /// Mask-driven body effect controls matching multi_track_blend.wgsl (32 bytes).
@@ -210,6 +211,7 @@ impl Default for ColorGradeUniforms {
             particle_params: [0.0, 0.0, 0.0, 0.0],
             particle_color: [1.0, 1.0, 1.0, 0.0],
             particle_time: [0.0, 0.0, 0.0, 0.0],
+            chromatic_params: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }

@@ -70,6 +70,7 @@ struct ColorGradeUniforms {
     particle_params: vec4<f32>, // count, size, drift speed, intensity
     particle_color: vec4<f32>, // RGB + mode/fade flag
     particle_time: vec4<f32>, // time + padding
+    chromatic_params: vec4<f32>, // amount, angle_degrees, edge_feather, enabled_flag
 };
 
 struct LayerUniforms {
@@ -250,6 +251,29 @@ fn sample_blurred_color(uv: vec2<f32>, radius: f32) -> vec4<f32> {
     return color;
 }
 
+// -----------------------------------------------------------------------------
+// Chromatic Aberration: directional RGB channel offset with optical edge feathering
+// -----------------------------------------------------------------------------
+fn apply_chromatic_aberration(
+    uv: vec2<f32>,
+    amount: f32,
+    angle_degrees: f32,
+    edge_feather: f32,
+    source_dimensions: vec2<f32>
+) -> vec4<f32> {
+    let rad = angle_degrees * 0.0174532925; // radians (PI / 180.0)
+    let dir = vec2<f32>(cos(rad), sin(rad));
+    let dist_from_center = length(uv - vec2<f32>(0.5)) * 2.0;
+    let feather_factor = mix(1.0, smoothstep(0.0, 1.0, dist_from_center), clamp(edge_feather, 0.0, 1.0));
+    let offset = (dir * amount * feather_factor) / max(source_dimensions, vec2<f32>(1.0));
+
+    let r = textureSampleLevel(t_diffuse, s_diffuse, clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r;
+    let g = textureSampleLevel(t_diffuse, s_diffuse, uv, 0.0).g;
+    let b = textureSampleLevel(t_diffuse, s_diffuse, clamp(uv - offset, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).b;
+    let a = textureSampleLevel(t_diffuse, s_diffuse, uv, 0.0).a;
+    return vec4<f32>(r, g, b, a);
+}
+
 fn sample_body_mask(uv: vec2<f32>) -> f32 {
     // textureSampleLevel (explicit LOD=0) is used here instead of textureSample
     // because this function is called from non-uniform control flow
@@ -325,7 +349,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (layer.color_grade.blur_strength > 0.0 && layer.color_grade.blur_radius > 0.0) {
         sample_color = sample_blurred_color(sample_uv, layer.color_grade.blur_radius);
     }
-    if (layer.color_grade.rgb_split_x > 0.0 || layer.color_grade.rgb_split_y > 0.0) {
+    if (layer.color_grade.chromatic_params.w > 0.5 && layer.color_grade.chromatic_params.x > 0.0) {
+        sample_color = apply_chromatic_aberration(
+            sample_uv,
+            layer.color_grade.chromatic_params.x,
+            layer.color_grade.chromatic_params.y,
+            layer.color_grade.chromatic_params.z,
+            source_dimensions
+        );
+    } else if (layer.color_grade.rgb_split_x > 0.0 || layer.color_grade.rgb_split_y > 0.0) {
         let split_offset = vec2<f32>(layer.color_grade.rgb_split_x, layer.color_grade.rgb_split_y) /
             max(source_dimensions, vec2<f32>(1.0));
         let center = textureSampleLevel(t_diffuse, s_diffuse, sample_uv, 0.0);
