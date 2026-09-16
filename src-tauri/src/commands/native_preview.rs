@@ -1658,7 +1658,11 @@ async fn render_native_video_project_frame_bytes_timed(
     // shared NT handles and import them into wgpu directly without an
     // `av_hwframe_transfer_data` (VRAM→RAM) + `queue.write_texture` (RAM→VRAM) round-trip.
     #[cfg(target_os = "windows")]
-    let dxgi_frames_result = if !request.layers.is_empty() {
+    let dxgi_env_disabled = std::env::var("CLYPRA_DISABLE_DXGI").as_deref() == Ok("1")
+        || std::env::var("CLYPRA_DISABLE_DXGI_ZERO_COPY").as_deref() == Ok("1");
+
+    #[cfg(target_os = "windows")]
+    let dxgi_frames_result = if !request.layers.is_empty() && !dxgi_env_disabled {
         use crate::thumbnail_engine::decoder::DecodeFrameOptions;
         let decode_options = DecodeFrameOptions {
             allow_keyframe_approx: request.allow_keyframe_approx.unwrap_or(false)
@@ -1733,46 +1737,69 @@ async fn render_native_video_project_frame_bytes_timed(
     let mut dxgi_active = false;
 
     #[cfg(target_os = "windows")]
-    if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
-        use crate::wgpu_compositor::dxgi_import;
-        let mut import_all_ok = true;
-        for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
-            let layer_key = if !layer.layer_id.is_empty() {
-                &layer.layer_id
-            } else {
-                &layer.video_path
-            };
-            let params = match color_params(&color) {
-                Ok(p) => p,
-                Err(_) => {
-                    import_all_ok = false;
-                    break;
-                }
-            };
-            if let Some(imported) = dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
-                match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
-                    Ok(texture) => {
-                        views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                        textures.push(texture);
-                    }
+    let can_use_dxgi = session.gpu.capabilities.zero_copy_available()
+        && session.dxgi_state.is_usable()
+        && !dxgi_env_disabled;
+
+    #[cfg(target_os = "windows")]
+    if can_use_dxgi {
+        if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
+            use crate::wgpu_compositor::dxgi_import;
+            let mut import_all_ok = true;
+            for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
+                let layer_key = if !layer.layer_id.is_empty() {
+                    &layer.layer_id
+                } else {
+                    &layer.video_path
+                };
+                let params = match color_params(&color) {
+                    Ok(p) => p,
                     Err(_) => {
                         import_all_ok = false;
                         break;
                     }
+                };
+                match dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
+                    Ok(imported) => {
+                        match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
+                            Ok(texture) => {
+                                views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                                textures.push(texture);
+                            }
+                            Err(render_error) => {
+                                match render_error {
+                                    crate::wgpu_compositor::PreviewRenderError::UnsupportedFeature(_) => {
+                                        session.mark_dxgi_disabled(crate::wgpu_compositor::DisableReason::UnsupportedFeature);
+                                    }
+                                    crate::wgpu_compositor::PreviewRenderError::DimensionMismatch { .. } => {
+                                        session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::DimensionMismatch);
+                                    }
+                                    _ => {
+                                        session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::ImportFailed);
+                                    }
+                                }
+                                import_all_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        session.mark_dxgi_failed(reason);
+                        import_all_ok = false;
+                        break;
+                    }
                 }
-            } else {
-                import_all_ok = false;
-                break;
             }
-        }
 
-        if import_all_ok {
-            decode_time_us = max_dec_us;
-            decoder_mutex_wait_us = total_wait_us;
-            dxgi_active = true;
-        } else {
-            views.clear();
-            textures.clear();
+            if import_all_ok {
+                session.mark_dxgi_supported();
+                decode_time_us = max_dec_us;
+                decoder_mutex_wait_us = total_wait_us;
+                dxgi_active = true;
+            } else {
+                views.clear();
+                textures.clear();
+            }
         }
     }
 
@@ -3446,6 +3473,8 @@ pub async fn get_native_frame_service_samples(
 ///    frame rejection does not carry over to the next project.
 /// 5. Stops and resets the native audio clock clip state.
 /// 6. Stops and resets the native playback session.
+/// 7. Resets the DXGI import state so a fresh project does not inherit a
+///    sticky `DxgiImportState::Failed` from the previous session.
 #[tauri::command]
 pub async fn reset_native_preview_runtime(app: tauri::AppHandle) -> Result<(), String> {
     if let Ok(mut worker) = LOOKAHEAD_WORKER.lock() {
@@ -3487,6 +3516,14 @@ pub async fn reset_native_preview_runtime(app: tauri::AppHandle) -> Result<(), S
         if let Ok(mut p) = playback.inner().clone().lock() {
             p.reset();
         }
+    }
+
+    // 7. Reset the DXGI import state so the next project does not inherit a
+    //    sticky DxgiImportState::Failed from this session.
+    if let Some(preview_session) =
+        app.try_state::<Arc<tokio::sync::Mutex<NativePreviewSession>>>()
+    {
+        preview_session.inner().clone().lock().await.reset_dxgi_state();
     }
 
     Ok(())

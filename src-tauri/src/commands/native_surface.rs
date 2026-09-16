@@ -4,9 +4,9 @@ use crate::native_core::{
 };
 use crate::wgpu_compositor::GpuContext;
 use std::sync::{Arc, Mutex};
+use tauri::window::WindowBuilder;
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, Url, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder, Window,
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, Window,
 };
 
 const NATIVE_PREVIEW_SURFACE_LABEL: &str = "native-preview-surface";
@@ -16,7 +16,7 @@ const NATIVE_PREVIEW_SURFACE_LABEL: &str = "native-preview-surface";
 /// only probes the platform and cannot support presentation or recovery.
 pub struct NativeSurfaceRuntime {
     surface: Option<wgpu::Surface<'static>>,
-    surface_window: Option<WebviewWindow>,
+    surface_window: Option<Window>,
     probe: Option<NativeSurfaceProbe>,
     configuration: Option<wgpu::SurfaceConfiguration>,
     configured_format: Option<wgpu::TextureFormat>,
@@ -188,41 +188,33 @@ fn configure_surface(
         surface_window
     } else {
         let parent = app
-            .get_webview_window("main")
-            .ok_or_else(|| "Main WebView window is unavailable".to_string())?;
+            .get_window("main")
+            .ok_or_else(|| "Main window is unavailable".to_string())?;
         let dpr = if geometry.device_pixel_ratio > 0.0 {
             geometry.device_pixel_ratio as f64
         } else {
             1.0
         };
-        let surface_window = WebviewWindowBuilder::new(
-            &app,
-            NATIVE_PREVIEW_SURFACE_LABEL,
-            WebviewUrl::External(
-                "about:blank"
-                    .parse::<Url>()
-                    .map_err(|error| error.to_string())?,
-            ),
-        )
-        .parent(&parent)
-        .map_err(|error| format!("Unable to parent native preview surface: {error}"))?
-        .inner_size(
-            geometry.width_physical as f64 / dpr,
-            geometry.height_physical as f64 / dpr,
-        )
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        // The preview is a retained child surface parented to the main WebView window.
-        // It must NOT use always_on_top so it does not float over modals, dialogs,
-        // or other application windows.
-        .skip_taskbar(true)
-        .focusable(false)
-        .focused(false)
-        .resizable(false)
-        .visible(false)
-        .build()
-        .map_err(|error| format!("Unable to create native preview surface window: {error}"))?;
+        let surface_window = WindowBuilder::new(&app, NATIVE_PREVIEW_SURFACE_LABEL)
+            .parent(&parent)
+            .map_err(|error| format!("Unable to parent native preview surface: {error}"))?
+            .inner_size(
+                geometry.width_physical as f64 / dpr,
+                geometry.height_physical as f64 / dpr,
+            )
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            // The preview is a retained child surface parented to the main WebView window.
+            // It must NOT use always_on_top so it does not float over modals, dialogs,
+            // or other application windows.
+            .skip_taskbar(true)
+            .focusable(false)
+            .focused(false)
+            .resizable(false)
+            .visible(false)
+            .build()
+            .map_err(|error| format!("Unable to create native preview surface window: {error}"))?;
         surface_window
             .set_ignore_cursor_events(true)
             .map_err(|error| format!("Unable to disable native surface pointer events: {error}"))?;

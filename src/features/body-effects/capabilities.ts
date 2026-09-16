@@ -51,8 +51,12 @@ export function evaluateEffectCompatibility(
   manifest: EffectCompatibilityInput | BodyEffectManifest,
   caps: EngineCapabilities = LOCAL_ENGINE_CAPABILITIES,
 ): { compatible: boolean; reason?: string } {
-  // Check capture type requirement
-  if (!caps.availableProviders.has(manifest.requirements.captureType)) {
+  // Check capture type requirement (skip if absent or "none")
+  if (
+    manifest.requirements.captureType &&
+    manifest.requirements.captureType !== "none" &&
+    !caps.availableProviders.has(manifest.requirements.captureType)
+  ) {
     return {
       compatible: false,
       reason: `Unsupported capture type: ${manifest.requirements.captureType}`,

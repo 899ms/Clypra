@@ -1,3 +1,4 @@
+use super::preview_capabilities::PreviewCapabilities;
 use serde::{Deserialize, Serialize};
 use wgpu::{Adapter, Device, DeviceType, Instance, Queue, Surface};
 
@@ -18,6 +19,8 @@ pub struct GpuContext {
     pub info: SelectedGpuInfo,
     pub device: Device,
     pub queue: Queue,
+    pub nv12_supported: bool,
+    pub capabilities: PreviewCapabilities,
 }
 
 impl GpuContext {
@@ -142,6 +145,9 @@ impl GpuContext {
         if available_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
             required_features |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
         }
+        if available_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
+        }
 
         let (device, queue) = best_adapter
             .request_device(
@@ -156,12 +162,17 @@ impl GpuContext {
             .await
             .map_err(|e| format!("Failed to request wgpu device: {}", e))?;
 
+        let nv12_supported = device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12);
+        let capabilities = PreviewCapabilities::probe(&best_adapter, &device);
+
         Ok(Self {
             instance: instance.clone(),
             adapter: best_adapter,
             info: gpu_info,
             device,
             queue,
+            nv12_supported,
+            capabilities,
         })
     }
 }

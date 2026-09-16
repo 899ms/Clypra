@@ -148,22 +148,35 @@ pub struct ImportedNv12Texture {
 /// * `shared` — handle produced by `extract_shared_handle`; this function takes
 ///              ownership and will close it regardless of success/failure.
 ///
+use crate::wgpu_compositor::render_path::DxgiFailureReason;
+
+/// Open a DXGI NT shared handle via the wgpu DX12 HAL and produce biplanar views.
+///
+/// # Arguments
+///
+/// * `device` — the wgpu device (must use the DX12 backend on Windows).
+/// * `shared` — handle produced by `extract_shared_handle`; this function takes
+///              ownership and will close it regardless of success/failure.
+///
 /// # Returns
 ///
-/// `Some(ImportedNv12Texture)` on success, `None` if the device is not DX12 or
-/// the handle cannot be opened.  The caller **must** fall back to the CPU upload
-/// path on `None`.
-pub fn import_into_wgpu(device: &wgpu::Device, shared: D3d11SharedFrame) -> Option<ImportedNv12Texture> {
+/// `Ok(ImportedNv12Texture)` on success, or `Err(DxgiFailureReason)` with the
+/// precise failure cause. The caller **must** fall back to the CPU upload path on error.
+pub fn import_into_wgpu(
+    device: &wgpu::Device,
+    shared: D3d11SharedFrame,
+) -> Result<ImportedNv12Texture, DxgiFailureReason> {
     use wgpu::hal::api::Dx12;
 
     let nt_handle = shared.nt_handle;
+    let array_index = shared.array_index;
     let width = shared.width;
     let height = shared.height;
 
     // SAFETY: We close nt_handle in all branches (success and failure).
     let result = unsafe {
-        device.as_hal::<Dx12, _, Option<ImportedNv12Texture>>(|hal_device| {
-            let hal_device = hal_device?;
+        device.as_hal::<Dx12, _, Result<ImportedNv12Texture, DxgiFailureReason>>(|hal_device| {
+            let hal_device = hal_device.ok_or(DxgiFailureReason::ImportFailed)?;
 
             // Get the raw ID3D12Device so we can open the DXGI shared handle.
             let d3d12_device: &ID3D12Device = hal_device.raw_device();
@@ -172,15 +185,26 @@ pub fn import_into_wgpu(device: &wgpu::Device, shared: D3d11SharedFrame) -> Opti
             let mut d3d12_resource: Option<ID3D12Resource> = None;
             d3d12_device
                 .OpenSharedHandle(nt_handle, &mut d3d12_resource)
-                .ok()?;
-            let d3d12_resource: ID3D12Resource = d3d12_resource?;
+                .map_err(|_| DxgiFailureReason::ImportFailed)?;
+            let d3d12_resource: ID3D12Resource =
+                d3d12_resource.ok_or(DxgiFailureReason::InvalidTexture)?;
 
             // Verify the format is NV12 as expected.
             let resource_desc: D3D12_RESOURCE_DESC = d3d12_resource.GetDesc();
             if resource_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
                 || resource_desc.Format != DXGI_FORMAT_NV12
             {
-                return None;
+                return Err(DxgiFailureReason::UnsupportedFormat);
+            }
+
+            // Invariant 1: Catch array_index out of bounds for the texture array.
+            // D3D11VA decoders allocate multi-slice texture arrays (e.g. 16-32 slices).
+            let array_size = resource_desc.DepthOrArraySize as u32;
+            if array_index >= array_size {
+                log::warn!(
+                    "[dxgi_import] array_index {array_index} >= DepthOrArraySize {array_size}"
+                );
+                return Err(DxgiFailureReason::WrongArraySlice);
             }
 
             // Wrap the D3D12 resource as a wgpu HAL texture.
@@ -192,7 +216,7 @@ pub fn import_into_wgpu(device: &wgpu::Device, shared: D3d11SharedFrame) -> Opti
                 wgpu::Extent3d {
                     width,
                     height,
-                    depth_or_array_layers: 1,
+                    depth_or_array_layers: array_size,
                 },
                 1,
                 1,
@@ -206,7 +230,7 @@ pub fn import_into_wgpu(device: &wgpu::Device, shared: D3d11SharedFrame) -> Opti
                     size: wgpu::Extent3d {
                         width,
                         height,
-                        depth_or_array_layers: 1,
+                        depth_or_array_layers: array_size,
                     },
                     mip_level_count: 1,
                     sample_count: 1,
@@ -218,24 +242,30 @@ pub fn import_into_wgpu(device: &wgpu::Device, shared: D3d11SharedFrame) -> Opti
             );
 
             // Plane 0 = Y (luma), sampled as R8Unorm.
+            // Select the specific array slice decoded by FFmpeg.
             let y_view = texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("NV12 Y plane"),
                 format: Some(wgpu::TextureFormat::R8Unorm),
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 aspect: wgpu::TextureAspect::Plane0,
+                base_array_layer: array_index,
+                array_layer_count: Some(1),
                 ..Default::default()
             });
 
             // Plane 1 = UV (chroma, interleaved), sampled as Rg8Unorm.
+            // Select the specific array slice decoded by FFmpeg.
             let uv_view = texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("NV12 UV plane"),
                 format: Some(wgpu::TextureFormat::Rg8Unorm),
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 aspect: wgpu::TextureAspect::Plane1,
+                base_array_layer: array_index,
+                array_layer_count: Some(1),
                 ..Default::default()
             });
 
-            Some(ImportedNv12Texture {
+            Ok(ImportedNv12Texture {
                 texture,
                 y_view,
                 uv_view,
@@ -244,5 +274,5 @@ pub fn import_into_wgpu(device: &wgpu::Device, shared: D3d11SharedFrame) -> Opti
     };
 
     // `shared` is dropped here, calling D3d11SharedFrame::drop which closes nt_handle safely.
-    result
+    result.unwrap_or(Err(DxgiFailureReason::ImportFailed))
 }
