@@ -55,7 +55,7 @@ use std::time::Instant;
 ///
 /// All mutations go through `PerformanceManager::evaluate_policy`; never
 /// mutate directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PolicyState {
     /// Background work is suspended — realtime pressure too high.
     pub background_paused:       bool,
@@ -66,15 +66,6 @@ pub struct PolicyState {
     pub coalesce_window_us:      u64,
 }
 
-impl Default for PolicyState {
-    fn default() -> Self {
-        Self {
-            background_paused:     false,
-            interactive_throttled: false,
-            coalesce_window_us:    0,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // PerformanceConfig — static thresholds

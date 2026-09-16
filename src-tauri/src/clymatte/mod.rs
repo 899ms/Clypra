@@ -284,11 +284,7 @@ impl ClymatteReader {
         };
 
         let candidate = &self.index[idx];
-        let diff = if candidate.timestamp_us >= timestamp_us {
-            candidate.timestamp_us - timestamp_us
-        } else {
-            timestamp_us - candidate.timestamp_us
-        };
+        let diff = candidate.timestamp_us.abs_diff(timestamp_us);
 
         if diff <= tolerance_us {
             Some(candidate)

@@ -219,10 +219,9 @@ impl SessionState {
 
         // Source breakdown
         match &t.source {
-            FrameSource::DxgiNv12 { .. }          => self.dxgi_nv12_frames += 1,
-            FrameSource::CpuNv12  { .. }           => self.cpu_nv12_frames  += 1,
-            FrameSource::CpuRgba  { .. }           => self.cpu_rgba_frames  += 1,
-            _                                      => self.unknown_frames    += 1,
+            FrameSource::DxgiNv12 { .. } => self.dxgi_nv12_frames += 1,
+            FrameSource::CpuNv12 { .. }  => self.cpu_nv12_frames += 1,
+            FrameSource::CpuRgba { .. }  => self.cpu_rgba_frames += 1,
         }
     }
 
@@ -239,26 +238,20 @@ impl SessionState {
             drop_rate_pct:  if n > 0 { Some(self.frames_dropped  as f64 / n as f64 * 100.0) } else { None },
             miss_rate_pct:  if n > 0 { Some(self.deadline_misses as f64 / n as f64 * 100.0) } else { None },
 
-            avg_decode_us:  if n > 0 { Some(self.total_decode_us / n) } else { None },
-            peak_decode_us: if n > 0 { Some(self.peak_decode_us)      } else { None },
+            avg_decode_us:  self.total_decode_us.checked_div(n),
+            peak_decode_us: if n > 0 { Some(self.peak_decode_us) } else { None },
 
-            avg_queue_wait_us:  if self.queue_wait_samples > 0 {
-                Some(self.total_queue_wait_us / self.queue_wait_samples)
-            } else { None },
+            avg_queue_wait_us:  self.total_queue_wait_us.checked_div(self.queue_wait_samples),
             peak_queue_wait_us: if self.queue_wait_samples > 0 {
                 Some(self.peak_queue_wait_us)
             } else { None },
 
-            avg_ipc_wait_us:  if self.ipc_wait_samples > 0 {
-                Some(self.total_ipc_wait_us / self.ipc_wait_samples)
-            } else { None },
+            avg_ipc_wait_us:  self.total_ipc_wait_us.checked_div(self.ipc_wait_samples),
             peak_ipc_wait_us: if self.ipc_wait_samples > 0 {
                 Some(self.peak_ipc_wait_us)
             } else { None },
 
-            avg_gpu_render_us:  if self.gpu_render_samples > 0 {
-                Some(self.total_gpu_render_us / self.gpu_render_samples)
-            } else { None },
+            avg_gpu_render_us:  self.total_gpu_render_us.checked_div(self.gpu_render_samples),
             peak_gpu_render_us: if self.gpu_render_samples > 0 {
                 Some(self.peak_gpu_render_us)
             } else { None },

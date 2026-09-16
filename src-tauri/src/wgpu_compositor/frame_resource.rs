@@ -35,21 +35,19 @@ impl VideoPixelFormat {
 // ---------------------------------------------------------------------------
 
 /// Color primaries per ISO 23001-8 / H.273.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorPrimaries {
+    #[default]
     Bt709,
     Bt2020,
     Srgb,
     Unspecified,
 }
 
-impl Default for ColorPrimaries {
-    fn default() -> Self { Self::Bt709 }
-}
-
 /// Electro-optical transfer function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransferFunction {
+    #[default]
     Bt709,
     Pq,          // PQ / ST.2084 — HDR10
     Hlg,         // Hybrid Log-Gamma
@@ -58,13 +56,10 @@ pub enum TransferFunction {
     Unspecified,
 }
 
-impl Default for TransferFunction {
-    fn default() -> Self { Self::Bt709 }
-}
-
 /// YCbCr matrix coefficients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorMatrix {
+    #[default]
     Bt709,
     Bt601,
     Bt2020NonConstant,
@@ -72,22 +67,16 @@ pub enum ColorMatrix {
     Unspecified,
 }
 
-impl Default for ColorMatrix {
-    fn default() -> Self { Self::Bt709 }
-}
-
 /// Signal range: limited (studio swing) vs full range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorRange {
     /// Limited: Y 16–235, CbCr 16–240.
+    #[default]
     Limited,
     /// Full: Y 0–255, CbCr 0–255.
     Full,
 }
 
-impl Default for ColorRange {
-    fn default() -> Self { Self::Limited }
-}
 
 /// Complete color metadata for a video frame.
 ///

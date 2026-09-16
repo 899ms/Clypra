@@ -185,7 +185,7 @@ impl FrameTelemetryRing {
         F: Fn(&FrameTelemetry) -> u64,
     {
         if self.is_empty() { return None; }
-        let mut values: Vec<u64> = self.iter().map(|s| field(s)).collect();
+        let mut values: Vec<u64> = self.iter().map(field).collect();
         values.sort_unstable();
         let idx = ((percentile / 100.0) * (values.len() as f64 - 1.0)).round() as usize;
         Some(values[idx.min(values.len() - 1)])

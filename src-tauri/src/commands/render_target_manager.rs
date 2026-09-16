@@ -109,6 +109,7 @@ pub struct MonitorId(pub String);
 // ---------------------------------------------------------------------------
 
 /// The underlying presentation mechanism for a render target.
+#[allow(clippy::large_enum_variant)]
 pub enum PresentationTarget {
     /// Native OS window (HWND on Windows, NSView on macOS).
     NativeWindow {

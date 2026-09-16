@@ -110,9 +110,10 @@ impl std::fmt::Display for DxgiFailureReason {
 /// ```
 ///
 /// `DeviceLost` failure additionally triggers GPU context recreation (Phase 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DxgiImportState {
     /// Not yet probed on this session.
+    #[default]
     Unknown,
     /// Import succeeded at least once; optimistically retry.
     Supported,
@@ -123,9 +124,6 @@ pub enum DxgiImportState {
     Failed { reason: DxgiFailureReason },
 }
 
-impl Default for DxgiImportState {
-    fn default() -> Self { Self::Unknown }
-}
 
 impl DxgiImportState {
     /// True when the import pipeline should be attempted this frame.
