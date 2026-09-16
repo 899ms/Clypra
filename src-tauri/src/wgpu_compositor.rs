@@ -23,6 +23,50 @@ pub use yuv_ring_buffer::{
     render_yuv_frame, ColorTransformUniforms, YuvFrameSlot, YuvPixelFormat, YuvTextureRingBuffer,
 };
 
+pub mod render_path;
+pub use render_path::{
+    DisableReason, DxgiFailureReason, DxgiImportState, FrameSource, PreviewRenderError,
+};
+
+pub mod frame_resource;
+pub use frame_resource::{
+    ColorMatrix, ColorPrimaries, ColorRange, CpuFrame, FrameColorInfo, FrameResource,
+    FrameUploader, TransferFunction, VideoPixelFormat,
+};
+
+pub mod frame_request;
+pub use frame_request::{
+    FramePriority, FrameRequest, PresentationRequest, PreviewQuality, Viewport,
+};
+
+pub mod frame_telemetry;
+pub use frame_telemetry::{FrameTelemetry, FrameTelemetryRing};
+
+pub mod frame_cache;
+pub use frame_cache::FrameResourceCache;
+
+pub mod frame_scheduler;
+pub use frame_scheduler::{
+    DecodedCacheKey, FrameKey, FrameProducer, FrameScheduler, SchedulerConfig, SchedulerError,
+    SequenceId,
+};
+
+pub mod frame_deadline;
+pub use frame_deadline::FrameDeadline;
+
+pub mod performance_manager;
+pub use performance_manager::{
+    BackpressureError, PerformanceConfig, PerformanceManager, PerformanceTicket, PolicyState,
+    QueueMetrics,
+};
+
+pub use frame_telemetry::ResourceBudget;
+
+pub mod session_telemetry;
+pub use session_telemetry::{FramesBySource, SessionSnapshot, SessionTelemetryCollector};
+
+pub mod preview_capabilities;
+pub use preview_capabilities::PreviewCapabilities;
 pub mod capabilities;
 pub use capabilities::{DxgiImportState, FrameRenderPath, PreviewCapabilities, PreviewRenderError};
 
@@ -111,6 +155,7 @@ pub struct NativePreviewSession {
     pub text_pipeline: TextEffectPipeline,
     matte_prefetchers: HashMap<String, Arc<crate::clymatte::MattePrefetcher>>,
     compositors: Vec<CachedCompositor>,
+    pub dxgi_state: DxgiImportState,
 }
 
 struct CachedCompositor {
@@ -235,7 +280,26 @@ impl NativePreviewSession {
             text_pipeline,
             matte_prefetchers: HashMap::new(),
             compositors: Vec::new(),
+            dxgi_state: DxgiImportState::Unknown,
         }
+    }
+
+    pub fn mark_dxgi_failed(&mut self, reason: DxgiFailureReason) {
+        self.dxgi_state = DxgiImportState::Failed { reason };
+        log::warn!("[NativePreviewSession] DXGI zero-copy import marked Failed ({reason}) for this session");
+    }
+
+    pub fn mark_dxgi_disabled(&mut self, reason: DisableReason) {
+        self.dxgi_state = DxgiImportState::Disabled { reason };
+        log::info!("[NativePreviewSession] DXGI zero-copy import administratively Disabled ({reason})");
+    }
+
+    pub fn mark_dxgi_supported(&mut self) {
+        self.dxgi_state = DxgiImportState::Supported;
+    }
+
+    pub fn reset_dxgi_state(&mut self) {
+        self.dxgi_state = DxgiImportState::Unknown;
     }
 
     /// Return the persistent compositor for a render target configuration.
@@ -426,6 +490,16 @@ impl NativePreviewSession {
         imported: &crate::wgpu_compositor::dxgi_import::ImportedNv12Texture,
         params: &ColorTransformUniforms,
     ) -> Result<Arc<wgpu::Texture>, PreviewRenderError> {
+        if !self.gpu.nv12_supported {
+            return Err(PreviewRenderError::UnsupportedFeature(
+                "TEXTURE_FORMAT_NV12 is not supported on this adapter".to_string(),
+            ));
+        }
+        if source_width == 0 || source_height == 0 {
+            return Err(PreviewRenderError::DimensionMismatch {
+                expected: (1, 1),
+                got: (source_width, source_height),
+            });
         if source_width == 0 || source_height == 0 {
             return Err(PreviewRenderError::UnsupportedFormat(
                 "Source dimensions must be non-zero".to_string(),
@@ -2298,6 +2372,8 @@ mod tests {
             }
         };
 
+        let nv12_supported = renderer.device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12);
+        let capabilities = PreviewCapabilities::probe(&renderer.adapter, &renderer.device);
         let capabilities = PreviewCapabilities::negotiate(&renderer.adapter.features(), &renderer.gpu_info.backend);
         let gpu = Arc::new(GpuContext {
             instance: renderer.instance.clone(),
@@ -2306,6 +2382,8 @@ mod tests {
             capabilities,
             device: renderer.device,
             queue: renderer.queue,
+            nv12_supported,
+            capabilities,
         });
         let mut session = NativePreviewSession::new(gpu);
         let source_width = 64u32;
@@ -2331,5 +2409,49 @@ mod tests {
 
         assert_eq!(rgba.len(), (output_width * output_height * 4) as usize);
         assert_eq!(rgba[3], 255);
+    }
+
+    #[tokio::test]
+    async fn test_nv12_full_quad_coverage() {
+        let renderer = match NativeWgpuRenderer::new().await {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                eprintln!("Skipping NV12 full quad coverage test (no GPU adapter): {}", error);
+                return;
+            }
+        };
+
+        let width = 64u32;
+        let height = 64u32;
+        // Rec. 709 neutral gray: Y=128, U=128, V=128
+        let y_plane = vec![128u8; (width * height) as usize];
+        let uv_plane = vec![128u8; (width * height / 2) as usize];
+
+        let rgba = renderer
+            .render_nv12_frame(width, height, &y_plane, &uv_plane)
+            .await
+            .expect("NV12 rendering must succeed");
+
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+
+        // Check top-left corner (first triangle)
+        let tl_r = rgba[0];
+        let tl_g = rgba[1];
+        let tl_b = rgba[2];
+        let tl_a = rgba[3];
+        assert_eq!(tl_a, 255, "Top-left alpha must be 255");
+        assert!(tl_r > 0 && tl_g > 0 && tl_b > 0, "Top-left must not be black");
+
+        // Check bottom-right corner (second triangle, which failed when draw(0..3) was used)
+        let br_offset = ((width * height - 1) * 4) as usize;
+        let br_r = rgba[br_offset];
+        let br_g = rgba[br_offset + 1];
+        let br_b = rgba[br_offset + 2];
+        let br_a = rgba[br_offset + 3];
+        assert_eq!(br_a, 255, "Bottom-right alpha must be 255 (full quad coverage)");
+        assert!(
+            br_r > 0 && br_g > 0 && br_b > 0,
+            "Bottom-right corner must be shaded (second triangle of fullscreen quad)"
+        );
     }
 }

@@ -54,6 +54,10 @@ export function evaluateEffectCompatibility(
   manifest: EffectCompatibilityInput | BodyEffectManifest,
   caps: EngineCapabilities = LOCAL_ENGINE_CAPABILITIES,
 ): { compatible: boolean; reason?: string } {
+  // Check capture type requirement (skip if absent or "none")
+  if (
+    manifest.requirements.captureType &&
+    manifest.requirements.captureType !== "none" &&
   // Check capture type requirement (only if captureType is specified and not "none")
   if (
     manifest.requirements.captureType &&
