@@ -20,7 +20,12 @@ import type {
   NativeSurfacePresentation,
   NativeRasterLayerSnapshot,
   NativeSyncMetricsSnapshot,
+  NativeFramesBySource,
+  NativeSessionSnapshot,
 } from "./nativeCore";
+
+export type { NativeFramesBySource, NativeSessionSnapshot };
+
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -614,6 +619,21 @@ export async function getNativeSyncMetricsSnapshot(): Promise<NativeSyncMetricsS
   }
   return invoke<NativeSyncMetricsSnapshot>("get_sync_metrics_snapshot");
 }
+
+export async function getNativeSessionTelemetry(): Promise<NativeSessionSnapshot> {
+  if (!isTauriRuntime()) {
+    throw new Error("getNativeSessionTelemetry requires the Tauri runtime");
+  }
+  return invoke<NativeSessionSnapshot>("get_session_telemetry");
+}
+
+export async function resetNativeSessionTelemetry(): Promise<void> {
+  if (!isTauriRuntime()) {
+    throw new Error("resetNativeSessionTelemetry requires the Tauri runtime");
+  }
+  return invoke<void>("reset_session_telemetry");
+}
+
 
 export async function getNativeGpuStatus(): Promise<NativeGpuRuntimeStatus> {
   if (!isTauriRuntime()) {

@@ -3818,3 +3818,54 @@ mod tests {
         assert_eq!(raster.display_height(), 20.0);
     }
 }
+
+// ── Phase 5: Session performance telemetry ───────────────────────────────────
+
+/// Return a snapshot of the session-level rendering performance statistics.
+///
+/// This aggregates every frame that passed through [`PerformanceManager::record`]
+/// since the session started (or the last `reset_session` call). Unlike the
+/// rolling [`FrameTelemetryRing`] (which holds ~300 samples), the session
+/// snapshot accumulates lifetime totals: frames produced, dropped, deadline
+/// misses, peak latencies, source-path breakdown, and policy events.
+///
+/// All latency values are in **microseconds**.
+///
+/// # Frontend usage
+/// ```ts
+/// const stats = await invoke<SessionSnapshot>('get_session_telemetry');
+/// console.log(`${stats.frames_produced} frames, miss rate ${stats.miss_rate_pct?.toFixed(2)}%`);
+/// ```
+#[tauri::command]
+pub async fn get_session_telemetry(
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    use crate::wgpu_compositor::SessionTelemetryCollector;
+
+    // The SessionTelemetryCollector is managed Tauri state registered at startup.
+    // If not yet registered (headless test environments), return an empty snapshot.
+    let snapshot = if let Some(state) = app.try_state::<std::sync::Arc<SessionTelemetryCollector>>() {
+        state.snapshot()
+    } else {
+        SessionTelemetryCollector::new().snapshot()
+    };
+
+    serde_json::to_value(snapshot).map_err(|e| e.to_string())
+}
+
+/// Reset the session-level telemetry accumulator.
+///
+/// Clears all lifetime totals and restarts the session clock. Call on project
+/// open when you want per-project (rather than per-app-session) statistics.
+/// Does NOT affect the rolling [`FrameTelemetryRing`] or [`PolicyState`].
+#[tauri::command]
+pub async fn reset_session_telemetry(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use crate::wgpu_compositor::SessionTelemetryCollector;
+
+    if let Some(state) = app.try_state::<std::sync::Arc<SessionTelemetryCollector>>() {
+        state.reset_session();
+    }
+    Ok(())
+}

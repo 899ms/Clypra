@@ -39,6 +39,7 @@ use crate::wgpu_compositor::frame_request::FramePriority;
 use crate::wgpu_compositor::frame_resource::FrameResource;
 use crate::wgpu_compositor::frame_scheduler::{FrameKey, FrameScheduler, FrameTicket, SchedulerError};
 use crate::wgpu_compositor::frame_telemetry::{FrameTelemetry, FrameTelemetryRing, ResourceBudget};
+use crate::wgpu_compositor::session_telemetry::{SessionSnapshot, SessionTelemetryCollector};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Instant;
@@ -189,11 +190,30 @@ pub struct PerformanceManager {
     policy:           Arc<Mutex<PolicyState>>,
     config:           PerformanceConfig,
     last_policy_eval: Arc<Mutex<Instant>>,
+    /// Session-scoped aggregator — NOT cleared by `reset()`.
+    /// Use `reset_session()` to start a new per-project accumulation.
+    session:          SessionTelemetryCollector,
 }
 
 impl PerformanceManager {
     /// Create a new `PerformanceManager` wrapping the given scheduler.
+    ///
+    /// Optionally pass an existing [`SessionTelemetryCollector`] so the
+    /// same session instance is shared across Tauri state and this manager.
+    /// If `None`, a fresh collector is created.
     pub fn new(scheduler: FrameScheduler, config: PerformanceConfig) -> Self {
+        Self::with_session(scheduler, config, SessionTelemetryCollector::new())
+    }
+
+    /// Construct with an externally owned session collector.
+    ///
+    /// Use this when you need to hand the same `SessionTelemetryCollector` to
+    /// both Tauri state (for `get_session_telemetry`) and this manager.
+    pub fn with_session(
+        scheduler: FrameScheduler,
+        config:    PerformanceConfig,
+        session:   SessionTelemetryCollector,
+    ) -> Self {
         let capacity = config.telemetry_capacity;
         Self {
             scheduler,
@@ -201,7 +221,18 @@ impl PerformanceManager {
             policy:           Arc::new(Mutex::new(PolicyState::default())),
             config,
             last_policy_eval: Arc::new(Mutex::new(Instant::now())),
+            session,
         }
+    }
+
+    /// Borrow the session collector for Tauri state registration or diagnostics.
+    pub fn session_collector(&self) -> &SessionTelemetryCollector {
+        &self.session
+    }
+
+    /// Return a [`SessionSnapshot`] from the session-level aggregator.
+    pub fn session_snapshot(&self) -> SessionSnapshot {
+        self.session.snapshot()
     }
 
     // -----------------------------------------------------------------------
@@ -287,10 +318,13 @@ impl PerformanceManager {
         // Stamp the sample with the current instant for time-windowed metrics.
         telemetry.recorded_at = Some(Instant::now());
 
+        // Push to the rolling ring (drives PolicyState) and the session
+        // aggregator (drives lifetime statistics).
         {
             let mut ring = self.telemetry.lock();
-            ring.push(telemetry);
+            ring.push(telemetry.clone());
         }
+        self.session.push(&telemetry);
 
         // Throttled policy evaluation — at most once per eval_interval.
         let should_eval = {
@@ -335,14 +369,15 @@ impl PerformanceManager {
     }
 
     // -----------------------------------------------------------------------
-    // reset — clear on project close / session restart
+    // reset — clear ring + policy on project close
     // -----------------------------------------------------------------------
 
-    /// Clear telemetry ring, reset policy to defaults, and reset the
-    /// underlying scheduler.
+    /// Clear the rolling telemetry ring, reset policy to defaults, and reset
+    /// the underlying scheduler.
     ///
-    /// Call on project close or session restart. In-flight production jobs
-    /// complete normally but their telemetry is discarded.
+    /// **Does NOT reset the session aggregator.** Session lifetime stats span
+    /// the entire app session regardless of project open/close. Call
+    /// [`reset_session`] explicitly if you need per-project statistics.
     pub fn reset(&self) {
         {
             let mut ring = self.telemetry.lock();
@@ -355,6 +390,14 @@ impl PerformanceManager {
         self.scheduler.reset();
     }
 
+    /// Reset session-level statistics (e.g. on project open).
+    ///
+    /// Unlike [`reset`], this clears the [`SessionTelemetryCollector`] and
+    /// restarts the session clock. The rolling ring and policy are not touched.
+    pub fn reset_session(&self) {
+        self.session.reset_session();
+    }
+
     // -----------------------------------------------------------------------
     // evaluate_policy — internal
     // -----------------------------------------------------------------------
@@ -363,6 +406,11 @@ impl PerformanceManager {
         let misses = {
             let ring = self.telemetry.lock();
             ring.deadline_miss_count_1s()
+        };
+
+        let (bg_before, it_before) = {
+            let p = self.policy.lock();
+            (p.background_paused, p.interactive_throttled)
         };
 
         let mut policy = self.policy.lock();
@@ -377,6 +425,19 @@ impl PerformanceManager {
             policy.background_paused     = false;
         }
         // Between recovery_threshold and pause_threshold → maintain current state.
+
+        // Record policy change events in the session aggregator.
+        let bg_after = policy.background_paused;
+        let it_after = policy.interactive_throttled;
+        drop(policy);
+
+        // Only count state *transitions* into the throttled/paused state.
+        if bg_after && !bg_before || it_after && !it_before {
+            self.session.record_policy_event(
+                bg_after && !bg_before,
+                it_after && !it_before,
+            );
+        }
     }
 }
 

@@ -296,6 +296,36 @@ export interface NativeSyncMetricsSnapshot {
   timestamp_epoch_ms: number;
 }
 
+/** Source breakdown of rendered frames in the session. */
+export interface NativeFramesBySource {
+  dxgiNv12: number;
+  cpuNv12: number;
+  cpuRgba: number;
+  unknown: number;
+}
+
+/** Complete session performance snapshot from the Phase 5 PerformanceManager / SessionTelemetryCollector. */
+export interface NativeSessionSnapshot {
+  sessionDurationSecs: number;
+  framesProduced: number;
+  framesDropped: number;
+  deadlineMisses: number;
+  dropRatePct?: number | null;
+  missRatePct?: number | null;
+  avgDecodeUs?: number | null;
+  peakDecodeUs?: number | null;
+  avgQueueWaitUs?: number | null;
+  peakQueueWaitUs?: number | null;
+  avgIpcWaitUs?: number | null;
+  peakIpcWaitUs?: number | null;
+  avgGpuRenderUs?: number | null;
+  peakGpuRenderUs?: number | null;
+  framesBySource: NativeFramesBySource;
+  policyBackgroundPauses: number;
+  policyInteractiveThrottles: number;
+}
+
+
 export interface NativeFrameTime {
   frameIndex: number;
   ticks: number;

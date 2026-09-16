@@ -27,6 +27,7 @@
 
 import { getApiBaseUrl, getApiKey } from "@/lib/api/apiUtils";
 import { getAppVersion, getAppVersionSync } from "@/lib/app/appVersion";
+import type { NativeSessionSnapshot } from "@/lib/platform/tauri";
 
 // ── Tauri runtime guard ───────────────────────────────────────────────────────
 // Evaluated lazily at call time, not at module-load time. The module-level
@@ -51,6 +52,7 @@ const MAX_QUEUE_SIZE = 200;
 export type PerfLogKind =
   | "frontend-rollup"
   | "native-sync"
+  | "native-session-telemetry"
   | "native-diagnostic"
   | "playback-trace"
   | "fallback-event"
@@ -60,6 +62,7 @@ export type PerfLogKind =
   | "export-span"
   | "seek-span"
   | "ai-inference";
+
 
 export interface PerfLogEntry {
   kind: PerfLogKind;
@@ -241,6 +244,91 @@ class PerfLogService {
 
     this.stopTimers();
 
+    // ── Phase 5 Native Session Telemetry Capture ──────────────────────────────
+    // Capture the lifetime performance summary accumulated by PerformanceManager / SessionTelemetryCollector.
+    // This includes deadline misses, scheduler queue wait, decode latencies, dropped frames,
+    // render path breakdown, and policy throttling counts.
+    try {
+      const nativeStats = await tauriInvoke<NativeSessionSnapshot>("get_session_telemetry");
+      if (nativeStats && nativeStats.framesProduced > 0) {
+        // 1. Raw native session telemetry entry for full-fidelity Cloudflare R2 archival
+        this.queue.push({
+          kind: "native-session-telemetry",
+          sessionId,
+          timestampEpochMs: Date.now(),
+          payload: nativeStats,
+        });
+
+        // 2. Synthesized session-rollup formatted as PerformanceEventPayload
+        //    so clypra-api parses and stores it directly in Neon PostgreSQL / D1 metrics_summary!
+        const totalDurationMs = Math.max(1, Math.round(nativeStats.sessionDurationSecs * 1000));
+        const renderedFps =
+          nativeStats.sessionDurationSecs > 0
+            ? Number((nativeStats.framesProduced / nativeStats.sessionDurationSecs).toFixed(2))
+            : 60;
+
+        this.queue.push({
+          kind: "frontend-rollup",
+          sessionId,
+          timestampEpochMs: Date.now(),
+          payload: {
+            eventId: `native-session-rollup-${sessionId}-${Date.now()}`,
+            measurementSource: "session-rollup",
+            sessionId,
+            appVersion: this.resolveAppVersion(),
+            appBuildNumber: "1",
+            appEnvironment: import.meta.env.DEV ? "beta" : "production",
+            device: {
+              osFamily: typeof navigator !== "undefined" && navigator.userAgent.includes("Mac") ? "macos" : "windows",
+              gpuVendor: "gpu",
+              gpuModel: "native-wgpu",
+              screenResolution: typeof window !== "undefined" ? `${window.screen.width}x${window.screen.height}` : "1920x1080",
+              devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1,
+              cpuCores: typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 8,
+            },
+            video: {
+              width: 1920,
+              height: 1080,
+              resolutionBucket: "1080p",
+              codec: "native-frame",
+              colorSpace: "rec709",
+              bitDepth: 8,
+              nominalFps: 60,
+            },
+            workload: {
+              mode: "playback",
+              durationMs: totalDurationMs,
+              targetFps: 60,
+              renderedFps,
+              totalFrames: nativeStats.framesProduced,
+              droppedFrames: nativeStats.framesDropped,
+              droppedFramesRatio: (nativeStats.dropRatePct ?? 0) / 100,
+              staleFrames: 0,
+              cancelledFrames: 0,
+              peakRamMb: 512,
+              cacheHitRatio: 0,
+              isSessionRollup: true,
+              stageTimings: {
+                decodeUs: nativeStats.avgDecodeUs ?? undefined,
+                schedulerWaitUs: nativeStats.avgQueueWaitUs ?? undefined,
+                ipcWaitUs: nativeStats.avgIpcWaitUs ?? undefined,
+                submitPresentUs: nativeStats.avgGpuRenderUs ?? undefined,
+                totalTimeUs:
+                  (nativeStats.avgDecodeUs ?? 0) +
+                  (nativeStats.avgQueueWaitUs ?? 0) +
+                  (nativeStats.avgIpcWaitUs ?? 0) +
+                  (nativeStats.avgGpuRenderUs ?? 0),
+              },
+            },
+            nativeSession: nativeStats,
+            timestampMs: Date.now(),
+          },
+        });
+      }
+    } catch (err) {
+      console.warn("[PerfLogService] Failed to capture final session telemetry:", err);
+    }
+
     // Write a session-close marker before the final flush.
     this.queue.push({
       kind: "frontend-rollup",
@@ -364,11 +452,12 @@ class PerfLogService {
     }, FLUSH_INTERVAL_MS);
   }
 
-  /** Polls the Rust sync-metrics registry on each flush cycle. */
+  /** Polls the Rust sync-metrics and session-telemetry registries on each flush cycle. */
   private startSyncPollTimer(): void {
     if (this.syncPollTimer) clearInterval(this.syncPollTimer);
     this.syncPollTimer = setInterval(() => {
       void this.pollNativeSyncMetrics();
+      void this.pollNativeSessionTelemetry();
     }, SYNC_POLL_INTERVAL_MS);
   }
 
@@ -398,6 +487,23 @@ class PerfLogService {
       // Tauri not ready yet or command unavailable — silently skip.
     }
   }
+
+  private async pollNativeSessionTelemetry(): Promise<void> {
+    if (!this.sessionId) return;
+    try {
+      const snapshot = await tauriInvoke<NativeSessionSnapshot>("get_session_telemetry");
+      if (!snapshot || snapshot.framesProduced === 0) return;
+      this.enqueue({
+        kind: "native-session-telemetry",
+        sessionId: this.sessionId,
+        timestampEpochMs: Date.now(),
+        payload: snapshot,
+      });
+    } catch {
+      // Tauri not ready yet or command unavailable — silently skip.
+    }
+  }
+
 
   /** Subscribes to the Tauri native-diagnostic event bridge. */
   private async subscribeToNativeDiagnostics(): Promise<void> {

@@ -137,6 +137,11 @@ pub fn run() {
             )));
             app.manage(Arc::new(Mutex::new(native_audio::NativeAudioClock::new())));
 
+            // Phase 5: Session-scoped rendering performance telemetry.
+            // Registered early so it's accessible from all commands, including
+            // those that run before the GPU context is initialized.
+            app.manage(Arc::new(wgpu_compositor::SessionTelemetryCollector::new()));
+
             // Initialize MediaPipe AI tracking state
             app.manage(commands::ai::init_ai_state());
 
@@ -264,6 +269,9 @@ pub fn run() {
             get_native_gpu_status,
             probe_native_surface,
             resize_native_surface,
+            // ── Phase 5: Session performance telemetry ──────────────────────
+            get_session_telemetry,
+            reset_session_telemetry,
             hide_native_surface,
             get_native_surface_status,
             configure_native_playback,
