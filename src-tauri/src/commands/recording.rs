@@ -1,9 +1,7 @@
-/**
- * Screen Recording Commands
- *
- * Post-processing commands for screen recordings captured by the frontend.
- * Currently provides lossless video trimming via the bundled FFmpeg binary.
- */
+//! Screen Recording Commands
+//!
+//! Post-processing commands for screen recordings captured by the frontend.
+//! Currently provides lossless video trimming via the bundled FFmpeg binary.
 
 /// Trim a video file using FFmpeg stream copy (lossless, near-instant).
 ///
