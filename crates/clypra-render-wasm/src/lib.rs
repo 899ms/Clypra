@@ -22,6 +22,9 @@ use clypra_native_core::FrameRequest;
 // The include!() paths are relative to this file. Same pattern as the daemon
 // and CLI; the single source of truth lives in src-tauri/src/wgpu_compositor/.
 mod wgpu_compositor {
+    pub mod preview_capabilities {
+        include!("../../../src-tauri/src/wgpu_compositor/preview_capabilities.rs");
+    }
     pub mod chroma_key {
         include!("../../../src-tauri/src/wgpu_compositor/chroma_key.rs");
     }

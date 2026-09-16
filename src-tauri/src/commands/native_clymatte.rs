@@ -380,7 +380,7 @@ pub async fn clymatte_bake_clip(
                             let dy = (y as f32 - cy) / ry;
                             let d2 = dx * dx + dy * dy;
                             if d2 < 1.0 {
-                                let alpha = ((1.0 - d2.sqrt()).min(1.0).max(0.0) * 255.0) as u8;
+                                let alpha = ((1.0 - d2.sqrt()).clamp(0.0, 1.0) * 255.0) as u8;
                                 // Modulate by luminosity of decoded frame if available
                                 let rgba_idx = idx * 4;
                                 if rgba_idx + 3 < decoded_rgba.len() {
