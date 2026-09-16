@@ -26,7 +26,7 @@ const SIDEBAR_TABS = [
   { id: "media" as const, icon: YouTubeIcon, label: "Media" },
   { id: "audio" as const, icon: Music, label: "Audio" },
   { id: "text" as const, icon: TextIcon, label: "Text" },
-  { id: "smart-overlays" as const, icon: Sparkles, label: "Overlays" },
+  // { id: "smart-overlays" as const, icon: Sparkles, label: "Overlays" },
   { id: "stickers" as const, icon: Smile, label: "Stickers" },
   { id: "effects" as const, icon: Wand2, label: "Effects" },
   { id: "filters" as const, icon: Filter, label: "Filters" },
