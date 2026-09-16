@@ -413,11 +413,10 @@ fn decode_with_ffmpeg_cli(
     target_sample_rate: u32,
     target_channels: u16,
 ) -> Result<DecodedAudioClip, String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = crate::commands::binary_resolver::create_std_command("ffmpeg");
     command
-        .env("PATH", crate::commands::export::augmented_path())
         .arg("-v")
         .arg("error")
         .arg("-nostdin")

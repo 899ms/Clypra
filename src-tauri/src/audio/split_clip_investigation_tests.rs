@@ -9,7 +9,6 @@ use super::TICKS_PER_SECOND;
 use crate::commands::media::extract_waveform_data;
 use crate::native_audio::{decode_native_audio_clip, NativeAudioMixer, NativePcmClip};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -259,7 +258,7 @@ fn create_fixture() -> Result<PathBuf, String> {
         .as_nanos();
     let path = std::env::temp_dir().join(format!("clypra-split-audio-{nonce}.mp4"));
     let filter = "[1:a]volume=0.2[a1];[2:a]volume=0.5[a2];[3:a]volume=0.9[a3];[a1][a2][a3]concat=n=3:v=0:a=1[a]";
-    let output = Command::new("ffmpeg")
+    let output = crate::commands::binary_resolver::create_std_command("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",

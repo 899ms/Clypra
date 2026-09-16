@@ -1,11 +1,9 @@
-use crate::commands::export::augmented_path;
 /**
  * Screen Recording Commands
  *
  * Post-processing commands for screen recordings captured by the frontend.
  * Currently provides lossless video trimming via the bundled FFmpeg binary.
  */
-use std::process::Command;
 
 /// Trim a video file using FFmpeg stream copy (lossless, near-instant).
 ///
@@ -39,8 +37,7 @@ pub async fn trim_video(
         input_path, output_path, start_seconds, end_seconds, duration
     );
 
-    let output = Command::new("ffmpeg")
-        .env("PATH", augmented_path())
+    let output = crate::commands::binary_resolver::create_async_command("ffmpeg")
         .args([
             "-y", // Overwrite output without asking
             "-ss",
@@ -58,6 +55,7 @@ pub async fn trim_video(
             &output_path,
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to execute ffmpeg for trim: {}", e))?;
 
     if !output.status.success() {
@@ -118,9 +116,8 @@ pub async fn process_camera_recording(
         filters.join(",")
     };
 
-    let mut cmd = Command::new("ffmpeg");
-    cmd.env("PATH", augmented_path())
-        .args([
+    let mut cmd = crate::commands::binary_resolver::create_async_command("ffmpeg");
+    cmd.args([
             "-y",
             "-i",
             &input_path,
@@ -149,6 +146,7 @@ pub async fn process_camera_recording(
 
     let output = cmd
         .output()
+        .await
         .map_err(|e| format!("Failed to execute ffmpeg for camera processing: {}", e))?;
 
     if !output.status.success() {
