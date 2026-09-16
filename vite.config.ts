@@ -54,6 +54,10 @@ const workspaceAlias = hasWorkspace
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  worker: {
+    format: "es",
+  },
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
