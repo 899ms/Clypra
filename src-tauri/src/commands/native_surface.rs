@@ -189,7 +189,6 @@ fn configure_surface(
     } else {
         let parent = app
             .get_window("main")
-            .ok_or_else(|| "Main window is unavailable".to_string())?;
             .unwrap_or(window);
         let dpr = if geometry.device_pixel_ratio > 0.0 {
             geometry.device_pixel_ratio as f64

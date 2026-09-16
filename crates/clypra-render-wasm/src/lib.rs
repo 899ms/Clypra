@@ -15,6 +15,8 @@
 //! const png = await renderer.render_frame(JSON.stringify(request));
 //! ```
 
+#![allow(dead_code)]
+
 use wasm_bindgen::prelude::*;
 use clypra_native_core::FrameRequest;
 

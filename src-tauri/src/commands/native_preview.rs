@@ -1670,8 +1670,7 @@ async fn render_native_video_project_frame_bytes_timed(
     let can_attempt_dxgi = !request.layers.is_empty()
         && {
             let session = state.lock().await;
-            session.dxgi_state == DxgiImportState::Unknown
-                || session.dxgi_state == DxgiImportState::Supported
+            session.dxgi_state.is_usable()
         };
 
     #[cfg(target_os = "windows")]
@@ -1679,8 +1678,7 @@ async fn render_native_video_project_frame_bytes_timed(
         || std::env::var("CLYPRA_DISABLE_DXGI_ZERO_COPY").as_deref() == Ok("1");
 
     #[cfg(target_os = "windows")]
-    let dxgi_frames_result = if !request.layers.is_empty() && !dxgi_env_disabled {
-    let dxgi_frames_result = if can_attempt_dxgi {
+    let dxgi_frames_result = if can_attempt_dxgi && !dxgi_env_disabled {
         use crate::thumbnail_engine::decoder::DecodeFrameOptions;
         let decode_options = DecodeFrameOptions {
             allow_keyframe_approx: request.allow_keyframe_approx.unwrap_or(false)
@@ -1762,95 +1760,70 @@ async fn render_native_video_project_frame_bytes_timed(
     #[cfg(target_os = "windows")]
     if can_use_dxgi {
         if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
-    if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
-        if !session.gpu.capabilities.wgpu_nv12 {
-            log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12. Latching DXGI to Failed.");
-            session.dxgi_state = DxgiImportState::Failed;
-        } else {
-            use crate::wgpu_compositor::dxgi_import;
-            let mut import_all_ok = true;
-            for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
-                let layer_key = if !layer.layer_id.is_empty() {
-                    &layer.layer_id
-                } else {
-                    &layer.video_path
-                };
-                let params = match color_params(&color) {
-                    Ok(p) => p,
-                    Err(_) => {
-                    Err(e) => {
-                        log::warn!("Color param generation failed for layer {}: {}. Latching DXGI to Failed.", layer_key, e);
-                        session.dxgi_state = DxgiImportState::Failed;
-                        import_all_ok = false;
-                        break;
-                    }
-                };
-                match dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
-                    Ok(imported) => {
-                        match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
-                            Ok(texture) => {
-                                views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                                textures.push(texture);
-                            }
-                            Err(render_error) => {
-                                match render_error {
-                                    crate::wgpu_compositor::PreviewRenderError::UnsupportedFeature(_) => {
-                                        session.mark_dxgi_disabled(crate::wgpu_compositor::DisableReason::UnsupportedFeature);
-                                    }
-                                    crate::wgpu_compositor::PreviewRenderError::DimensionMismatch { .. } => {
-                                        session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::DimensionMismatch);
-                                    }
-                                    _ => {
-                                        session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::ImportFailed);
-                                    }
-                                }
-                                import_all_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    Err(reason) => {
-                        session.mark_dxgi_failed(reason);
-                        import_all_ok = false;
-                        break;
-                    }
-                if let Some(imported) = dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
-                    match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
-                        Ok(texture) => {
-                            views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                            textures.push(texture);
-                        }
+            if !session.gpu.capabilities.wgpu_nv12 {
+                log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12. Latching DXGI to Failed.");
+                session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::UnsupportedFormat);
+            } else {
+                use crate::wgpu_compositor::dxgi_import;
+                let mut import_all_ok = true;
+                for (layer, (shared, width, height, color)) in request.layers.iter().zip(frames.into_iter()) {
+                    let layer_key = if !layer.layer_id.is_empty() {
+                        &layer.layer_id
+                    } else {
+                        &layer.video_path
+                    };
+                    let params = match color_params(&color) {
+                        Ok(p) => p,
                         Err(e) => {
-                            log::warn!("DXGI imported texture render failed for layer {}: {}. Latching DXGI to Failed.", layer_key, e);
-                            session.dxgi_state = DxgiImportState::Failed;
+                            log::warn!("Color param generation failed for layer {}: {}. Latching DXGI to Failed.", layer_key, e);
+                            session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::ImportFailed);
+                            import_all_ok = false;
+                            break;
+                        }
+                    };
+                    match dxgi_import::import_into_wgpu(&session.gpu.device, shared) {
+                        Ok(imported) => {
+                            match session.render_nv12_from_imported_texture(layer_key, width, height, &imported, &params) {
+                                Ok(texture) => {
+                                    views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                                    textures.push(texture);
+                                }
+                                Err(render_error) => {
+                                    match render_error {
+                                        crate::wgpu_compositor::PreviewRenderError::UnsupportedFeature(_) => {
+                                            session.mark_dxgi_disabled(crate::wgpu_compositor::DisableReason::UnsupportedFeature);
+                                        }
+                                        crate::wgpu_compositor::PreviewRenderError::DimensionMismatch { .. } => {
+                                            session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::DimensionMismatch);
+                                        }
+                                        _ => {
+                                            session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::ImportFailed);
+                                        }
+                                    }
+                                    import_all_ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        Err(reason) => {
+                            session.mark_dxgi_failed(reason);
                             import_all_ok = false;
                             break;
                         }
                     }
-                } else {
-                    log::warn!("DXGI import_into_wgpu returned None for layer {}. Latching DXGI to Failed.", layer_key);
-                    session.dxgi_state = DxgiImportState::Failed;
-                    import_all_ok = false;
-                    break;
                 }
-            }
 
-            if import_all_ok {
-                session.mark_dxgi_supported();
-                decode_time_us = max_dec_us;
-                decoder_mutex_wait_us = total_wait_us;
-                dxgi_active = true;
-            } else {
-                views.clear();
-                textures.clear();
-                decode_time_us = max_dec_us;
-                decoder_mutex_wait_us = total_wait_us;
-                session.dxgi_state = DxgiImportState::Supported;
-                render_path = FrameRenderPath::ZeroCopyDxgi;
-            } else {
-                views.clear();
-                textures.clear();
-                render_path = FrameRenderPath::GpuUploadRing;
+                if import_all_ok {
+                    session.mark_dxgi_supported();
+                    decode_time_us = max_dec_us;
+                    decoder_mutex_wait_us = total_wait_us;
+                    dxgi_active = true;
+                    render_path = FrameRenderPath::ZeroCopyDxgi;
+                } else {
+                    views.clear();
+                    textures.clear();
+                    render_path = FrameRenderPath::GpuUploadRing;
+                }
             }
         }
     }

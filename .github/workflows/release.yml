@@ -21,7 +21,7 @@ jobs:
           - platform: "windows-latest"
             target: "x86_64-pc-windows-msvc"
             args: ""
-          - platform: "ubuntu-24.04"
+          - platform: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
             args: ""
 
@@ -32,7 +32,7 @@ jobs:
 
       # ── Linux ──────────────────────────────────────────────────────────────
       - name: Install System Dependencies (Linux)
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -45,15 +45,15 @@ jobs:
             libasound2-dev zlib1g-dev
 
       - name: Cache Static FFmpeg (Linux)
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-22.04'
         id: cache-ffmpeg-linux
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ffmpeg-static
-          key: ffmpeg-8.0-linux-static-v4-${{ matrix.target }}
+          key: ffmpeg-8.0-linux-static-v5-${{ matrix.target }}
 
       - name: Build Static FFmpeg (Linux)
-        if: matrix.platform == 'ubuntu-24.04' && steps.cache-ffmpeg-linux.outputs.cache-hit != 'true'
+        if: matrix.platform == 'ubuntu-22.04' && steps.cache-ffmpeg-linux.outputs.cache-hit != 'true'
         run: |
           mkdir -p /tmp/ffmpeg-src
           curl -sL https://ffmpeg.org/releases/ffmpeg-8.0.tar.xz | tar -xJ --strip-components=1 -C /tmp/ffmpeg-src
@@ -74,7 +74,7 @@ jobs:
           rm -rf /tmp/ffmpeg-src
 
       - name: Configure FFmpeg Environment (Linux)
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           echo "FFMPEG_DIR=${{ runner.temp }}/ffmpeg-static" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${{ runner.temp }}/ffmpeg-static/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
@@ -182,7 +182,7 @@ jobs:
         run: npx vitest run
 
       - name: Run Cargo Test Suite
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-22.04'
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       # ── macOS code-signing setup ───────────────────────────────────────────
