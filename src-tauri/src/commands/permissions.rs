@@ -198,7 +198,7 @@ pub async fn log_system_media_diagnostics() -> Result<SystemMediaDiagnostics, St
     );
 
     // List AVFoundation devices using ffmpeg
-    let ffmpeg_res = std::process::Command::new("ffmpeg")
+    let ffmpeg_res = crate::commands::binary_resolver::create_std_command("ffmpeg")
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output();
 

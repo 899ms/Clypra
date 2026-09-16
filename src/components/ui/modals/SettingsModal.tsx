@@ -874,12 +874,20 @@ function AboutTab() {
         </button>
       </div>
 
-      <div className="flex gap-4 text-[10px] text-text-muted/60 mt-4 border-t border-white/5 pt-4">
-        <span>Tauri 2.x</span>
-        <span>•</span>
-        <span>React 19</span>
-        <span>•</span>
-        <span>FFmpeg</span>
+      <div className="flex items-center justify-between w-full text-[10px] text-text-muted/60 mt-4 border-t border-white/5 pt-4">
+        <div className="flex gap-4">
+          <span>Tauri 2.x</span>
+          <span>•</span>
+          <span>React 19</span>
+          <span>•</span>
+          <span>FFmpeg (GPL)</span>
+        </div>
+        <button
+          onClick={() => openExternalUrl("https://github.com/AIEraDev/clypra/blob/main/THIRD_PARTY_LICENSES.md")}
+          className="hover:text-accent underline transition-colors cursor-pointer"
+        >
+          Third-Party Licenses
+        </button>
       </div>
     </div>
   );

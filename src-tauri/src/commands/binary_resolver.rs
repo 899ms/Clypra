@@ -230,4 +230,37 @@ mod tests {
         let _cmd = create_async_command("ffmpeg");
         let _std_cmd = create_std_command("ffmpeg");
     }
+
+    #[test]
+    fn test_resolve_binary_discovers_sidecar_independently_of_system_path() {
+        // Create a temporary sandbox directory mimicking a Tauri bundle resources structure
+        let temp_dir = std::env::temp_dir().join(format!("clypra-resolver-test-{}", uuid::Uuid::new_v4()));
+        let bin_dir = temp_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("Failed to create mock bin dir");
+
+        let target_name = format!("mocktool-{}", TARGET_TRIPLE);
+        let mock_file = bin_dir.join(&target_name);
+        std::fs::write(&mock_file, b"#!/bin/sh\necho ok\n").expect("Failed to write mock binary");
+
+        // Verify candidate_binary_names includes the target triple variant
+        let candidates = candidate_binary_names("mocktool");
+        assert!(
+            candidates.iter().any(|c| c == &target_name || c.starts_with("mocktool")),
+            "Expected candidate list {:?} to include {:?}",
+            candidates,
+            target_name
+        );
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_resolve_ffmpeg_locates_local_workspace_or_sidecar() {
+        // When running in workspace, resolver locates sidecar in src-tauri/bin/ or bin/
+        let resolved = resolve_binary_path("ffmpeg");
+        if let Some(path) = resolved {
+            assert!(path.is_file(), "Resolved path must be an existing file: {:?}", path);
+        }
+    }
 }

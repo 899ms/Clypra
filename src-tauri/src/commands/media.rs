@@ -273,8 +273,7 @@ async fn get_audio_duration(path: &str) -> Result<f64, String> {
         path
     );
 
-    let output = tokio::process::Command::new("ffprobe")
-        .env("PATH", augmented_path())
+    let output = crate::commands::binary_resolver::create_async_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -345,8 +344,7 @@ pub async fn extract_poster_frame(path: String, time: f64) -> Result<String, Str
 pub async fn extract_audio_artwork(path: String) -> Result<Option<String>, String> {
     eprintln!("[extract_audio_artwork] Extracting artwork from: {}", path);
 
-    let output = tokio::process::Command::new("ffmpeg")
-        .env("PATH", augmented_path())
+    let output = crate::commands::binary_resolver::create_async_command("ffmpeg")
         .args([
             "-i",
             &path,
@@ -403,8 +401,7 @@ pub async fn extract_audio_track(path: String) -> Result<String, String> {
         .to_string();
 
     // Call ffmpeg command to extract audio asynchronously
-    let output = tokio::process::Command::new("ffmpeg")
-        .env("PATH", augmented_path())
+    let output = crate::commands::binary_resolver::create_async_command("ffmpeg")
         .args([
             "-i",
             &path,
@@ -835,11 +832,8 @@ pub async fn extract_waveform_data(
     start_time: Option<f64>,
     duration: Option<f64>,
 ) -> Result<Vec<WaveformBucket>, String> {
-    use std::process::Command;
-
     // Use ffmpeg to decode audio to raw PCM samples (mono, 16kHz for efficiency)
-    let mut cmd = Command::new("ffmpeg");
-    cmd.env("PATH", augmented_path());
+    let mut cmd = crate::commands::binary_resolver::create_std_command("ffmpeg");
     if let Some(start) = start_time.filter(|v| v.is_finite() && *v > 0.0) {
         cmd.arg("-ss").arg(format!("{:.3}", start));
     }

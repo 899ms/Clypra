@@ -178,6 +178,20 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm ci
 
+      # ── Static FFmpeg Sidecars ─────────────────────────────────────────────
+      # Ensures authentic, standalone GPL FFmpeg and FFprobe binaries with
+      # hardware acceleration and software codecs (x264, x265, prores, vp9)
+      # are cryptographically verified against pinned SHA-256 digests and
+      # bundled into release artifacts (replaces development stub wrappers).
+      - name: Setup Verified Static FFmpeg Sidecars (macOS / Linux)
+        if: matrix.platform != 'windows-latest'
+        run: bash scripts/setup-sidecars.sh --target ${{ matrix.target }} --force
+
+      - name: Setup Verified Static FFmpeg Sidecars (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: powershell
+        run: .\scripts\setup-sidecars.ps1 -Target ${{ matrix.target }} -Force
+
       - name: Run Vitest Suite
         run: npx vitest run
 

@@ -12,6 +12,9 @@ TARGET_DIR="$PROJECT_ROOT/src-tauri/ffmpeg-static"
 
 if [ -f "$TARGET_DIR/lib/libavcodec.a" ] && [ -f "$TARGET_DIR/lib/libavformat.a" ]; then
   echo "✅ Static FFmpeg libraries found at: $TARGET_DIR"
+  if [ -f "$SCRIPT_DIR/setup-sidecars.sh" ]; then
+    bash "$SCRIPT_DIR/setup-sidecars.sh"
+  fi
   exit 0
 fi
 
@@ -73,3 +76,6 @@ make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 make install
 
 echo "✅ Static FFmpeg successfully installed to $TARGET_DIR"
+if [ -f "$SCRIPT_DIR/setup-sidecars.sh" ]; then
+  bash "$SCRIPT_DIR/setup-sidecars.sh"
+fi

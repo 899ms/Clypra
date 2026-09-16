@@ -754,10 +754,10 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                   <div className="w-2 h-2 rounded-full bg-destructive mt-0.5 shrink-0" />
                   <div>
                     <span className="text-[10px] font-medium text-destructive block">
-                      FFmpeg missing
+                      Export engine unavailable
                     </span>
                     <span className="text-[9px] text-text-muted leading-tight block mt-0.5">
-                      Install FFmpeg and add to PATH
+                      Please restart Clypra
                     </span>
                   </div>
                 </div>
@@ -1004,11 +1004,11 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                     <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
                     <div className="flex-1 min-w-0">
                       <p className="text-[12px] font-medium text-destructive">
-                        FFmpeg is required
+                        Export Engine Unavailable
                       </p>
                       <p className="text-[11px] text-text-muted mt-0.5 leading-relaxed">
-                        Video export requires FFmpeg to be installed and
-                        available in your system PATH.
+                        The video export engine could not be initialized. Please
+                        restart Clypra or contact support if the issue persists.
                       </p>
                     </div>
                   </div>

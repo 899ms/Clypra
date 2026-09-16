@@ -7,11 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-
-use crate::commands::export::augmented_path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,8 +90,7 @@ static MEDIA_JOBS: Lazy<Arc<Mutex<HashMap<String, JobRecord>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 async fn probe_json(path: &str) -> Result<serde_json::Value, String> {
-    let output = Command::new("ffprobe")
-        .env("PATH", augmented_path())
+    let output = crate::commands::binary_resolver::create_async_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -313,8 +309,8 @@ async fn run_extraction(
             return Ok(ExtractedMediaAsset { id: asset_id, name: format!("{} Audio", Path::new(&request.source_path).file_stem().and_then(|s| s.to_str()).unwrap_or("Extracted")), path: final_path.to_string_lossy().to_string(), media_type: "audio".to_string(), duration, size: tokio::fs::metadata(&final_path).await.map(|m| m.len()).unwrap_or(0), streams: output_streams, source_asset_id: request.source_asset_id, source_stream_index: request.source_stream_index, extraction_method: method, operation_fingerprint: fingerprint });
         }
 
-        let mut command = Command::new("ffmpeg");
-        command.env("PATH", augmented_path()).args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-i", &request.source_path, "-map", &format!("0:{}", request.source_stream_index), "-vn"]);
+        let mut command = crate::commands::binary_resolver::create_async_command("ffmpeg");
+        command.args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-i", &request.source_path, "-map", &format!("0:{}", request.source_stream_index), "-vn"]);
         if method == "streamCopy" { command.args(["-c:a", "copy"]); } else { command.args(["-c:a", &encoder]); }
         command.args(["-map_metadata", "0", "-y", partial_path.to_string_lossy().as_ref()]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
         let mut child = command.spawn().map_err(|e| format!("Failed to start FFmpeg: {e}"))?;

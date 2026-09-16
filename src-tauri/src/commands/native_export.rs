@@ -112,8 +112,7 @@ pub struct SelectedEncoder {
 
 #[allow(dead_code)]
 fn test_encoder_available(encoder: &str) -> bool {
-    let output = std::process::Command::new("ffmpeg")
-        .env("PATH", super::export::augmented_path())
+    let output = crate::commands::binary_resolver::create_std_command("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -535,8 +534,7 @@ fn validate_plan(plan: &NativeTimelineExportPlan) -> Result<(), String> {
 }
 
 async fn probe_has_audio(path: &str, cancellation: &CancellationToken) -> bool {
-    let mut child = match Command::new("ffprobe")
-        .env("PATH", super::export::augmented_path())
+    let mut child = match crate::commands::binary_resolver::create_async_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -602,8 +600,7 @@ async fn process_rss_bytes(pid: u32) -> Option<u64> {
 }
 
 async fn run_ffmpeg(args: &[String], cancellation: &CancellationToken) -> Result<u64, String> {
-    let mut child = Command::new("ffmpeg")
-        .env("PATH", super::export::augmented_path())
+    let mut child = crate::commands::binary_resolver::create_async_command("ffmpeg")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
