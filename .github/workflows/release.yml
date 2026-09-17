@@ -79,6 +79,13 @@ jobs:
           echo "FFMPEG_DIR=${{ runner.temp }}/ffmpeg-static" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${{ runner.temp }}/ffmpeg-static/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
 
+      - name: Build Glibc / C++ Compatibility Shim (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          mkdir -p ${{ runner.temp }}/compat
+          gcc -c -fPIC scripts/glibc_compat.c -o ${{ runner.temp }}/compat/glibc_compat.o
+          echo "RUSTFLAGS=-C link-arg=${{ runner.temp }}/compat/glibc_compat.o ${RUSTFLAGS:-}" >> $GITHUB_ENV
+
       # ── macOS ──────────────────────────────────────────────────────────────
       # whisper-rs-sys builds ggml via cmake. The only reliable way to set
       # the deployment target for cmake sub-builds inside cargo is via the
@@ -189,7 +196,7 @@ jobs:
 
       - name: Setup Verified Static FFmpeg Sidecars (Windows)
         if: matrix.platform == 'windows-latest'
-        shell: powershell
+        shell: pwsh
         run: .\scripts\setup-sidecars.ps1 -Target ${{ matrix.target }} -Force
 
       - name: Run Vitest Suite
@@ -252,6 +259,7 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+          retryAttempts: 3
 
   sync-updater-manifests:
     name: Sync latest.json and updater.json

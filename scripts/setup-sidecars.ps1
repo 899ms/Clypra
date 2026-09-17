@@ -38,7 +38,7 @@ $artifacts = @(
 )
 
 Write-Host "============================================================"
-Write-Host "📦 Installing static sidecars for target: $Target"
+Write-Host "[INFO] Installing static sidecars for target: $Target"
 Write-Host "============================================================"
 
 foreach ($item in $artifacts) {
@@ -47,7 +47,7 @@ foreach ($item in $artifacts) {
     if (-not $Force -and (Test-Path $destPath)) {
         $existingSize = (Get-Item $destPath).Length
         if ($existingSize -gt 1000000) {
-            Write-Host "✅ Sidecar already installed: $($item.dest) ($existingSize bytes). Pass -Force to re-download."
+            Write-Host "[OK] Sidecar already installed: $($item.dest) ($existingSize bytes). Pass -Force to re-download."
             continue
         }
     }
@@ -56,19 +56,19 @@ foreach ($item in $artifacts) {
     $tempDir = [System.IO.Path]::GetTempPath()
     $gzPath = Join-Path $tempDir "$($item.file)"
 
-    Write-Host "⬇️ Downloading $($item.name) from $url..."
+    Write-Host "[DOWNLOAD] Downloading $($item.name) from $url..."
     curl.exe -fsSL "$url" -o "$gzPath"
 
-    Write-Host "🔒 Verifying SHA-256 digest for $($item.file)..."
+    Write-Host "[VERIFY] Verifying SHA-256 digest for $($item.file)..."
     $actualSha = (Get-FileHash -Algorithm SHA256 -Path "$gzPath").Hash.ToLower()
     if ($actualSha -ne $item.sha) {
         Remove-Item -Force "$gzPath" -ErrorAction SilentlyContinue
-        Write-Error "❌ SHA-256 mismatch for $($item.file)! Expected: $($item.sha), Got: $actualSha"
+        Write-Error "[ERROR] SHA-256 mismatch for $($item.file)! Expected: $($item.sha), Got: $actualSha"
         exit 1
     }
-    Write-Host "🔒 SHA-256 verified: $actualSha"
+    Write-Host "[VERIFIED] SHA-256 verified: $actualSha"
 
-    Write-Host "📂 Decompressing to $destPath..."
+    Write-Host "[EXTRACT] Decompressing to $destPath..."
     $inStream = [System.IO.File]::OpenRead($gzPath)
     $gzStream = [System.IO.Compression.GZipStream]::new($inStream, [System.IO.Compression.CompressionMode]::Decompress)
     $outStream = [System.IO.File]::Create($destPath)
@@ -79,8 +79,8 @@ foreach ($item in $artifacts) {
     Remove-Item -Force "$gzPath" -ErrorAction SilentlyContinue
 
     $installedSize = (Get-Item $destPath).Length
-    Write-Host "✅ Successfully installed $($item.dest) ($installedSize bytes)"
+    Write-Host "[OK] Successfully installed $($item.dest) ($installedSize bytes)"
 }
 
 Write-Host ""
-Write-Host "🎉 Sidecars successfully configured!"
+Write-Host "[SUCCESS] Sidecars successfully configured!"
