@@ -13,8 +13,15 @@
 import type { Clip, TextClip } from "@/types";
 import { generateId } from "@/lib/utils/id";
 import { resolveTextEffectDefinition } from "@/lib/text/textClip";
-import type { TemplateDefinition, TemplateCustomization, TemplateElement } from "./types";
-import { resolveTextTemplateArtifact, type TextTemplateArtifact } from "@clypra-studio/engine";
+import type {
+  TemplateDefinition,
+  TemplateCustomization,
+  TemplateElement,
+} from "./types";
+import {
+  resolveTextTemplateArtifact,
+  type TextTemplateArtifact,
+} from "@clypra-studio/engine";
 import { calculateOptimalTemplateLayout } from "@/core/render/templateScale";
 
 export interface InstantiateTemplateOptions {
@@ -35,11 +42,13 @@ export interface InstantiateTemplateOptions {
  */
 export function instantiateTemplate(
   template: TemplateDefinition,
-  options: InstantiateTemplateOptions
+  options: InstantiateTemplateOptions,
 ): Clip {
   // Legacy definitions still instantiate through the compatibility adapter;
   // only a canonical artifact gets the first-class clip representation.
-  const artifact = resolveTextTemplateArtifact(template, { allowLegacy: false });
+  const artifact = resolveTextTemplateArtifact(template, {
+    allowLegacy: false,
+  });
   if (artifact) {
     return instantiateTextTemplateArtifact(artifact, options);
   }
@@ -48,17 +57,20 @@ export function instantiateTemplate(
   const canvasWidth = options.canvasWidth || template.canvasWidth || 1920;
   const canvasHeight = options.canvasHeight || template.canvasHeight || 1080;
   const revision = (template as any).revision;
-  const templateRevisionId = (template as any).revisionId ?? revision?.revisionId;
-  const templateContentHash = (template as any).contentHash ?? revision?.contentHash;
+  const templateRevisionId =
+    (template as any).revisionId ?? revision?.revisionId;
+  const templateContentHash =
+    (template as any).contentHash ?? revision?.contentHash;
   const templateSnapshot = cloneSerializable(template);
   const templateDependencies = Array.isArray((template as any).dependencies)
     ? cloneSerializable((template as any).dependencies)
     : undefined;
 
   // Build child clips for each template element
-  const elements = template.elements && template.elements.length > 0
-    ? template.elements
-    : extractElementsFromLegacyTemplate(template);
+  const elements =
+    template.elements && template.elements.length > 0
+      ? template.elements
+      : extractElementsFromLegacyTemplate(template);
 
   let textIndex = 0;
   const children: Clip[] = elements.map((element, index) => {
@@ -83,7 +95,11 @@ export function instantiateTemplate(
 
   const compoundClip: Clip = {
     id: compoundId,
-    name: template.displayName || template.name || template.label || "Text Template",
+    name:
+      template.displayName ||
+      template.name ||
+      template.label ||
+      "Text Template",
     kind: "compound",
     trackId: options.trackId,
     startTime: options.startTime,
@@ -117,40 +133,72 @@ export function instantiateTemplate(
  */
 export function instantiateTextTemplateArtifact(
   artifact: TextTemplateArtifact,
-  options: InstantiateTemplateOptions & { controlValues?: Record<string, unknown> },
+  options: InstantiateTemplateOptions & {
+    controlValues?: Record<string, unknown>;
+  },
 ): Clip {
-  const controlValues: Record<string, unknown> = { ...(options.controlValues || {}) };
-  const textNodes = artifact.document.nodes.filter((node: any) => node.type === "text") as any[];
+  const controlValues: Record<string, unknown> = {
+    ...(options.controlValues || {}),
+  };
+  const textNodes = artifact.document.nodes.filter(
+    (node: any) => node.type === "text",
+  ) as any[];
   for (const control of artifact.controls) {
-    const node = artifact.document.nodes.find((candidate: any) => candidate.id === control.target.nodeId) as any;
+    const node = artifact.document.nodes.find(
+      (candidate: any) => candidate.id === control.target.nodeId,
+    ) as any;
     const role = node?.role || "";
-    const nodeIndex = textNodes.findIndex((candidate) => candidate.id === control.target.nodeId);
+    const nodeIndex = textNodes.findIndex(
+      (candidate) => candidate.id === control.target.nodeId,
+    );
     if (control.type === "text") {
-      const value = options.customization?.layerTexts?.[control.target.nodeId]
-        ?? (role === "primary" ? options.customization?.primaryText : role === "secondary" ? options.customization?.secondaryText : role === "accent" ? options.customization?.accentText : undefined)
-        ?? (nodeIndex === 0 ? options.customization?.primaryText : nodeIndex === 1 ? options.customization?.secondaryText : nodeIndex === 2 ? options.customization?.accentText : undefined);
+      const value =
+        options.customization?.layerTexts?.[control.target.nodeId] ??
+        (role === "primary"
+          ? options.customization?.primaryText
+          : role === "secondary"
+            ? options.customization?.secondaryText
+            : role === "accent"
+              ? options.customization?.accentText
+              : undefined) ??
+        (nodeIndex === 0
+          ? options.customization?.primaryText
+          : nodeIndex === 1
+            ? options.customization?.secondaryText
+            : nodeIndex === 2
+              ? options.customization?.accentText
+              : undefined);
       if (value !== undefined) controlValues[control.id] = value;
     } else if (control.type === "color") {
-      const value = options.customization?.layerColors?.[control.target.nodeId]
-        ?? (role === "secondary" ? options.customization?.secondaryColor : options.customization?.primaryColor);
+      const value =
+        options.customization?.layerColors?.[control.target.nodeId] ??
+        (role === "secondary"
+          ? options.customization?.secondaryColor
+          : options.customization?.primaryColor);
       if (value !== undefined) controlValues[control.id] = value;
     }
   }
-  const duration = options.controlValues && artifact.timing.durationPolicy === "fixed"
-    ? artifact.timing.duration
-    : artifact.timing.duration;
+  const duration =
+    artifact.timing.durationPolicy === "fixed" ? artifact.timing.duration : 5.0; // configurable default for flexible/dynamic templates
 
   const primaryText =
-    (Object.values(controlValues).find((val) => typeof val === "string" && val.trim().length > 0) as string) ||
+    (Object.values(controlValues).find(
+      (val) => typeof val === "string" && val.trim().length > 0,
+    ) as string) ||
     textNodes[0]?.text ||
     "";
 
   const cleanLabel = artifact.metadata.label
-    ? artifact.metadata.label.replace(/^text-template-/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    ? artifact.metadata.label
+        .replace(/^text-template-/, "")
+        .replace(/[-_]/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
     : "Text Template";
 
-  const canvasWidth = options.canvasWidth || artifact.document?.canvas?.width || 1920;
-  const canvasHeight = options.canvasHeight || artifact.document?.canvas?.height || 1080;
+  const canvasWidth =
+    options.canvasWidth || artifact.document?.canvas?.width || 1920;
+  const canvasHeight =
+    options.canvasHeight || artifact.document?.canvas?.height || 1080;
   const layout = calculateOptimalTemplateLayout(
     artifact,
     canvasWidth,
@@ -167,7 +215,7 @@ export function instantiateTextTemplateArtifact(
     startTime: options.startTime,
     duration,
     trimIn: 0,
-    trimOut: 0,
+    trimOut: duration,
     x: layout.contentBounds.x,
     y: layout.contentBounds.y,
     width: layout.contentBounds.width,
@@ -185,12 +233,14 @@ export function instantiateTextTemplateArtifact(
     templateSnapshot: cloneSerializable(artifact),
     templateControlValues: cloneSerializable(controlValues),
     templateDependencySnapshot: cloneSerializable(artifact.dependencies),
-    templateDependencies: artifact.dependencies.textEffects.map((dependency) => ({
-      effectId: dependency.effectId,
-      revisionId: dependency.revisionId,
-      contentHash: dependency.contentHash,
-      snapshot: dependency.snapshot as any,
-    })),
+    templateDependencies: artifact.dependencies.textEffects.map(
+      (dependency) => ({
+        effectId: dependency.effectId,
+        revisionId: dependency.revisionId,
+        contentHash: dependency.contentHash,
+        snapshot: dependency.snapshot as any,
+      }),
+    ),
     compoundPreview: artifact.previews?.thumbnailUrl,
   } as Clip;
 }
@@ -215,7 +265,7 @@ export function instantiateTemplateElement(
     templateContentHash?: string;
     templateSnapshot?: TemplateDefinition;
     templateDependencies?: any[];
-  }
+  },
 ): Clip {
   const {
     trackId,
@@ -263,7 +313,7 @@ export function instantiateTemplateElement(
       startTime: 0, // relative to compound parent
       duration,
       trimIn: 0,
-      trimOut: 0,
+      trimOut: duration,
       mediaId: `text-${generateId("media")}`,
       text: finalText || "Text",
       fontFamily: textProps.fontFamily || "Inter Variable",
@@ -301,9 +351,12 @@ export function instantiateTemplateElement(
       styleDefinition: pinnedStyleDefinition
         ? cloneSerializable(pinnedStyleDefinition)
         : undefined,
-      styleRevisionId: textProps.styleRef?.revisionId ?? (textProps as any).styleRevisionId,
-      styleContentHash: textProps.styleRef?.contentHash ?? (textProps as any).styleContentHash,
-      styleSnapshot: textProps.styleRef?.snapshot ?? (textProps as any).styleSnapshot,
+      styleRevisionId:
+        textProps.styleRef?.revisionId ?? (textProps as any).styleRevisionId,
+      styleContentHash:
+        textProps.styleRef?.contentHash ?? (textProps as any).styleContentHash,
+      styleSnapshot:
+        textProps.styleRef?.snapshot ?? (textProps as any).styleSnapshot,
       templateId,
       templateVersion,
       templateRevisionId,
@@ -316,7 +369,7 @@ export function instantiateTemplateElement(
       height: element.height,
       rotation: 0,
       opacity: 1,
-      zIndex: element.zIndex ?? (index + 1),
+      zIndex: element.zIndex ?? index + 1,
       textRole: textProps.textRole || "title",
     };
 
@@ -337,7 +390,7 @@ export function instantiateTemplateElement(
       startTime: 0,
       duration,
       trimIn: 0,
-      trimOut: 0,
+      trimOut: duration,
       mediaId: `solid-${generateId("media")}`,
       templateId,
       templateVersion,
@@ -362,7 +415,7 @@ export function instantiateTemplateElement(
     startTime: 0,
     duration,
     trimIn: 0,
-    trimOut: 0,
+    trimOut: duration,
     mediaId: element.imageProperties?.assetId || `image-${generateId("media")}`,
     mediaUrl: element.imageProperties?.url,
     templateId,
@@ -389,13 +442,15 @@ function cloneSerializable<T>(value: T): T {
  */
 export function applyTemplateStyle(
   targetClip: TextClip,
-  template: TemplateDefinition
+  template: TemplateDefinition,
 ): TextClip {
-  const elements = template.elements && template.elements.length > 0
-    ? template.elements
-    : extractElementsFromLegacyTemplate(template);
+  const elements =
+    template.elements && template.elements.length > 0
+      ? template.elements
+      : extractElementsFromLegacyTemplate(template);
 
-  const primaryTextElement = elements.find((e) => e.kind === "text") || elements[0];
+  const primaryTextElement =
+    elements.find((e) => e.kind === "text") || elements[0];
   if (!primaryTextElement || primaryTextElement.kind !== "text") {
     return targetClip;
   }
@@ -441,9 +496,12 @@ export function applyTemplateStyle(
     styleDefinition: pinnedStyleDefinition
       ? cloneSerializable(pinnedStyleDefinition)
       : undefined,
-    styleRevisionId: textProps.styleRef?.revisionId ?? (textProps as any).styleRevisionId,
-    styleContentHash: textProps.styleRef?.contentHash ?? (textProps as any).styleContentHash,
-    styleSnapshot: textProps.styleRef?.snapshot ?? (textProps as any).styleSnapshot,
+    styleRevisionId:
+      textProps.styleRef?.revisionId ?? (textProps as any).styleRevisionId,
+    styleContentHash:
+      textProps.styleRef?.contentHash ?? (textProps as any).styleContentHash,
+    styleSnapshot:
+      textProps.styleRef?.snapshot ?? (textProps as any).styleSnapshot,
   };
 }
 
@@ -515,40 +573,71 @@ function extractElementsFromLegacyTemplate(template: any): TemplateElement[] {
         color: typeof layer.color === "string" ? layer.color : "#FFFFFF",
         align: layer.align || "left",
         verticalAlign: layer.verticalAlign || "middle",
-        fontWeight: typeof layer.fontWeight === "number" ? layer.fontWeight : 400,
+        fontWeight:
+          typeof layer.fontWeight === "number" ? layer.fontWeight : 400,
         fontStyle: layer.fontStyle || "normal",
-        letterSpacing: typeof layer.letterSpacing === "number" ? layer.letterSpacing : 0,
-        lineHeight: typeof layer.lineHeight === "number" ? layer.lineHeight : 1.2,
+        letterSpacing:
+          typeof layer.letterSpacing === "number" ? layer.letterSpacing : 0,
+        lineHeight:
+          typeof layer.lineHeight === "number" ? layer.lineHeight : 1.2,
         styleId: layer.styleId ?? layer.styleRef?.effectId,
         styleRef: layer.styleRef,
         styleDefinition: layer.styleDefinition,
         styleVersion: layer.styleVersion ?? (layer.styleRef ? 1 : undefined),
-        parameterOverrides: layer.parameterOverrides ?? layer.styleRef?.parameterOverrides,
+        parameterOverrides:
+          layer.parameterOverrides ?? layer.styleRef?.parameterOverrides,
         stroke: layer.stroke
           ? {
-              color: typeof layer.stroke.color === "string" ? layer.stroke.color : "#000000",
-              width: typeof layer.stroke.width === "number" ? layer.stroke.width : 1,
+              color:
+                typeof layer.stroke.color === "string"
+                  ? layer.stroke.color
+                  : "#000000",
+              width:
+                typeof layer.stroke.width === "number" ? layer.stroke.width : 1,
             }
           : undefined,
         shadow: layer.shadow
           ? {
-              color: typeof layer.shadow.color === "string" ? layer.shadow.color : "#000000",
-              blur: typeof layer.shadow.blur === "number" ? layer.shadow.blur : 0,
-              offsetX: typeof layer.shadow.offsetX === "number" ? layer.shadow.offsetX : 0,
-              offsetY: typeof layer.shadow.offsetY === "number" ? layer.shadow.offsetY : 0,
+              color:
+                typeof layer.shadow.color === "string"
+                  ? layer.shadow.color
+                  : "#000000",
+              blur:
+                typeof layer.shadow.blur === "number" ? layer.shadow.blur : 0,
+              offsetX:
+                typeof layer.shadow.offsetX === "number"
+                  ? layer.shadow.offsetX
+                  : 0,
+              offsetY:
+                typeof layer.shadow.offsetY === "number"
+                  ? layer.shadow.offsetY
+                  : 0,
             }
           : undefined,
         background: layer.backgroundColor
           ? {
-              color: typeof layer.backgroundColor === "string" ? layer.backgroundColor : "#000000",
+              color:
+                typeof layer.backgroundColor === "string"
+                  ? layer.backgroundColor
+                  : "#000000",
               padding: typeof layer.padding === "number" ? layer.padding : 0,
-              borderRadius: typeof layer.backgroundRadius === "number" ? layer.backgroundRadius : 0,
+              borderRadius:
+                typeof layer.backgroundRadius === "number"
+                  ? layer.backgroundRadius
+                  : 0,
             }
           : undefined,
-        backgroundColor: typeof layer.backgroundColor === "string" ? layer.backgroundColor : undefined,
+        backgroundColor:
+          typeof layer.backgroundColor === "string"
+            ? layer.backgroundColor
+            : undefined,
         fontId: layer.fontId,
-        maxWidth: typeof layer.maxWidth === "number" ? layer.maxWidth : undefined,
-        textRole: layer.role === "primary" || layer.role === "secondary" ? "title" : undefined,
+        maxWidth:
+          typeof layer.maxWidth === "number" ? layer.maxWidth : undefined,
+        textRole:
+          layer.role === "primary" || layer.role === "secondary"
+            ? "title"
+            : undefined,
         animation: layer.animation
           ? {
               preset: layer.animation.in || "none",

@@ -114,10 +114,18 @@ export function measureTemplateContentBounds(
         : 0;
 
     const bgPanel = (node as any).backgroundPanel;
-    const padL = Number(bgPanel?.paddingLeft ?? (node as any).style?.paddingLeft ?? 0);
-    const padR = Number(bgPanel?.paddingRight ?? (node as any).style?.paddingRight ?? padL);
-    const padT = Number(bgPanel?.paddingTop ?? (node as any).style?.paddingTop ?? 0);
-    const padB = Number(bgPanel?.paddingBottom ?? (node as any).style?.paddingBottom ?? padT);
+    const padL = Number(
+      bgPanel?.paddingLeft ?? (node as any).style?.paddingLeft ?? 0,
+    );
+    const padR = Number(
+      bgPanel?.paddingRight ?? (node as any).style?.paddingRight ?? padL,
+    );
+    const padT = Number(
+      bgPanel?.paddingTop ?? (node as any).style?.paddingTop ?? 0,
+    );
+    const padB = Number(
+      bgPanel?.paddingBottom ?? (node as any).style?.paddingBottom ?? padT,
+    );
 
     let nodeW: number;
     let nodeH: number;
@@ -225,7 +233,8 @@ export function calculateOptimalTemplateLayout(
 
   const bounds = measureTemplateContentBounds(artifact, controlValues);
   const isPortrait = cWidth < cHeight;
-  const isSquare = Math.abs(cWidth - cHeight) / Math.max(cWidth, cHeight) < 0.08;
+  const isSquare =
+    Math.abs(cWidth - cHeight) / Math.max(cWidth, cHeight) < 0.08;
 
   // 1. Target width proportion:
   // In portrait mobile view (9:16 / 4:5), titles/badges must be prominent (58% - 66% width).
@@ -240,8 +249,7 @@ export function calculateOptimalTemplateLayout(
   const minLegibleFontSize = Math.round(
     (Math.min(cWidth, cHeight) / 1080) * 64,
   );
-  const scaleByFontSize =
-    minLegibleFontSize / Math.max(16, bounds.maxFontSize);
+  const scaleByFontSize = minLegibleFontSize / Math.max(16, bounds.maxFontSize);
 
   // Desired prominent scale takes the larger of width coverage and font size floor
   const desiredScale = Math.max(scaleByWidth, scaleByFontSize);
@@ -284,27 +292,26 @@ export function calculateOptimalTemplateLayout(
   }
 
   // 5. Safe margin clamping (5% safe area protection):
+  // Resolve each axis in one pass. If content is too wide/tall to satisfy both
+  // margins simultaneously, center it between the two violated edges.
   const marginX = cWidth * 0.05;
   const marginY = cHeight * 0.05;
 
-  const contentLeft = offsetX + bounds.minX * scale;
-  const contentRight = offsetX + bounds.maxX * scale;
-  const contentTop = offsetY + bounds.minY * scale;
-  const contentBottom = offsetY + bounds.maxY * scale;
+  const minOffsetX = marginX - bounds.minX * scale;
+  const maxOffsetX = cWidth - marginX - bounds.maxX * scale;
+  offsetX = Math.round(
+    maxOffsetX >= minOffsetX
+      ? Math.max(minOffsetX, Math.min(maxOffsetX, offsetX))
+      : (minOffsetX + maxOffsetX) / 2, // content too wide — center it
+  );
 
-  if (contentRight > cWidth - marginX) {
-    offsetX = Math.round(cWidth - marginX - bounds.maxX * scale);
-  }
-  if (contentLeft < marginX) {
-    offsetX = Math.round(marginX - bounds.minX * scale);
-  }
-
-  if (contentBottom > cHeight - marginY) {
-    offsetY = Math.round(cHeight - marginY - bounds.maxY * scale);
-  }
-  if (contentTop < marginY) {
-    offsetY = Math.round(marginY - bounds.minY * scale);
-  }
+  const minOffsetY = marginY - bounds.minY * scale;
+  const maxOffsetY = cHeight - marginY - bounds.maxY * scale;
+  offsetY = Math.round(
+    maxOffsetY >= minOffsetY
+      ? Math.max(minOffsetY, Math.min(maxOffsetY, offsetY))
+      : (minOffsetY + maxOffsetY) / 2, // content too tall — center it
+  );
 
   return {
     scale,

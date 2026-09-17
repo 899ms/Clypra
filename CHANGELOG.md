@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-17
+
+### 🧠 AI Body Effects & WebKit Worker Reliability
+
+- **Classic worker fallback for MediaPipe body segmentation** — migrated `bodySegmentation.worker.ts` from module worker (`{ type: "module" }`) to classic worker (`{ type: "classic" }`). Resolves the `"ModuleFactory not set."` WASM loader failure under WKWebView (macOS) that triggered silent degradation to heuristic body segmentation in v1.5.0.
+- **Inference resolution clamping & adaptive mask upscaling** — clamped segmentation inference dimension to 512px with hardware-accelerated Canvas2D bilinear upscaling, maintaining responsive scrub FPS.
+- **Per-clip serial worker dispatch** — added `dispatchOrQueue` with timeout protection in `bodySegmentationWorkerClient.ts` to prevent out-of-order mask responses during rapid playhead scrubbing.
+
+### 🔤 Text Effects & Templates Enhancements
+
+- **Text transform styling** — added comprehensive support for CSS-style `uppercase`, `lowercase`, and `capitalize` text transforms in text effects and template layout calculations (`applyTextTransform`).
+- **Template document node font preloading** — updated `templateStore.ts` to automatically extract and preload fonts from document nodes in text template artifacts.
+- **Sanitized text style updates** — fixed text clip style updates to preserve cleaned position and dimension recalculations when modifying typography properties.
+
 ## [1.5.0] - 2026-09-12
 
 ### ⚡ Zero-Copy Hardware Acceleration & Performance (Windows & Cross-Platform)

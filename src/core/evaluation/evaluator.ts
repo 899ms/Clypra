@@ -251,20 +251,19 @@ export function evaluateTimelineScene(
         textClip.styleRevisionId,
         textClip.styleContentHash,
       );
+
+      // make intent explicit
       const styleDefinition =
-        catalogStyleDefinition || textClip.styleSnapshot
+        catalogStyleDefinition != null || textClip.styleSnapshot != null
           ? ({
-              ...(catalogStyleDefinition || {}),
+              ...(catalogStyleDefinition ?? {}),
               id: textClip.styleId,
-              name:
-                (catalogStyleDefinition as any)?.name ||
-                textClip.styleId ||
-                "Pinned Text Effect",
               scene:
                 textClip.styleSnapshot ??
                 (catalogStyleDefinition as any)?.scene,
             } as any)
           : undefined;
+
       const styleTypography = resolveTextEffectTypography(styleDefinition);
       const templateStyle = templateTextNode?.style || {};
 
@@ -550,7 +549,9 @@ export function evaluateTimelineScene(
   }
 
   // ─── 3.1 Synthesize Foreground Subject Cutouts for "Behind Subject" Overlays ───
-  const behindSubjectClips = sortedClips.filter((c) => Boolean((c as any).behindSubject));
+  const behindSubjectClips = sortedClips.filter((c) =>
+    Boolean((c as any).behindSubject),
+  );
   if (behindSubjectClips.length > 0) {
     const synthesizedCutouts: EvaluatedMediaLayer[] = [];
     const mediaLayers = visualLayers.filter(
@@ -561,16 +562,22 @@ export function evaluateTimelineScene(
     );
 
     for (const behindClip of behindSubjectClips) {
-      const overlayLayers = visualLayers.filter((layer) => layer.clipId === behindClip.id);
+      const overlayLayers = visualLayers.filter(
+        (layer) => layer.clipId === behindClip.id,
+      );
       for (const overlayLayer of overlayLayers) {
-        const feather = typeof (behindClip as any).subjectFeather === "number"
-          ? (behindClip as any).subjectFeather
-          : 4;
+        const feather =
+          typeof (behindClip as any).subjectFeather === "number"
+            ? (behindClip as any).subjectFeather
+            : 4;
 
-        const underlyingMedia = mediaLayers.filter((media) => media.zIndex < overlayLayer.zIndex);
+        const underlyingMedia = mediaLayers.filter(
+          (media) => media.zIndex < overlayLayer.zIndex,
+        );
         for (const media of underlyingMedia) {
           const cutoutLayerId = `${media.layerId}:subject-cutout`;
-          if (synthesizedCutouts.some((s) => s.layerId === cutoutLayerId)) continue;
+          if (synthesizedCutouts.some((s) => s.layerId === cutoutLayerId))
+            continue;
 
           synthesizedCutouts.push({
             ...media,
@@ -608,7 +615,9 @@ export function evaluateTimelineScene(
     }
 
     if (synthesizedCutouts.length > 0) {
-      const allVisual = [...visualLayers, ...synthesizedCutouts].sort((a, b) => a.zIndex - b.zIndex);
+      const allVisual = [...visualLayers, ...synthesizedCutouts].sort(
+        (a, b) => a.zIndex - b.zIndex,
+      );
       visualLayers.length = 0;
       for (let idx = 0; idx < allVisual.length; idx++) {
         visualLayers.push({
@@ -770,7 +779,8 @@ export function isOpaqueFullFrameOccluder(
   if (layer.blendMode && layer.blendMode !== "normal") return false;
 
   // Animated stickers (GIF/Lottie) and transparent PNG overlays have alpha
-  if (layer.stickerFormat === "gif" || layer.stickerFormat === "lottie") return false;
+  if (layer.stickerFormat === "gif" || layer.stickerFormat === "lottie")
+    return false;
 
   // Cannot have body segmentation effects, chroma key, or custom alpha shaders
   if (
@@ -819,8 +829,7 @@ export function isOpaqueFullFrameOccluder(
   if (normRotation > 0.01 && normRotation < 359.99) return false;
 
   // Must cover the full canvas area (with 1.0px subpixel float tolerance)
-  const coversX =
-    layer.x <= 1.0 && layer.x + layer.width >= canvasWidth - 1.0;
+  const coversX = layer.x <= 1.0 && layer.x + layer.width >= canvasWidth - 1.0;
   const coversY =
     layer.y <= 1.0 && layer.y + layer.height >= canvasHeight - 1.0;
 
@@ -840,7 +849,8 @@ export function doesLayerOccludeLayer(
   if (top.layerType !== "media") return false;
   if (top.opacity < 0.999) return false;
   if (top.blendMode && top.blendMode !== "normal") return false;
-  if (top.stickerFormat === "gif" || top.stickerFormat === "lottie") return false;
+  if (top.stickerFormat === "gif" || top.stickerFormat === "lottie")
+    return false;
 
   if (
     top.effects &&
@@ -885,9 +895,11 @@ export function doesLayerOccludeLayer(
 
   // Top must completely enclose bottom's bounding box (with 1.0px subpixel float tolerance)
   const coversX =
-    top.x <= bottom.x + 1.0 && top.x + top.width >= bottom.x + bottom.width - 1.0;
+    top.x <= bottom.x + 1.0 &&
+    top.x + top.width >= bottom.x + bottom.width - 1.0;
   const coversY =
-    top.y <= bottom.y + 1.0 && top.y + top.height >= bottom.y + bottom.height - 1.0;
+    top.y <= bottom.y + 1.0 &&
+    top.y + top.height >= bottom.y + bottom.height - 1.0;
 
   return coversX && coversY;
 }

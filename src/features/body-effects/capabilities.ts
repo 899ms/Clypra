@@ -23,7 +23,7 @@ export interface EffectCompatibilityInput {
 }
 
 export const LOCAL_ENGINE_CAPABILITIES: EngineCapabilities = {
-  engineVersion: "1.5.0",
+  engineVersion: "1.5.1",
   availableProviders: new Set([
     "silhouette_mask",
     "mask:person",
