@@ -5,11 +5,17 @@ import { TextEffectsApi, TEXT_EFFECT_CATEGORIES } from "../api/textEffectsApi";
 import { builtInPresets } from "@clypra-studio/engine";
 import { getTextEffectCache } from "../cache/persistentCache";
 import { getApiHeaders, getApiBaseUrl } from "@/lib/api";
-import { convertConfigToDefinition, convertRawConfigToDefinition, type EffectDefinitionWithBounds } from "../lib/definitionConversion";
+import {
+  convertConfigToDefinition,
+  convertRawConfigToDefinition,
+  type EffectDefinitionWithBounds,
+} from "../lib/definitionConversion";
 
 const API_BASE = getApiBaseUrl();
 
-const initialDefinitions = builtInPresets.reduce<Record<string, EffectDefinitionWithBounds>>((acc, preset) => {
+const initialDefinitions = builtInPresets.reduce<
+  Record<string, EffectDefinitionWithBounds>
+>((acc, preset) => {
   acc[preset.id] = convertConfigToDefinition(preset);
   return acc;
 }, {});
@@ -24,7 +30,10 @@ interface EffectsState {
   // ── Phase 2: Full definitions ───────────────────────────────────
   definitions: Record<string, EffectDefinitionWithBounds>; // id → definition
   /** Revision identity for the compatibility id-keyed definition map. */
-  definitionRevisions: Record<string, { revisionId?: string; contentHash?: string }>;
+  definitionRevisions: Record<
+    string,
+    { revisionId?: string; contentHash?: string }
+  >;
   loadingId: string | null; // which card shows a spinner
   prefetchingIds: Set<string>; // silent background fetches
 
@@ -33,8 +42,15 @@ interface EffectsState {
   selectedCategory: string | null;
 
   // ── Actions ─────────────────────────────────────────────────────
-  loadCategory: (category: string, options?: { forceRefresh?: boolean }) => Promise<void>;
-  getDefinitionById: (id: string, category: string, options?: { revisionId?: string; contentHash?: string }) => Promise<EffectFullDefinition>;
+  loadCategory: (
+    category: string,
+    options?: { forceRefresh?: boolean },
+  ) => Promise<void>;
+  getDefinitionById: (
+    id: string,
+    category: string,
+    options?: { revisionId?: string; contentHash?: string },
+  ) => Promise<EffectFullDefinition>;
   selectEffect: (id: string, category: string) => Promise<void>;
   prefetchEffect: (id: string, category: string) => void; // fire and forget
   clearSelected: () => void;
@@ -50,10 +66,17 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
   indexError: null,
   definitions: initialDefinitions,
   definitionRevisions: Object.fromEntries(
-    Object.entries(initialDefinitions).map(([id, definition]) => [id, {
-      revisionId: (definition as any).revisionId ?? (definition as any).revision?.revisionId,
-      contentHash: (definition as any).contentHash ?? (definition as any).revision?.contentHash,
-    }]),
+    Object.entries(initialDefinitions).map(([id, definition]) => [
+      id,
+      {
+        revisionId:
+          (definition as any).revisionId ??
+          (definition as any).revision?.revisionId,
+        contentHash:
+          (definition as any).contentHash ??
+          (definition as any).revision?.contentHash,
+      },
+    ]),
   ),
   loadingId: null,
   prefetchingIds: new Set(),
@@ -70,7 +93,8 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     const timestamp = get().indexTimestamps[catKey] ?? 0;
     const isFresh = Date.now() - timestamp < EFFECT_CATEGORY_TTL_MS;
 
-    if (!options.forceRefresh && existing && existing.length > 0 && isFresh) return;
+    if (!options.forceRefresh && existing && existing.length > 0 && isFresh)
+      return;
 
     set({ indexLoading: true, indexError: null });
 
@@ -106,52 +130,87 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     }
   },
 
-  getDefinitionById: async (id, category, options: { revisionId?: string; contentHash?: string } = {}) => {
+  getDefinitionById: async (
+    id,
+    category,
+    options: { revisionId?: string; contentHash?: string } = {},
+  ) => {
     console.log(`[EffectsStore:Cache] 🔍 Looking for effect: ${id}`);
-    const catalogItem = get().index[category.toLowerCase()]?.find((item) => item.id === id);
-    const requestedRevisionId = options.revisionId ?? (catalogItem as any)?.revisionId ?? (catalogItem as any)?.revision?.revisionId;
-    const requestedContentHash = options.contentHash ?? (catalogItem as any)?.contentHash ?? (catalogItem as any)?.revision?.contentHash;
-    const matchesRequestedRevision = (definition: EffectFullDefinition | undefined) => {
+    const catalogItem = get().index[category.toLowerCase()]?.find(
+      (item) => item.id === id,
+    );
+    const requestedRevisionId =
+      options.revisionId ??
+      (catalogItem as any)?.revisionId ??
+      (catalogItem as any)?.revision?.revisionId;
+    const requestedContentHash =
+      options.contentHash ??
+      (catalogItem as any)?.contentHash ??
+      (catalogItem as any)?.revision?.contentHash;
+    const matchesRequestedRevision = (
+      definition: EffectFullDefinition | undefined,
+    ) => {
       if (!definition) return false;
       const identity = get().definitionRevisions[id] ?? {
-        revisionId: (definition as any).revisionId ?? (definition as any).revision?.revisionId,
-        contentHash: (definition as any).contentHash ?? (definition as any).revision?.contentHash,
+        revisionId:
+          (definition as any).revisionId ??
+          (definition as any).revision?.revisionId,
+        contentHash:
+          (definition as any).contentHash ??
+          (definition as any).revision?.contentHash,
       };
-      if (requestedRevisionId && identity.revisionId !== requestedRevisionId) return false;
-      if (requestedContentHash && identity.contentHash !== requestedContentHash) return false;
+      if (requestedRevisionId && identity.revisionId !== requestedRevisionId)
+        return false;
+      if (requestedContentHash && identity.contentHash !== requestedContentHash)
+        return false;
       return true;
     };
 
-    const cacheDefinition = (definition: EffectFullDefinition) => set((state) => ({
-      definitions: { ...state.definitions, [id]: definition as any },
-      definitionRevisions: {
-        ...state.definitionRevisions,
-        [id]: {
-          revisionId: (definition as any).revisionId ?? (definition as any).revision?.revisionId ?? requestedRevisionId,
-          contentHash: (definition as any).contentHash ?? (definition as any).revision?.contentHash ?? requestedContentHash,
+    const cacheDefinition = (definition: EffectFullDefinition) =>
+      set((state) => ({
+        definitions: { ...state.definitions, [id]: definition as any },
+        definitionRevisions: {
+          ...state.definitionRevisions,
+          [id]: {
+            revisionId:
+              (definition as any).revisionId ??
+              (definition as any).revision?.revisionId ??
+              requestedRevisionId,
+            contentHash:
+              (definition as any).contentHash ??
+              (definition as any).revision?.contentHash ??
+              requestedContentHash,
+          },
         },
-      },
-    }));
+      }));
 
     // 1. Check memory cache (Zustand state)
     const cached = get().definitions[id];
     if (matchesRequestedRevision(cached)) {
-      console.log(`[EffectsStore:Cache] ✅ CACHE HIT (Memory) - Effect "${id}" loaded from in-memory cache`);
+      console.log(
+        `[EffectsStore:Cache] ✅ CACHE HIT (Memory) - Effect "${id}" loaded from in-memory cache`,
+      );
       return cached;
     }
 
-    console.log(`[EffectsStore:Cache] ⚠️ Cache miss (Memory) - Effect "${id}" not in memory`);
+    console.log(
+      `[EffectsStore:Cache] ⚠️ Cache miss (Memory) - Effect "${id}" not in memory`,
+    );
 
     // 2. Check built-in presets (bundled)
     const localPreset = builtInPresets.find((p) => p.id === id);
     if (localPreset) {
-      console.log(`[EffectsStore:Cache] ✅ CACHE HIT (Built-in) - Effect "${id}" found in built-in presets`);
+      console.log(
+        `[EffectsStore:Cache] ✅ CACHE HIT (Built-in) - Effect "${id}" found in built-in presets`,
+      );
       const def = convertConfigToDefinition(localPreset);
       cacheDefinition(def);
       return def;
     }
 
-    console.log(`[EffectsStore:Cache] ⚠️ Cache miss (Built-in) - Effect "${id}" not in presets`);
+    console.log(
+      `[EffectsStore:Cache] ⚠️ Cache miss (Built-in) - Effect "${id}" not in presets`,
+    );
 
     // 3. Check persistent cache (IndexedDB)
     const persistentCache = getTextEffectCache();
@@ -160,15 +219,21 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       contentHash: requestedContentHash,
     });
     if (persistedDef) {
-      console.log(`[EffectsStore:Cache] ✅ CACHE HIT (IndexedDB) - Effect "${id}" loaded from persistent storage`);
+      console.log(
+        `[EffectsStore:Cache] ✅ CACHE HIT (IndexedDB) - Effect "${id}" loaded from persistent storage`,
+      );
       const definition = convertRawConfigToDefinition(persistedDef);
       // Populate memory cache
       cacheDefinition(definition);
       return definition;
     }
 
-    console.log(`[EffectsStore:Cache] ⚠️ Cache miss (IndexedDB) - Effect "${id}" not in persistent storage`);
-    console.log(`[EffectsStore:Cache] 🌐 Fetching from API: ${id} (category: ${category})`);
+    console.log(
+      `[EffectsStore:Cache] ⚠️ Cache miss (IndexedDB) - Effect "${id}" not in persistent storage`,
+    );
+    console.log(
+      `[EffectsStore:Cache] 🌐 Fetching from API: ${id} (category: ${category})`,
+    );
 
     // 4. Fetch from API (last resort)
     // API returns raw TextEffectConfig format (flat structure)
@@ -185,12 +250,22 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     const data = await res.json();
     const fetchTime = (performance.now() - startTime).toFixed(2);
 
-    console.log(`[EffectsStore:Cache] 📥 Fetched raw data from API for "${id}":`, data);
+    console.log(
+      `[EffectsStore:Cache] 📥 Fetched raw data from API for "${id}":`,
+      data,
+    );
     const definition = convertRawConfigToDefinition(data);
-    console.log(`[EffectsStore:Cache] ⚙️ Converted definition for cache for "${id}":`, definition);
+    console.log(
+      `[EffectsStore:Cache] ⚙️ Converted definition for cache for "${id}":`,
+      definition,
+    );
 
-    console.log(`[EffectsStore:Cache] ✅ API FETCH SUCCESS - Effect "${id}" downloaded in ${fetchTime}ms`);
-    console.log(`[EffectsStore:Cache] 💾 Caching effect "${id}" to memory + IndexedDB`);
+    console.log(
+      `[EffectsStore:Cache] ✅ API FETCH SUCCESS - Effect "${id}" downloaded in ${fetchTime}ms`,
+    );
+    console.log(
+      `[EffectsStore:Cache] 💾 Caching effect "${id}" to memory + IndexedDB`,
+    );
 
     // Store definition in all cache layers
     cacheDefinition(definition);
@@ -199,7 +274,9 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       contentHash: requestedContentHash,
     }); // Persist to disk
 
-    console.log(`[EffectsStore:Cache] ✅ CACHE SAVED - Effect "${id}" now available in all cache layers`);
+    console.log(
+      `[EffectsStore:Cache] ✅ CACHE SAVED - Effect "${id}" now available in all cache layers`,
+    );
 
     return definition;
   },
@@ -227,7 +304,10 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
         loadingId: null,
       });
     } catch (err) {
-      console.error(`[EffectsStore:Select] ❌ Failed to load effect ${id}:`, err);
+      console.error(
+        `[EffectsStore:Select] ❌ Failed to load effect ${id}:`,
+        err,
+      );
       set({ loadingId: null });
     }
   },
@@ -239,12 +319,13 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     console.log(`[EffectsStore:Prefetch] 🔮 Prefetching effect: ${id}`);
     const catKey = category.toLowerCase();
     const state = get();
-    if (state.definitions[id] && !state.definitionRevisions[id]?.revisionId) {
-      console.log(`[EffectsStore:Prefetch] ⏭️ Skipped - already cached: ${id}`);
-      return; // already cached
-    }
+    // skip if definition is in memory regardless of revision tracking
+    if (state.definitions[id]) return;
+
     if (state.prefetchingIds.has(id)) {
-      console.log(`[EffectsStore:Prefetch] ⏭️ Skipped - already prefetching: ${id}`);
+      console.log(
+        `[EffectsStore:Prefetch] ⏭️ Skipped - already prefetching: ${id}`,
+      );
       return; // already in flight
     }
 
@@ -257,24 +338,37 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     console.log(`[EffectsStore:Prefetch] 🌐 Starting background fetch: ${id}`);
     const startTime = performance.now();
 
-    const requestedRevisionId = (state.index[catKey]?.find((item) => item.id === id) as any)?.revisionId;
-    fetch(requestedRevisionId
-      ? `${API_BASE}/text-effects/${catKey}/${id}/revisions/${requestedRevisionId}`
-      : `${API_BASE}/text-effects/${catKey}/${id}`, {
-      cache: "reload",
-      headers: getApiHeaders(),
-    })
+    const requestedRevisionId = (
+      state.index[catKey]?.find((item) => item.id === id) as any
+    )?.revisionId;
+    fetch(
+      requestedRevisionId
+        ? `${API_BASE}/text-effects/${catKey}/${id}/revisions/${requestedRevisionId}`
+        : `${API_BASE}/text-effects/${catKey}/${id}`,
+      {
+        cache: "reload",
+        headers: getApiHeaders(),
+      },
+    )
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((data) => {
         const prefetchTime = (performance.now() - startTime).toFixed(2);
-        console.log(`[EffectsStore:Prefetch] ✅ Prefetch complete for ${id} in ${prefetchTime}ms`);
-        console.log(`[EffectsStore:Prefetch] 📥 Prefetched raw data from API for "${id}":`, data);
+        console.log(
+          `[EffectsStore:Prefetch] ✅ Prefetch complete for ${id} in ${prefetchTime}ms`,
+        );
+        console.log(
+          `[EffectsStore:Prefetch] 📥 Prefetched raw data from API for "${id}":`,
+          data,
+        );
 
         const definition = convertRawConfigToDefinition(data);
-        console.log(`[EffectsStore:Prefetch] ⚙️ Converted prefetch definition for "${id}":`, definition);
+        console.log(
+          `[EffectsStore:Prefetch] ⚙️ Converted prefetch definition for "${id}":`,
+          definition,
+        );
 
         set((s) => {
           const nextPrefetching = new Set(s.prefetchingIds);
@@ -284,8 +378,13 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
             definitionRevisions: {
               ...s.definitionRevisions,
               [id]: {
-                revisionId: (definition as any).revisionId ?? (definition as any).revision?.revisionId ?? requestedRevisionId,
-                contentHash: (definition as any).contentHash ?? (definition as any).revision?.contentHash,
+                revisionId:
+                  (definition as any).revisionId ??
+                  (definition as any).revision?.revisionId ??
+                  requestedRevisionId,
+                contentHash:
+                  (definition as any).contentHash ??
+                  (definition as any).revision?.contentHash,
               },
             },
             prefetchingIds: nextPrefetching,
@@ -293,7 +392,10 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
         });
       })
       .catch((error) => {
-        console.error(`[EffectsStore:Prefetch] ❌ Prefetch failed for ${id}:`, error);
+        console.error(
+          `[EffectsStore:Prefetch] ❌ Prefetch failed for ${id}:`,
+          error,
+        );
         set((s) => {
           const nextPrefetching = new Set(s.prefetchingIds);
           nextPrefetching.delete(id);
@@ -370,6 +472,8 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       }
     }
 
-    throw new Error(`Effect with ID ${id} not found in index or any category manifest`);
+    throw new Error(
+      `Effect with ID ${id} not found in index or any category manifest`,
+    );
   },
 }));

@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import { TemplateDefinition, TemplateCustomization, TemplateCategory, RenderedFrameSequence } from "./types";
+import {
+  TemplateDefinition,
+  TemplateCustomization,
+  TemplateCategory,
+  RenderedFrameSequence,
+} from "./types";
 import { renderToFrameSequence } from "./FrameRenderer";
 import { TextEffectsApi } from "@/features/text-effects/api/textEffectsApi";
 import { ALL_TEMPLATES } from "./templates/index";
@@ -59,7 +64,10 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
         isLoading: false,
       });
     } catch (err) {
-      console.warn("[Clypra:TemplateStore] Failed to fetch templates from API, falling back to static templates:", err);
+      console.warn(
+        "[Clypra:TemplateStore] Failed to fetch templates from API, falling back to static templates:",
+        err,
+      );
       set({
         templates: ALL_TEMPLATES,
         isApiConnected: false,
@@ -72,7 +80,11 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
     if (!template) {
       set({
         selectedTemplate: null,
-        customization: { primaryText: "Clypra", secondaryText: "", accentText: "" },
+        customization: {
+          primaryText: "Clypra",
+          secondaryText: "",
+          accentText: "",
+        },
       });
       return;
     }
@@ -80,26 +92,43 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
     let loadedTemplate = { ...template };
 
     // Check if template data is already loaded
-    const existingPayload = [loadedTemplate.templateData, loadedTemplate.lottieData, loadedTemplate]
-      .find((candidate) => Boolean(resolveTextTemplateArtifact(candidate)));
+    const existingPayload = [
+      loadedTemplate.templateData,
+      loadedTemplate.lottieData,
+      loadedTemplate,
+    ].find((candidate) => Boolean(resolveTextTemplateArtifact(candidate)));
     if (!existingPayload) {
       try {
         set({ isLoading: true });
         const revisionId = (loadedTemplate as any).revisionId;
         const data = revisionId
-          ? await TextEffectsApi.getTemplateData(loadedTemplate.category, loadedTemplate.id, { revisionId })
-          : await TextEffectsApi.getTemplateData(loadedTemplate.category, loadedTemplate.id);
+          ? await TextEffectsApi.getTemplateData(
+              loadedTemplate.category,
+              loadedTemplate.id,
+              { revisionId },
+            )
+          : await TextEffectsApi.getTemplateData(
+              loadedTemplate.category,
+              loadedTemplate.id,
+            );
         loadedTemplate.templateData = data;
         loadedTemplate.lottieData = data;
 
         // TextEffectsApi owns the revision-aware persistent cache. Keep only
         // the resolved payload in the Zustand session store.
         set((state) => ({
-          templates: state.templates.map((t) => (t.id === loadedTemplate.id ? { ...t, templateData: data, lottieData: data } : t)),
+          templates: state.templates.map((t) =>
+            t.id === loadedTemplate.id
+              ? { ...t, templateData: data, lottieData: data }
+              : t,
+          ),
           isLoading: false,
         }));
       } catch (err) {
-        console.error(`[Clypra:TemplateStore] Failed to load template data for template ${loadedTemplate.id}:`, err);
+        console.error(
+          `[Clypra:TemplateStore] Failed to load template data for template ${loadedTemplate.id}:`,
+          err,
+        );
         set({ isLoading: false });
 
         // Fallback to static templates
@@ -116,11 +145,20 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
     }
 
     // Initialize customisation with defaults from the selected template
-    const fullTemplate = loadedTemplate.templateData || loadedTemplate.lottieData || loadedTemplate;
+    const fullTemplate =
+      loadedTemplate.templateData ||
+      loadedTemplate.lottieData ||
+      loadedTemplate;
     const artifact = resolveTextTemplateArtifact(fullTemplate);
-    const textLayers = (artifact?.document.nodes || []).filter((node: any) => node.type === "text") as any[];
-    const primary = textLayers.find((tl) => tl.role === "primary")?.text || textLayers[0]?.text || "Clypra";
-    const secondary = textLayers.find((tl) => tl.role === "secondary")?.text || "";
+    const textLayers = (artifact?.document.nodes || []).filter(
+      (node: any) => node.type === "text",
+    ) as any[];
+    const primary =
+      textLayers.find((tl) => tl.role === "primary")?.text ||
+      textLayers[0]?.text ||
+      "Clypra";
+    const secondary =
+      textLayers.find((tl) => tl.role === "secondary")?.text || "";
     const accent = textLayers.find((tl) => tl.role === "accent")?.text || "";
 
     set({
@@ -167,21 +205,34 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
       // Ensure template data is dynamically fetched if we bypass standard select
       if (!resolveTextTemplateArtifact(data)) {
         try {
-          data = await TextEffectsApi.getTemplateData(selected.category, selected.id);
+          data = await TextEffectsApi.getTemplateData(
+            selected.category,
+            selected.id,
+          );
         } catch (e) {
           // Fallback to static meta
-          const staticFallback = ALL_TEMPLATES.find((t) => t.id === selected.id);
-          data = staticFallback?.templateData || staticFallback?.lottieData || staticFallback || selected;
+          const staticFallback = ALL_TEMPLATES.find(
+            (t) => t.id === selected.id,
+          );
+          data =
+            staticFallback?.templateData ||
+            staticFallback?.lottieData ||
+            staticFallback ||
+            selected;
         }
       }
 
       // 2. Perform the frame-by-frame render
-      const sequence = await renderToFrameSequence(data, get().customization, (progress) => {
-        if (activeToken.cancelled) {
-          throw new Error("Render cancelled by user");
-        }
-        set({ renderProgress: progress });
-      });
+      const sequence = await renderToFrameSequence(
+        data,
+        get().customization,
+        (progress) => {
+          if (activeToken.cancelled) {
+            throw new Error("Render cancelled by user");
+          }
+          set({ renderProgress: progress });
+        },
+      );
 
       set({ isRendering: false, renderProgress: 100 });
       return sequence;
@@ -200,7 +251,15 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
     if (!clips?.length) return;
 
     // Filter clips that have templateId
-    const templateIds = Array.from(new Set(clips.map((clip) => clip?.templateId).filter((id): id is string => typeof id === "string" && id.length > 0)));
+    const templateIds = Array.from(
+      new Set(
+        clips
+          .map((clip) => clip?.templateId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    );
 
     if (templateIds.length === 0) return;
 
@@ -213,7 +272,11 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
       }
 
       // 2. Fetch template data for each missing template (check cache first)
-      const fontDescriptors: { family: string; weight: number; style: "normal" | "italic" }[] = [];
+      const fontDescriptors: {
+        family: string;
+        weight: number;
+        style: "normal" | "italic";
+      }[] = [];
 
       await Promise.all(
         templateIds.map(async (id) => {
@@ -226,11 +289,22 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
             try {
               const revisionId = (rawTemplate as any).revisionId;
               templateData = revisionId
-                ? await TextEffectsApi.getTemplateData(rawTemplate.category, rawTemplate.id, { revisionId })
-                : await TextEffectsApi.getTemplateData(rawTemplate.category, rawTemplate.id);
+                ? await TextEffectsApi.getTemplateData(
+                    rawTemplate.category,
+                    rawTemplate.id,
+                    { revisionId },
+                  )
+                : await TextEffectsApi.getTemplateData(
+                    rawTemplate.category,
+                    rawTemplate.id,
+                  );
 
               set((state) => ({
-                templates: state.templates.map((t) => (t.id === id ? { ...t, templateData, lottieData: templateData } : t)),
+                templates: state.templates.map((t) =>
+                  t.id === id
+                    ? { ...t, templateData, lottieData: templateData }
+                    : t,
+                ),
               }));
 
               import("@/store/timelineStore")
@@ -239,13 +313,27 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
                 })
                 .catch(() => {});
             } catch (err) {
-              console.error(`[Clypra:TemplateStore] Preload failed for template ${id}:`, err);
+              console.error(
+                `[Clypra:TemplateStore] Preload failed for template ${id}:`,
+                err,
+              );
               return;
             }
           }
 
-          // Collect fonts from template layers
-          if (templateData && templateData.layers) {
+          const artifact = resolveTextTemplateArtifact(templateData);
+          if (artifact) {
+            for (const node of artifact.document.nodes) {
+              const family = (node as any).style?.fontFamily;
+              if (family)
+                fontDescriptors.push({
+                  family,
+                  weight: (node as any).style?.fontWeight ?? 400,
+                  style: "normal",
+                });
+            }
+            // Collect fonts from template layers
+          } else if (templateData && templateData.layers) {
             for (const layer of templateData.layers) {
               if (layer.kind === "text" && layer.fontFamily) {
                 fontDescriptors.push({
@@ -267,11 +355,17 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
           const { useTimelineStore } = await import("@/store/timelineStore");
           useTimelineStore.getState().incrementEpoch();
         } catch (fontErr) {
-          console.warn("[Clypra:TemplateStore] Failed to preload template fonts:", fontErr);
+          console.warn(
+            "[Clypra:TemplateStore] Failed to preload template fonts:",
+            fontErr,
+          );
         }
       }
     } catch (err) {
-      console.warn("[Clypra:TemplateStore] Preload templates and fonts failed:", err);
+      console.warn(
+        "[Clypra:TemplateStore] Preload templates and fonts failed:",
+        err,
+      );
     }
   },
 

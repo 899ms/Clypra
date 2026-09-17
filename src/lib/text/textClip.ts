@@ -4,8 +4,6 @@
  * Helpers for creating text clips with sensible defaults.
  */
 
-const name = "Musa";
-
 import type { TextClip } from "../../types";
 import {
   renderTextTemplateToCanvas,
@@ -170,6 +168,15 @@ export function resolveTextEffectTypography(
           ? Number(font?.letterSpacing)
           : undefined,
   };
+}
+
+function applyTextTransform(text: string, transform?: string): string {
+  if (transform === "uppercase") return text.toUpperCase();
+  if (transform === "lowercase") return text.toLowerCase();
+  // capitalize: first char of each word
+  if (transform === "capitalize")
+    return text.replace(/\b\w/g, (c) => c.toUpperCase());
+  return text;
 }
 
 function measureTextInk(
@@ -444,6 +451,7 @@ export function measureTextEffectContentBounds(options: {
   canvasWidth: number;
   textRole?: "caption" | "title";
   maxWidth?: number;
+  textTransform?: string;
 }): TextEffectBounds {
   const isBold =
     options.bold ||
@@ -453,8 +461,11 @@ export function measureTextEffectContentBounds(options: {
     options.letterSpacing ?? options.effectDefinition?.font?.letterSpacing ?? 0;
   const lineHeight =
     options.lineHeight ?? options.effectDefinition?.font?.lineHeight ?? 1.2;
+
+  const displayText = applyTextTransform(options.text, options.textTransform);
+
   const measured = measureTextInk(
-    options.text,
+    displayText,
     options.fontFamily,
     options.fontSize,
     options.fontWeight ?? (isBold ? "700" : "400"),
@@ -986,9 +997,7 @@ export function createTextClip(options: CreateTextClipOptions): TextClip {
       effectTypography.fontSize ?? (options.styleId ? 96 : 100);
     const fontSize = options.fontSize ?? defaultFontSize;
     const fontFamily =
-      options.fontFamily ??
-      effectTypography.fontFamily ??
-      "Inter Variable";
+      options.fontFamily ?? effectTypography.fontFamily ?? "Inter Variable";
     const fontWeight = options.fontWeight ?? effectTypography.fontWeight;
     const fontStyle = options.fontStyle ?? effectTypography.fontStyle;
     const lineHeight = options.lineHeight ?? effectTypography.lineHeight ?? 1.2;
@@ -1046,14 +1055,11 @@ export function createTextClip(options: CreateTextClipOptions): TextClip {
     }
   }
 
-
   const defaultFontSize =
     effectTypography.fontSize ?? (options.styleId ? 96 : 100);
   const fontSize = options.fontSize ?? defaultFontSize;
   const fontFamily =
-    options.fontFamily ??
-    effectTypography.fontFamily ??
-    "Inter Variable";
+    options.fontFamily ?? effectTypography.fontFamily ?? "Inter Variable";
   const fontWeight = options.fontWeight ?? effectTypography.fontWeight;
   const fontStyle = options.fontStyle ?? effectTypography.fontStyle;
   const lineHeight = options.lineHeight ?? effectTypography.lineHeight ?? 1.2;
@@ -1301,9 +1307,7 @@ function calculateTextClipContentTransform(
 
   const effectDefinition = resolveTextEffectDefinition(styleId);
   const fontFamily =
-    merged.fontFamily ??
-    effectDefinition?.font?.family ??
-    "Inter Variable";
+    merged.fontFamily ?? effectDefinition?.font?.family ?? "Inter Variable";
   const fontWeight = merged.fontWeight ?? effectDefinition?.font?.weight;
   const fontStyle = merged.fontStyle ?? effectDefinition?.font?.style;
 
@@ -1415,8 +1419,9 @@ export function resolveTextClipStyleUpdate(
     canvasWidth,
     canvasHeight,
   );
+
   return {
-    ...updates,
+    ...cleanUpdates, // spread the sanitized copy
     x: recalculated.x,
     y: recalculated.y,
     width: recalculated.width,
