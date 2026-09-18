@@ -83,7 +83,15 @@ fn decode_audio_clip_sync(
             decode_with_ffmpeg_cli(path, &config, target_sample_rate, target_channels)
         }
         Err(err) => {
-            let _ = err;
+            // If there is simply no audio stream in the media container, do not attempt CLI decode.
+            if err.contains("No audio stream found") {
+                return Ok(DecodedAudioClip {
+                    config,
+                    sample_rate: target_sample_rate,
+                    channels: target_channels,
+                    samples: Arc::from(Vec::<f32>::new()),
+                });
+            }
             decode_with_ffmpeg_cli(path, &config, target_sample_rate, target_channels)
         }
     }
@@ -413,52 +421,19 @@ fn decode_with_ffmpeg_cli(
     target_sample_rate: u32,
     target_channels: u16,
 ) -> Result<DecodedAudioClip, String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    // Prefer the real ffmpeg.exe bundled with the app in ffmpeg-static/bin/
-    // before falling back to whatever is on PATH. The sidecar stubs in
-    // src-tauri/bin/ are batch files that fail with "not compatible with
-    // Windows" when Windows tries to load them as PE executables.
-    let ffmpeg_path = {
-        let mut candidate = None;
+    // Use binary_resolver which verifies genuine executables (rejecting non-PE batch stubs on Windows)
+    // and checks bundled ffmpeg-static/bin/, application directory, augmented system PATH, etc.
+    if crate::commands::binary_resolver::resolve_binary_path("ffmpeg").is_none() {
+        return Err(
+            "FFmpeg executable not found on system. Please install FFmpeg or run scripts/setup-sidecars.ps1"
+                .to_string(),
+        );
+    }
 
-        // 1. Relative to current executable (release builds ship ffmpeg-static/bin/ next to the exe)
-        if let Ok(exe) = std::env::current_exe() {
-            let dirs = [
-                exe.parent().map(|d| d.join("ffmpeg-static").join("bin").join("ffmpeg.exe")),
-                exe.parent().map(|d| d.join("bin").join("ffmpeg.exe")),
-                exe.parent().map(|d| d.join("ffmpeg.exe")),
-            ];
-            for opt in dirs.iter().flatten() {
-                if opt.is_file() { candidate = Some(opt.clone()); break; }
-            }
-        }
-
-        // 2. Relative to working directory (dev mode: src-tauri/ffmpeg-static/bin/)
-        if candidate.is_none() {
-            if let Ok(cwd) = std::env::current_dir() {
-                let dirs = [
-                    cwd.join("ffmpeg-static").join("bin").join("ffmpeg.exe"),
-                    cwd.join("src-tauri").join("ffmpeg-static").join("bin").join("ffmpeg.exe"),
-                ];
-                for p in &dirs {
-                    if p.is_file() { candidate = Some(p.clone()); break; }
-                }
-            }
-        }
-
-        candidate
-    };
-
-    let mut command = if let Some(ref p) = ffmpeg_path {
-        Command::new(p)
-    } else {
-        // Last resort: rely on system PATH (works if user installed ffmpeg globally)
-        Command::new("ffmpeg")
-    };
-
+    let mut command = crate::commands::binary_resolver::create_std_command("ffmpeg");
     command
-        .env("PATH", crate::commands::export::augmented_path())
         .arg("-v")
         .arg("error")
         .arg("-nostdin")

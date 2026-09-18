@@ -106,6 +106,21 @@ impl NativeSurfaceRuntime {
         Ok(())
     }
 
+    pub(crate) fn handle_poison_recovery(&mut self, context: &'static str) {
+        log::error!(
+            "[NativeSurface] Mutex was poisoned! Recovering state safely in context: {}",
+            context
+        );
+        crate::diagnostics::warning(
+            "native_surface",
+            "MUTEX_POISON_RECOVERED",
+            format!("Recovered from poisoned NativeSurfaceRuntime mutex in {}", context),
+        );
+        // Increment runtime epoch so that any in-flight presentation requests from before the panic
+        // are recognized as stale and discarded safely rather than committing half-finished work.
+        self.runtime_epoch = self.runtime_epoch.wrapping_add(1);
+    }
+
     pub(crate) fn reset(&mut self) {
         let _ = self.hide_surface();
         // The child window and wgpu surface belong to one preview session. Do
@@ -183,7 +198,11 @@ fn configure_surface(
 
     let mut runtime_state = runtime
         .lock()
-        .map_err(|_| "Native surface runtime lock is poisoned".to_string())?;
+        .unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            state.handle_poison_recovery("configure_surface");
+            state
+        });
     let surface_window = if let Some(surface_window) = runtime_state.surface_window.clone() {
         surface_window
     } else {
@@ -466,7 +485,11 @@ pub fn hide_native_surface(app: AppHandle) -> Result<(), String> {
         .ok_or_else(|| "Native surface runtime is not initialized".to_string())?;
     let result = runtime
         .lock()
-        .map_err(|_| "Native surface runtime lock is poisoned".to_string())?
+        .unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            state.handle_poison_recovery("hide_native_surface");
+            state
+        })
         .hide_surface();
     result
 }
@@ -479,10 +502,15 @@ pub fn get_native_surface_status(app: AppHandle) -> Result<Option<NativeSurfaceP
     let runtime = app
         .try_state::<Arc<Mutex<NativeSurfaceRuntime>>>()
         .ok_or_else(|| "Native surface runtime is not initialized".to_string())?;
-    runtime
+    let probe = runtime
         .lock()
-        .map_err(|_| "Native surface runtime lock is poisoned".to_string())
-        .map(|runtime| runtime.probe())
+        .unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            state.handle_poison_recovery("get_native_surface_status");
+            state
+        })
+        .probe();
+    Ok(probe)
 }
 
 #[cfg(test)]
@@ -538,5 +566,15 @@ mod tests {
         assert!(runtime.accept_presentation(2));
         assert!(!runtime.accept_presentation(1));
         assert!(runtime.accept_presentation(3));
+    }
+
+    #[test]
+    fn poison_recovery_advances_runtime_epoch() {
+        let mut runtime = NativeSurfaceRuntime::new();
+        let initial_epoch = runtime.runtime_epoch();
+
+        runtime.handle_poison_recovery("test_context");
+
+        assert_eq!(runtime.runtime_epoch(), initial_epoch.wrapping_add(1));
     }
 }
