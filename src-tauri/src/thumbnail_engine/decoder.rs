@@ -640,22 +640,100 @@ impl VideoDecoder {
         30.0
     }
 
+    /// Select the only hardware frame type backed by the device attached to
+    /// this process. A codec can offer several hardware types; choosing an
+    /// arbitrary one produces frames with no compatible device context.
+    fn platform_hw_pixel_format() -> Option<ffmpeg::ffi::AVPixelFormat> {
+        #[cfg(target_os = "macos")]
+        {
+            Some(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Some(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Some(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            None
+        }
+    }
+
+    /// FFmpeg's get_format callback must always return one of the formats it
+    /// was offered. Returning AV_PIX_FMT_NONE means "no format", not "use
+    /// software", and can leave a decoder producing an invalid AVFrame.
+    fn select_decoder_pixel_format(
+        offered: &[ffmpeg::ffi::AVPixelFormat],
+        preferred_hardware_format: Option<ffmpeg::ffi::AVPixelFormat>,
+    ) -> ffmpeg::ffi::AVPixelFormat {
+        if let Some(preferred) = preferred_hardware_format {
+            if offered.contains(&preferred) {
+                return preferred;
+            }
+        }
+
+        offered
+            .iter()
+            .copied()
+            .find(|format| *format != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE)
+            .unwrap_or(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE)
+    }
+
     unsafe extern "C" fn get_hw_format(
         _ctx: *mut ffmpeg::ffi::AVCodecContext,
         pix_fmts: *const ffmpeg::ffi::AVPixelFormat,
     ) -> ffmpeg::ffi::AVPixelFormat {
-        let mut p = pix_fmts;
-        while !p.is_null() && *p != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE {
-            if *p == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX
-                || *p == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11
-                || *p == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI
-                || *p == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_CUDA
-            {
-                return *p;
-            }
-            p = p.add(1);
+        if pix_fmts.is_null() {
+            return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
         }
-        ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE
+
+        // FFmpeg guarantees a NONE-terminated list. Materialize it before
+        // selection so the policy is independently testable and never falls
+        // through to an invalid format.
+        let mut offered = Vec::new();
+        let mut current = pix_fmts;
+        while *current != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+            offered.push(*current);
+            current = current.add(1);
+        }
+        Self::select_decoder_pixel_format(&offered, Self::platform_hw_pixel_format())
+    }
+
+    /// A hardware device is attached only when the selected codec explicitly
+    /// supports that device through AVCodecContext::hw_device_ctx.
+    fn codec_supports_hw_device(
+        ctx: &ffmpeg::codec::context::Context,
+        hw_type: ffmpeg::ffi::AVHWDeviceType,
+    ) -> bool {
+        unsafe {
+            let raw_ctx = ctx.as_ptr();
+            let mut codec = (*raw_ctx).codec;
+            if codec.is_null() {
+                codec = ffmpeg::ffi::avcodec_find_decoder((*raw_ctx).codec_id);
+            }
+            if codec.is_null() {
+                return false;
+            }
+
+            let required_method =
+                ffmpeg::ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32;
+            let mut index = 0;
+            loop {
+                let config = ffmpeg::ffi::avcodec_get_hw_config(codec, index);
+                if config.is_null() {
+                    return false;
+                }
+                if (*config).device_type == hw_type
+                    && ((*config).methods & required_method) != 0
+                {
+                    return true;
+                }
+                index += 1;
+            }
+        }
     }
 
     fn open_software_codec(
@@ -682,8 +760,13 @@ impl VideoDecoder {
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         let hw_types: &[ffmpeg::ffi::AVHWDeviceType] = &[];
 
-        let mut _hw_attached = false;
         for &hw_type in hw_types {
+            if !Self::codec_supports_hw_device(&ctx, hw_type) {
+                log::debug!(
+                    "[VideoDecoder] codec has no compatible hardware-device configuration for {hw_type:?}; using software decode"
+                );
+                continue;
+            }
             unsafe {
                 let mut hw_ctx = std::ptr::null_mut();
                 let ret = ffmpeg::ffi::av_hwdevice_ctx_create(
@@ -697,17 +780,18 @@ impl VideoDecoder {
                     (*ctx.as_mut_ptr()).hw_device_ctx = ffmpeg::ffi::av_buffer_ref(hw_ctx);
                     ffmpeg::ffi::av_buffer_unref(&mut hw_ctx);
                     (*ctx.as_mut_ptr()).get_format = Some(Self::get_hw_format);
-                    _hw_attached = true;
-                    break;
+                    let decoder = ctx.decoder().video().map_err(|e| e.to_string())?;
+                    let w = decoder.width();
+                    let h = decoder.height();
+                    return Ok((decoder, w, h));
                 }
             }
         }
 
-        let decoder = ctx.decoder().video().map_err(|e| e.to_string())?;
-        let w = decoder.width();
-        let h = decoder.height();
-
-        Ok((decoder, w, h))
+        // No compatible device is an expected capability outcome, not a
+        // partially initialized decoder. Re-open using the normal software
+        // format negotiation path.
+        Self::open_software_codec(ctx)
     }
 
     /// Decode a single frame at full display resolution (no thumbnail scaling).
@@ -1234,10 +1318,48 @@ impl VideoDecoder {
         Ok(rgba)
     }
 
+    /// Validate the native frame before any safe-wrapper code hands it to
+    /// libswscale. FFmpeg asserts (and on Windows terminates the process) when
+    /// asked to scale AV_PIX_FMT_NONE or a hardware surface directly.
+    fn validate_software_frame(frame: &ffmpeg::frame::Video) -> Result<(), String> {
+        let raw = unsafe { &*frame.as_ptr() };
+        if raw.width <= 0 || raw.height <= 0 {
+            return Err(format!(
+                "Decoded frame has invalid dimensions {}x{}",
+                raw.width, raw.height
+            ));
+        }
+        if raw.width as u32 > MAX_DISPLAY_DIMENSION || raw.height as u32 > MAX_DISPLAY_DIMENSION {
+            return Err(format!(
+                "Decoded frame dimensions {}x{} exceed the supported limit",
+                raw.width, raw.height
+            ));
+        }
+        if raw.format == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE as i32 {
+            return Err("Decoder produced AV_PIX_FMT_NONE instead of a software frame".to_string());
+        }
+
+        let descriptor = frame
+            .format()
+            .descriptor()
+            .ok_or_else(|| format!("Decoder produced unknown pixel format {}", raw.format))?;
+        if unsafe {
+            ((*descriptor.as_ptr()).flags & ffmpeg::ffi::AV_PIX_FMT_FLAG_HWACCEL as u64) != 0
+        } {
+            return Err("Hardware frame reached the software conversion boundary".to_string());
+        }
+        if raw.data[0].is_null() || raw.linesize[0] == 0 {
+            return Err("Decoded software frame has no primary image plane".to_string());
+        }
+        Ok(())
+    }
+
     fn hw_to_cpu_frame(frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video, String> {
-        if frame.format() == ffmpeg::format::Pixel::VIDEOTOOLBOX
-            || frame.format() == ffmpeg::format::Pixel::D3D11
-            || frame.format() == ffmpeg::format::Pixel::VAAPI
+        let source_format = unsafe { (*frame.as_ptr()).format };
+        let cpu_frame = if source_format
+            == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX as i32
+            || source_format == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11 as i32
+            || source_format == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as i32
         {
             log::debug!(
                 "[VideoDecoder] Transferring hardware frame ({:?}, {}x{}) to host CPU memory",
@@ -1281,10 +1403,12 @@ impl VideoDecoder {
                 cpu_frame.format(),
                 cpu_frame.planes()
             );
-            Ok(cpu_frame)
+            cpu_frame
         } else {
-            Ok(frame)
-        }
+            frame
+        };
+        Self::validate_software_frame(&cpu_frame)?;
+        Ok(cpu_frame)
     }
 
     fn to_cpu_frame(&self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video, String> {
@@ -2551,6 +2675,37 @@ mod display_dimensions_tests {
 #[cfg(test)]
 mod still_image_tests {
     use super::{normalize_converted_nv12_color, VideoColorMetadata, VideoDecoder};
+
+    #[test]
+    fn hardware_format_negotiation_falls_back_to_an_offered_software_format() {
+        use ffmpeg_next as ffmpeg;
+
+        let selected = VideoDecoder::select_decoder_pixel_format(
+            &[
+                ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE,
+            ],
+            Some(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11),
+        );
+
+        assert_eq!(selected, ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P);
+    }
+
+    #[test]
+    fn hardware_format_negotiation_prefers_the_attached_device_format() {
+        use ffmpeg_next as ffmpeg;
+
+        let selected = VideoDecoder::select_decoder_pixel_format(
+            &[
+                ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11,
+                ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE,
+            ],
+            Some(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11),
+        );
+
+        assert_eq!(selected, ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11);
+    }
 
     #[test]
     fn rgb_still_image_metadata_becomes_native_sdr_nv12_metadata() {
