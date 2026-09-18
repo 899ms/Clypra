@@ -219,14 +219,38 @@ export function isNativeSurfaceReady(projectId: string): boolean {
   return Boolean(state?.settled && state.ready);
 }
 
-export function waitForNativeSurfaceReady(projectId: string): Promise<void> {
-  if (!isTauriRuntime()) return Promise.resolve();
+export async function waitForNativeSurfaceReady(
+  projectId: string,
+  timeoutMs = 3000,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
   let state = surfaceReadiness.get(projectId);
   if (!state) {
     resetNativeSurfaceReadiness(projectId);
     state = surfaceReadiness.get(projectId);
   }
-  return state?.promise ?? Promise.resolve();
+  if (!state || (state.settled && state.ready)) return;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(
+        `[nativeSurfaceLifecycle] Native preview surface readiness timed out after ${timeoutMs}ms for project ${projectId}. Proceeding gracefully with editor load.`,
+      );
+      resolve();
+    }, timeoutMs);
+  });
+
+  try {
+    await Promise.race([state.promise, timeoutPromise]);
+  } catch (error) {
+    console.warn(
+      `[nativeSurfaceLifecycle] Native preview surface readiness reported an error during load:`,
+      error,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function claimNativeSurfaceReadiness(
