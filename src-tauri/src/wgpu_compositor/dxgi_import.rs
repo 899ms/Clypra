@@ -279,5 +279,5 @@ pub fn import_into_wgpu(
     };
 
     // `shared` is dropped here, calling D3d11SharedFrame::drop which closes nt_handle safely.
-    result.unwrap_or(Err(DxgiFailureReason::ImportFailed))
+    result
 }
