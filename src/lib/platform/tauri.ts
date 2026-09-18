@@ -487,6 +487,32 @@ export function listenForNativeRasterEviction(
   });
 }
 
+/**
+ * Subscribe to the one-shot GPU-ready event emitted by the Rust backend once
+ * wgpu adapter selection and device creation complete. This fires earlier and
+ * more reliably than polling get_native_gpu_status because it is emitted
+ * immediately after app.manage(gpu_ctx) rather than on a timer.
+ */
+export function listenForGpuReady(
+  onReady: () => void,
+): Promise<UnlistenFn> {
+  return listen<void>("clypra://gpu-ready", () => {
+    onReady();
+  });
+}
+
+/**
+ * Subscribe to the GPU-failed event emitted when wgpu initialization fails.
+ * The payload is the error message string.
+ */
+export function listenForGpuFailed(
+  onFailed: (error: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("clypra://gpu-failed", (event) => {
+    onFailed(event.payload);
+  });
+}
+
 /** Decode a native playback frame ahead of presentation. */
 export async function queueNativeFrame(
   request: NativeFrameRequest,

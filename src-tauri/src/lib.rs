@@ -145,58 +145,95 @@ pub fn run() {
             // Initialize MediaPipe AI tracking state
             app.manage(commands::ai::init_ai_state());
 
-            // Initialize GPU context and 3D LUT cache
-            let (gpu_ctx_res, surface_available) = tauri::async_runtime::block_on(async {
-                let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                    backends: wgpu::Backends::all(),
-                    ..Default::default()
-                });
-                let surface = app
-                    .get_webview_window("main")
-                    .and_then(|window| instance.create_surface(window).ok());
-                let surface_available = surface.is_some();
-                let gpu_result = crate::wgpu_compositor::GpuContext::select_best_gpu(
-                    &instance,
-                    surface.as_ref(),
-                )
-                .await;
-                (gpu_result, surface_available)
-            });
+            // Initialize GPU context and 3D LUT cache in a background task so the
+            // Tauri event loop (and webview IPC channel) are never blocked.
+            // Commands use try_state::<Arc<NativePreviewSession>>() / try_state::<Arc<LutCache>>()
+            // and gracefully handle the transient window where GPU init is still in flight.
+            {
+                let gpu_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Use PRIMARY backends only — avoids scanning Vulkan/OpenGL drivers
+                    // that can stall for seconds on some Windows GPU configurations.
+                    #[cfg(target_os = "windows")]
+                    let backends = wgpu::Backends::DX12;
+                    #[cfg(not(target_os = "windows"))]
+                    let backends = wgpu::Backends::PRIMARY;
 
-            match gpu_ctx_res {
-                Ok(gpu_ctx) => {
-                    if let Ok(mut status) = native_gpu_status.lock() {
-                        *status = native_core::NativeGpuRuntimeStatus::ready(
-                            gpu_ctx.info.name.clone(),
-                            gpu_ctx.info.backend.clone(),
-                            gpu_ctx.info.device_type.clone(),
-                            surface_available,
-                        );
-                    }
-
-                    let identity = crate::wgpu_compositor::lut_texture::GpuLut3D::default_identity(
-                        &gpu_ctx.device,
-                        &gpu_ctx.queue,
-                    );
-                    let lut_cache = std::sync::Arc::new(crate::commands::lut::LutCache {
-                        luts: dashmap::DashMap::new(),
-                        default_identity: std::sync::Arc::new(identity),
+                    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                        backends,
+                        ..Default::default()
                     });
-                    let gpu_ctx = Arc::new(gpu_ctx);
-                    let preview_session = Arc::new(tokio::sync::Mutex::new(
-                        crate::wgpu_compositor::NativePreviewSession::new(gpu_ctx.clone()),
-                    ));
-                    app.manage(gpu_ctx);
-                    app.manage(preview_session);
-                    app.manage(lut_cache);
-                }
-                Err(error) => {
-                    log::error!("Native GPU initialization failed: {error}");
-                    if let Ok(mut status) = native_gpu_status.lock() {
-                        *status =
-                            native_core::NativeGpuRuntimeStatus::failed(error, surface_available);
+                    let surface = gpu_handle
+                        .get_webview_window("main")
+                        .and_then(|window| instance.create_surface(window).ok());
+                    let surface_available = surface.is_some();
+                    let gpu_result = crate::wgpu_compositor::GpuContext::select_best_gpu(
+                        &instance,
+                        surface.as_ref(),
+                    )
+                    .await;
+
+                    let status_arc = gpu_handle
+                        .try_state::<Arc<Mutex<native_core::NativeGpuRuntimeStatus>>>()
+                        .map(|s| Arc::clone(&s));
+
+                    match gpu_result {
+                        Ok(gpu_ctx) => {
+                            if let Some(status) = &status_arc {
+                                if let Ok(mut s) = status.lock() {
+                                    *s = native_core::NativeGpuRuntimeStatus::ready(
+                                        gpu_ctx.info.name.clone(),
+                                        gpu_ctx.info.backend.clone(),
+                                        gpu_ctx.info.device_type.clone(),
+                                        surface_available,
+                                    );
+                                }
+                            }
+                            let identity =
+                                crate::wgpu_compositor::lut_texture::GpuLut3D::default_identity(
+                                    &gpu_ctx.device,
+                                    &gpu_ctx.queue,
+                                );
+                            let lut_cache = Arc::new(crate::commands::lut::LutCache {
+                                luts: dashmap::DashMap::new(),
+                                default_identity: Arc::new(identity),
+                            });
+                            let gpu_ctx = Arc::new(gpu_ctx);
+                            let preview_session = Arc::new(tokio::sync::Mutex::new(
+                                crate::wgpu_compositor::NativePreviewSession::new(
+                                    gpu_ctx.clone(),
+                                ),
+                            ));
+                            gpu_handle.manage(gpu_ctx);
+                            gpu_handle.manage(preview_session);
+                            gpu_handle.manage(lut_cache);
+                            log::info!("🖥️ GPU context initialized and registered.");
+                            // Notify the webview that the GPU is ready so the native
+                            // preview surface can be configured without polling. The
+                            // event carries no payload; the frontend queries the full
+                            // status via get_native_gpu_status if it needs details.
+                            if let Some(win) = gpu_handle.get_webview_window("main") {
+                                let _ = win.emit("clypra://gpu-ready", ());
+                            }
+                        }
+                        Err(ref error) => {
+                            log::error!("Native GPU initialization failed: {error}");
+                            if let Some(status) = &status_arc {
+                                if let Ok(mut s) = status.lock() {
+                                    *s = native_core::NativeGpuRuntimeStatus::failed(
+                                        error.clone(),
+                                        surface_available,
+                                    );
+                                }
+                            }
+                            // Notify the webview of the failure so it can surface
+                            // a diagnostic instead of spinning forever.
+                            if let Some(win) = gpu_handle.get_webview_window("main") {
+                                let _ = win.emit("clypra://gpu-failed", error.clone());
+                            }
+                        }
                     }
-                }
+                });
             }
 
             // Initialize LocalSend-compatible phone transfer service

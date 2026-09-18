@@ -23,6 +23,7 @@ use crate::wgpu_compositor::{
     NativeWgpuRenderer,
 };
 #[cfg(target_os = "windows")]
+#[allow(unused_imports)]
 use crate::wgpu_compositor::DxgiImportState;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -1751,6 +1752,9 @@ async fn render_native_video_project_frame_bytes_timed(
 
     #[allow(unused_mut)]
     let mut render_path = FrameRenderPath::GpuUploadRing;
+    #[cfg(target_os = "windows")]
+    #[allow(unused_mut, unused_variables)]
+    let mut dxgi_active = false;
 
     #[cfg(target_os = "windows")]
     let can_use_dxgi = session.gpu.capabilities.zero_copy_available()
@@ -2939,12 +2943,33 @@ pub(crate) async fn present_native_frame_internal(
     }
     if !matches!(
         target_format,
-        wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb
+        wgpu::TextureFormat::Bgra8UnormSrgb
+            | wgpu::TextureFormat::Rgba8UnormSrgb
+            | wgpu::TextureFormat::Bgra8Unorm
+            | wgpu::TextureFormat::Rgba8Unorm
     ) {
         return Err(format!(
-            "Native direct presentation requires an sRGB surface format, got {target_format:?}"
+            "Native direct presentation requires an 8-bit RGBA/BGRA surface format, got {target_format:?}"
         ));
     }
+    // Warn once if we are presenting to a non-sRGB surface — colours will be
+    // slightly different from the sRGB path but the preview will be visible.
+    // This commonly occurs on Windows with certain WDDM drivers that do not
+    // advertise Bgra8UnormSrgb as a supported swapchain format.
+    if !matches!(
+        target_format,
+        wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb
+    ) {
+        log::warn!(
+            "[NativePresent] Surface format {target_format:?} is not sRGB — \
+             colours may differ slightly. Consider updating GPU drivers."
+        );
+    }
+    // On Windows/WebView2, an owned native window can reject its first DXGI
+    // back-buffer acquisition while it is hidden. Reveal it before acquiring
+    // the swapchain texture so the production first frame follows the same
+    // path as subsequent frames.
+    surface.show_surface()?;
     let surface_acquire_started = Instant::now();
     let surface_texture = surface.acquire_current_texture(&gpu.device)?;
     let surface_acquire_us = surface_acquire_started.elapsed().as_micros() as u64;
@@ -3196,7 +3221,6 @@ pub(crate) async fn present_native_frame_internal(
     let _textures = textures;
     let submit_present_started = Instant::now();
     surface_texture.present();
-    surface.show_surface()?;
     let submit_present_us = submit_present_started.elapsed().as_micros() as u64;
     let presented_ticks = (request.frame_time.ticks.max(0) as i128 * 1_000_000i128
         / request.frame_time.timescale.max(1) as i128)

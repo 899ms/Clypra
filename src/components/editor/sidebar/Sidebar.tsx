@@ -96,13 +96,13 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
-                      className={`flex items-center flex-col gap-0.5 px-2.5 py-1.5 text-[10px] font-medium transition-colors whitespace-nowrap cursor-pointer border-b-2 ${
+                      className={`flex items-center flex-col gap-0.5 px-2.5 py-1.5 text-[0.625rem] font-medium transition-colors whitespace-nowrap cursor-pointer border-b-2 ${
                         isActive
                           ? "text-accent border-accent bg-accent/[0.04]"
                           : "text-text-muted border-transparent hover:text-text-primary hover:bg-white/2"
                       }`}
                     >
-                      <Icon size={14} />
+                      <Icon size="0.875em" />
                       {tab.label}
                     </button>
                   );
@@ -145,7 +145,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                     : "text-text-muted hover:text-accent hover:bg-white/5"
                 }`}
               >
-                <Icon size={15} />
+                <Icon size="0.9375em" />
               </button>
             );
           })}

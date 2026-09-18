@@ -73,27 +73,47 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
   const isDualPlayer = layoutPreset === "dual-player";
   const isCinemaPreview = layoutPreset === "cinema-preview";
   const isInspectorFocus = layoutPreset === "inspector-focus";
+
+  // Viewport-relative helpers — evaluated at render time so they respond to
+  // window resizes when the user changes screen or resizes the Tauri window.
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 768;
+
+  // Default panel widths: 22% of viewport, clamped [240, 480]
+  const defaultPanelW = Math.round(Math.min(Math.max(vw * 0.22, 240), 480));
+  // Compact panel widths for presets that need narrower side panels: 18% vw, clamped [200, 300]
+  const compactPanelW = Math.round(Math.min(Math.max(vw * 0.18, 200), 300));
+  // Default timeline height: 30% vh, clamped [160, 400]
   const defaultTimelineH = isTimelineFocus
-    ? typeof window !== "undefined"
-      ? Math.round(window.innerHeight * 0.58)
-      : 520
-    : 400;
+    ? Math.round(vh * 0.58)
+    : Math.round(Math.min(Math.max(vh * 0.30, 160), 400));
+  // Default tall player width: 32% vw, clamped [320, 600]
+  const defaultTallPlayerW = Math.round(Math.min(Math.max(vw * 0.32, 320), 600));
+
+  // Per-preset initial panel widths
   const initialSidebarWidth =
     isTimelineFocus || isDualPlayer
-      ? 260
+      ? compactPanelW
       : isCinemaPreview
-        ? 220
+        ? Math.round(Math.min(Math.max(vw * 0.15, 180), 260))
         : isInspectorFocus
-          ? 240
+          ? Math.round(Math.min(Math.max(vw * 0.16, 200), 280))
           : sidebarWidth;
   const initialPropertiesPanelWidth =
     isTimelineFocus || isDualPlayer
-      ? 260
+      ? compactPanelW
       : isCinemaPreview
-        ? 220
+        ? Math.round(Math.min(Math.max(vw * 0.15, 180), 260))
         : isInspectorFocus
-          ? Math.max(propertiesPanelWidth, 460)
+          // Inspector focus: wide properties panel — 35% vw, floor at 380px
+          ? Math.max(propertiesPanelWidth, Math.round(Math.min(Math.max(vw * 0.35, 380), 560)))
           : propertiesPanelWidth;
+
+  // Panel resize constraints — all viewport-relative so they scale with screen size
+  const panelMin = Math.round(Math.max(vw * 0.14, 180)); // ~14% vw, min 180px
+  const panelMax = Math.round(Math.min(vw * 0.42, 640)); // ~42% vw, max 640px
+  // Snap points relative to viewport: compact (~18% vw) and default (~22% vw)
+  const panelSnapPoints = [compactPanelW, defaultPanelW];
 
   // Timeline vertical height resizer
   const {
@@ -120,9 +140,9 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
   } = usePanelResize({
     initial: initialSidebarWidth,
     defaultSize: initialSidebarWidth,
-    snapPoints: [260, 400],
-    min: 220,
-    max: 560,
+    snapPoints: panelSnapPoints,
+    min: panelMin,
+    max: panelMax,
     direction: "horizontal",
     onCommit: setSidebarWidth,
   });
@@ -136,9 +156,9 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
   } = usePanelResize({
     initial: initialPropertiesPanelWidth,
     defaultSize: initialPropertiesPanelWidth,
-    snapPoints: [260, 400],
-    min: 220,
-    max: 560,
+    snapPoints: panelSnapPoints,
+    min: panelMin,
+    max: panelMax,
     direction: "horizontal-reverse",
     onCommit: setPropertiesPanelWidth,
   });
@@ -151,9 +171,9 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
     handleDoubleClick: handleTallPlayerDoubleClick,
   } = usePanelResize({
     initial: tallPlayerWidth,
-    defaultSize: 480,
-    snapPoints: [480],
-    min: 320,
+    defaultSize: defaultTallPlayerW,
+    snapPoints: [defaultTallPlayerW],
+    min: Math.round(Math.max(vw * 0.20, 280)),
     max: () => window.innerWidth * 0.65,
     direction:
       layoutPreset === "tall-player-right"
@@ -201,7 +221,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                       ? "bg-accent"
                       : "hover:bg-accent/60 active:bg-accent"
                   }`}
-                  title="Drag to resize media panel • Double-click to reset (400px)"
+                  title="Drag to resize media panel • Double-click to reset"
                 />
               )}
 
@@ -248,7 +268,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                 ? "bg-accent"
                 : "hover:bg-accent/60 active:bg-accent"
             }`}
-            title="Drag to resize player • Double-click to reset (480px)"
+            title={`Drag to resize player • Double-click to reset (${defaultTallPlayerW}px)`}
           />
 
           {/* Right Block: Full-Height Preview Player */}
@@ -270,8 +290,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
               <span className="tabular-nums font-mono">
                 {Math.round(tallPlayerW)} px
               </span>
-              {Math.round(tallPlayerW) === 480 && (
-                <span className="text-[10px] text-accent font-medium">
+              {Math.round(tallPlayerW) === defaultTallPlayerW && (
+                <span className="text-[0.625rem] text-accent font-medium">
                   (Default)
                 </span>
               )}
@@ -320,7 +340,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                 ? "bg-accent"
                 : "hover:bg-accent/60 active:bg-accent"
             }`}
-            title="Drag to resize player • Double-click to reset (480px)"
+            title={`Drag to resize player • Double-click to reset (${defaultTallPlayerW}px)`}
           />
 
           {/* Right Block: Media + Properties (top) and Timeline (bottom) */}
@@ -350,7 +370,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                       ? "bg-accent"
                       : "hover:bg-accent/60 active:bg-accent"
                   }`}
-                  title="Drag to resize media panel • Double-click to reset (400px)"
+                  title="Drag to resize media panel • Double-click to reset"
                 />
               )}
 
@@ -397,8 +417,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
               <span className="tabular-nums font-mono">
                 {Math.round(tallPlayerW)} px
               </span>
-              {Math.round(tallPlayerW) === 480 && (
-                <span className="text-[10px] text-accent font-medium">
+              {Math.round(tallPlayerW) === defaultTallPlayerW && (
+                <span className="text-[0.625rem] text-accent font-medium">
                   (Default)
                 </span>
               )}
@@ -435,7 +455,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                     ? "bg-accent"
                     : "hover:bg-accent/60 active:bg-accent"
                 }`}
-                title="Drag to resize media panel • Double-click to reset (260px)"
+                title="Drag to resize media panel • Double-click to reset"
               />
             )}
 
@@ -478,7 +498,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                     ? "bg-accent"
                     : "hover:bg-accent/60 active:bg-accent"
                 }`}
-                title="Drag to resize properties panel • Double-click to reset (260px)"
+                title="Drag to resize properties panel • Double-click to reset"
               />
             )}
 
@@ -519,7 +539,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
 
   // 4. CINEMA PREVIEW Layout (Color Grading & Screening)
   if (layoutPreset === "cinema-preview") {
-    const cinemaTimelineH = Math.min(timelineH, 220);
+    // Cinema timeline: compact, capped at 25% of viewport height (max 240px)
+    const cinemaTimelineH = Math.min(timelineH, Math.round(Math.min(vh * 0.25, 240)));
     return (
       <div className="w-full h-full flex flex-col app-shell overflow-hidden p-1 pt-0 select-none relative">
         <TopBar onRequestClose={onRequestClose} />
@@ -634,7 +655,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
 
             {/* Centered 9:16 Portrait Preview Monitor */}
             <div className="flex-1 min-w-0 flex items-center justify-center overflow-hidden panel-shell bg-surface/30">
-              <div className="w-full h-full max-w-[460px] flex flex-col overflow-hidden">
+              <div className="w-full h-full max-w-[28.75rem] flex flex-col overflow-hidden">
                 <SafePreviewPanel />
               </div>
             </div>
@@ -690,7 +711,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
 
   // 6. INSPECTOR FOCUS Layout (Color, Animation, Effects & Curves)
   if (layoutPreset === "inspector-focus") {
-    const wideInspectorW = Math.max(propertiesW, 460);
+    // Wide inspector: matches the viewport-relative floor set in initialPropertiesPanelWidth
+    const wideInspectorW = Math.max(propertiesW, Math.round(Math.min(Math.max(vw * 0.35, 380), 560)));
     return (
       <div className="w-full h-full flex flex-col app-shell overflow-hidden p-1 pt-0 select-none relative">
         <TopBar onRequestClose={onRequestClose} />
@@ -799,8 +821,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
               <span className="tabular-nums font-mono">
                 {Math.round(sidebarW)} px
               </span>
-              {Math.round(sidebarW) === 400 && (
-                <span className="text-[10px] text-accent font-medium">
+              {Math.round(sidebarW) === defaultPanelW && (
+                <span className="text-[0.625rem] text-accent font-medium">
                   (Default)
                 </span>
               )}
@@ -818,7 +840,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                   ? "bg-accent"
                   : "hover:bg-accent/60 active:bg-accent"
               }`}
-              title="Drag to resize media panel • Double-click to reset (400px)"
+              title="Drag to resize media panel • Double-click to reset"
             />
           )}
 
@@ -838,8 +860,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
               <span className="tabular-nums font-mono">
                 {Math.round(propertiesW)} px
               </span>
-              {Math.round(propertiesW) === 400 && (
-                <span className="text-[10px] text-accent font-medium">
+              {Math.round(propertiesW) === defaultPanelW && (
+                <span className="text-[0.625rem] text-accent font-medium">
                   (Default)
                 </span>
               )}
@@ -857,7 +879,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                   ? "bg-accent"
                   : "hover:bg-accent/60 active:bg-accent"
               }`}
-              title="Drag to resize properties panel • Double-click to reset (400px)"
+              title="Drag to resize properties panel • Double-click to reset"
             />
           )}
 
