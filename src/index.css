@@ -260,6 +260,21 @@
   --color-pink-400: var(--color-accent-soft);
   --color-pink-500: var(--clypra-clip-caption-bg);
 }
+/*
+ * Fluid root font-size — scales with viewport width between 800 px and 1600 px.
+ * At 1280 px (common Windows 1080p) → ~13.8 px  (≈ 86%)
+ * At 1440 px (M1 MacBook design reference) → ~15 px  (≈ 94%)
+ * At 1600 px+ → 16 px  (clamped max, full size)
+ * At 800 px-  →  12 px  (clamped min, never shrinks below this)
+ *
+ * Because ALL Tailwind rem utilities (h-8, text-xs, p-1, gap-2 …) derive from
+ * 1 rem, this single rule proportionally shrinks or grows every spacing and
+ * text token in the UI — no per-component changes needed for rem-based classes.
+ */
+html {
+  font-size: clamp(12px, 0.5px + 0.95vw, 16px);
+}
+
 html,
 body,
 #root {

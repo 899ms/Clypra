@@ -95,6 +95,31 @@ pub fn augmented_path() -> String {
 pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
     let names = candidate_binary_names(base_name);
 
+    // Tier 0: ffmpeg-static/bin/ bundled alongside the app — always preferred
+    // over sidecar stubs which are batch files that fail on Windows as PE exes.
+    if base_name == "ffmpeg" || base_name == "ffprobe" {
+        let exe_name = if cfg!(target_os = "windows") {
+            format!("{}.exe", base_name)
+        } else {
+            base_name.to_string()
+        };
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let p = exe_dir.join("ffmpeg-static").join("bin").join(&exe_name);
+                if p.is_file() { return Some(p); }
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidates = [
+                cwd.join("ffmpeg-static").join("bin").join(&exe_name),
+                cwd.join("src-tauri").join("ffmpeg-static").join("bin").join(&exe_name),
+            ];
+            for p in &candidates {
+                if p.is_file() { return Some(p.clone()); }
+            }
+        }
+    }
+
     // Tier 1: Relative to current executable
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {

@@ -1301,9 +1301,21 @@ impl VideoDecoder {
         &self,
         frame: &ffmpeg::frame::Video,
     ) -> Option<(Vec<u8>, Vec<u8>, u32, u32)> {
+        let width = frame.width() as usize;
+        let height = frame.height() as usize;
+        // Sanity-check dimensions before any plane access.
+        if width == 0 || height == 0 {
+            return None;
+        }
+
         if frame.format() == ffmpeg::format::Pixel::NV12 {
-            let width = frame.width() as usize;
-            let height = frame.height() as usize;
+            // Guard: NV12 needs exactly 2 planes (Y + interleaved UV).
+            // av_hwframe_transfer_data can produce a frame whose format is
+            // reported as NV12 but whose linesize[1] is 0 (UV plane absent),
+            // which would panic in ffmpeg-next's stride() bounds check.
+            if frame.planes() < 2 {
+                return None;
+            }
             let y_stride = frame.stride(0);
             let uv_stride = frame.stride(1);
             let y_data = frame.data(0);
@@ -1330,9 +1342,11 @@ impl VideoDecoder {
 
             Some((y_plane, uv_plane, width as u32, height as u32))
         } else if frame.format() == ffmpeg::format::Pixel::YUV420P {
-            // Direct zero-swscale conversion: interleave planar U and V into NV12 directly
-            let width = frame.width() as usize;
-            let height = frame.height() as usize;
+            // Direct zero-swscale conversion: interleave planar U and V into NV12 directly.
+            // Guard: YUV420P needs 3 planes (Y, U, V).
+            if frame.planes() < 3 {
+                return None;
+            }
             let y_stride = frame.stride(0);
             let u_stride = frame.stride(1);
             let v_stride = frame.stride(2);

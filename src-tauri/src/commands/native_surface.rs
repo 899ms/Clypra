@@ -234,6 +234,58 @@ fn configure_surface(
             }
         }
 
+        // On Windows, the child window must be explicitly configured so the
+        // DWM compositor layers it above the WebView2 HWND with correct
+        // per-pixel alpha. Without these styles the transparent child surface
+        // either disappears behind the WebView2 layer or shows as a solid black
+        // rectangle because DWM ignores the swapchain alpha channel.
+        //
+        // We declare the Win32 functions directly instead of using the `windows`
+        // crate to avoid HWND type-version mismatch: Tauri itself pulls in a
+        // different version of windows-core whose HWND is incompatible with ours.
+        //
+        // WS_EX_LAYERED  (0x0008_0000) — enables per-pixel alpha compositing
+        // WS_EX_TRANSPARENT (0x0000_0020) — hit-testing falls through to WebView2
+        // WS_EX_NOACTIVATE  (0x0800_0000) — focus never moves to the surface window
+        #[cfg(target_os = "windows")]
+        unsafe {
+            const GWL_EXSTYLE: i32 = -20;
+            const WS_EX_LAYERED: isize   = 0x0008_0000;
+            const WS_EX_TRANSPARENT: isize = 0x0000_0020;
+            const WS_EX_NOACTIVATE: isize  = 0x0800_0000;
+            const SWP_NOSIZE: u32     = 0x0001;
+            const SWP_NOMOVE: u32     = 0x0002;
+            const SWP_NOZORDER: u32   = 0x0004;
+            const SWP_NOACTIVATE: u32 = 0x0010;
+            const SWP_FRAMECHANGED: u32 = 0x0020;
+            // HWND_TOP = 0 as a pseudo-handle — keeps the window at the top of
+            // its z-order tier without making it system-wide always-on-top.
+            const HWND_TOP: *mut std::ffi::c_void = 0isize as *mut std::ffi::c_void;
+
+            extern "system" {
+                fn GetWindowLongPtrW(hwnd: *mut std::ffi::c_void, n_index: i32) -> isize;
+                fn SetWindowLongPtrW(hwnd: *mut std::ffi::c_void, n_index: i32, dw_new_long: isize) -> isize;
+                fn SetWindowPos(hwnd: *mut std::ffi::c_void, hwnd_insert_after: *mut std::ffi::c_void, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
+            }
+
+            if let Ok(hwnd) = surface_window.hwnd() {
+                // hwnd() returns windows::Win32::Foundation::HWND whose inner
+                // field is *mut c_void — extract it without importing the type.
+                let raw: *mut std::ffi::c_void = hwnd.0;
+                let ex_style = GetWindowLongPtrW(raw, GWL_EXSTYLE);
+                SetWindowLongPtrW(
+                    raw,
+                    GWL_EXSTYLE,
+                    ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+                );
+                // Flush the style change to DWM immediately.
+                SetWindowPos(
+                    raw, HWND_TOP, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
+        }
+
         runtime_state.surface_window = Some(surface_window.clone());
         surface_window
     };
