@@ -209,9 +209,10 @@ pub fn run() {
                             gpu_handle.manage(lut_cache);
                             log::info!("🖥️ GPU context initialized and registered.");
                             // Notify the webview that the GPU is ready so the native
-                            // preview surface can be configured without polling. The
-                            // event carries no payload; the frontend queries the full
-                            // status via get_native_gpu_status if it needs details.
+                            // preview surface can be configured without polling. Both
+                            // app-level and window-level emission ensure global listeners
+                            // receive the event in Tauri v2.
+                            let _ = gpu_handle.emit("clypra://gpu-ready", ());
                             if let Some(win) = gpu_handle.get_webview_window("main") {
                                 let _ = win.emit("clypra://gpu-ready", ());
                             }
@@ -228,6 +229,7 @@ pub fn run() {
                             }
                             // Notify the webview of the failure so it can surface
                             // a diagnostic instead of spinning forever.
+                            let _ = gpu_handle.emit("clypra://gpu-failed", error.clone());
                             if let Some(win) = gpu_handle.get_webview_window("main") {
                                 let _ = win.emit("clypra://gpu-failed", error.clone());
                             }

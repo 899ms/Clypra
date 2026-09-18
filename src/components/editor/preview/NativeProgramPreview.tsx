@@ -408,6 +408,15 @@ export const NativeProgramPreview: React.FC = () => {
 
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const nativeSurfaceTargetRef = useRef<HTMLDivElement>(null);
+  const [nativeSurfaceTarget, setNativeSurfaceTarget] =
+    useState<HTMLDivElement | null>(null);
+  const nativeSurfaceTargetCallback = useCallback(
+    (node: HTMLDivElement | null) => {
+      nativeSurfaceTargetRef.current = node;
+      setNativeSurfaceTarget(node);
+    },
+    [],
+  );
   const nativeSurfaceConfiguredRef = useRef(false);
   const nativeSurfaceGeometrySettledRef = useRef(false);
   const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
@@ -788,31 +797,46 @@ export const NativeProgramPreview: React.FC = () => {
 
     let disposed = false;
 
-    // Check the current status first — GPU may already be ready if the
-    // component mounts after the spawn completed (hot-reload, project reopen).
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
     const checkNow = () => {
       void getNativeGpuStatus()
         .then((status) => {
           if (disposed) return;
           if (status.state === "ready") {
             setGpuReady(true);
+            if (pollTimer) {
+              clearInterval(pollTimer);
+              pollTimer = null;
+            }
+          } else if (status.state === "failed") {
+            if (pollTimer) {
+              clearInterval(pollTimer);
+              pollTimer = null;
+            }
+            setNativeSurfaceError(
+              `GPU initialization failed: ${status.failureReason || "Unknown failure"}`,
+            );
           }
-          // If still initializing, the event listener below will fire.
-          // If failed, leave gpuReady=false so the surface effect stays gated
-          // and the error is surfaced via nativeSurfaceError instead.
         })
         .catch(() => {
           // get_native_gpu_status not yet registered — spawn hasn't called
-          // app.manage(native_gpu_status) yet. The event will still arrive.
+          // app.manage(native_gpu_status) yet. The event or next poll will catch it.
         });
     };
     checkNow();
+    pollTimer = setInterval(checkNow, 150);
 
     let unlistenReady: (() => void) | null = null;
     let unlistenFailed: (() => void) | null = null;
 
     void listenForGpuReady(() => {
-      if (!disposed) setGpuReady(true);
+      if (!disposed) {
+        setGpuReady(true);
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenReady = unlisten;
@@ -822,6 +846,10 @@ export const NativeProgramPreview: React.FC = () => {
       if (!disposed) {
         // Surface setup effect will gate and show a diagnostic.
         setNativeSurfaceError(`GPU initialization failed: ${error}`);
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
       }
     }).then((unlisten) => {
       if (disposed) unlisten();
@@ -830,6 +858,10 @@ export const NativeProgramPreview: React.FC = () => {
 
     return () => {
       disposed = true;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
       unlistenReady?.();
       unlistenFailed?.();
     };
@@ -839,10 +871,11 @@ export const NativeProgramPreview: React.FC = () => {
   // The native presenter is hosted in a transparent child surface positioned
   // over the displayed program viewport and configured only in Tauri.
   useEffect(() => {
+    const target = nativeSurfaceTargetRef.current || nativeSurfaceTarget;
     if (
       !isTauriRuntime() ||
       !project?.id ||
-      !nativeSurfaceTargetRef.current ||
+      !target ||
       !nativeSurfaceViewportReady ||
       !gpuReady
     ) {
@@ -880,10 +913,12 @@ export const NativeProgramPreview: React.FC = () => {
         try {
           while (active && syncRequested) {
             syncRequested = false;
-            const target = nativeSurfaceTargetRef.current;
-            if (!target) break;
+            const currentTarget =
+              nativeSurfaceTargetRef.current || nativeSurfaceTarget;
+            if (!currentTarget) break;
 
-            const geometry = await getNativePreviewSurfaceGeometry(target);
+            const geometry =
+              await getNativePreviewSurfaceGeometry(currentTarget);
             if (!active) break;
             const nextGeometryKey = geometryKey(geometry);
             if (
@@ -958,7 +993,7 @@ export const NativeProgramPreview: React.FC = () => {
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => syncSurface())
         : null;
-    resizeObserver?.observe(nativeSurfaceTargetRef.current);
+    resizeObserver?.observe(target);
     window.addEventListener("resize", handleWindowResize);
 
     return () => {
@@ -983,7 +1018,8 @@ export const NativeProgramPreview: React.FC = () => {
     // every pixel change; ResizeObserver handles those through syncSurface().
     // gpuReady transitions from false→true exactly once on Windows (when the
     // DX12 spawn finishes), re-running this effect at the right moment.
-  }, [project?.id, nativeSurfaceViewportReady, gpuReady]);
+    // nativeSurfaceTarget ensures setup triggers as soon as the viewport div mounts.
+  }, [project?.id, nativeSurfaceViewportReady, gpuReady, nativeSurfaceTarget]);
 
   const previewBackgroundLayer = useMemo(() => {
     return getCanvasBackgroundLayer(project?.canvasBackground);
@@ -3620,7 +3656,7 @@ export const NativeProgramPreview: React.FC = () => {
         >
           {dimensions.width > 0 && dimensions.height > 0 ? (
             <div
-              ref={nativeSurfaceTargetRef}
+              ref={nativeSurfaceTargetCallback}
               data-testid="program-preview-viewport"
               className="relative flex shrink-0 items-center justify-center overflow-visible shadow-[0_0_40px_rgba(0,0,0,0.36)]"
               style={{ width: displayWidth, height: displayHeight }}
