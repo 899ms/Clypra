@@ -1336,7 +1336,7 @@ impl NativeWgpuRenderer {
             backend_options: Default::default(),
         });
 
-        let gpu_ctx = GpuContext::select_best_gpu(&instance, None).await?;
+        let gpu_ctx = GpuContext::select_best_gpu(&instance).await?;
 
         Ok(Self {
             instance,

@@ -145,10 +145,15 @@ pub fn run() {
             // Initialize MediaPipe AI tracking state
             app.manage(commands::ai::init_ai_state());
 
-            // Initialize GPU context and 3D LUT cache in a background task so the
-            // Tauri event loop (and webview IPC channel) are never blocked.
-            // Commands use try_state::<Arc<NativePreviewSession>>() / try_state::<Arc<LutCache>>()
-            // and gracefully handle the transient window where GPU init is still in flight.
+            // Initialize the device-only GPU context and 3D LUT cache in a
+            // background task so the Tauri event loop (and webview IPC channel)
+            // are never blocked. Do not create a wgpu surface here: a surface
+            // touches the platform window (CAMetalLayer on macOS) and must be
+            // created on Tauri's UI thread. `probe_native_surface` owns that
+            // UI-thread-only transition once the preview viewport has geometry.
+            // Commands use try_state::<Arc<NativePreviewSession>>() /
+            // try_state::<Arc<LutCache>>() and gracefully handle the transient
+            // window where GPU init is still in flight.
             {
                 let gpu_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -163,15 +168,8 @@ pub fn run() {
                         backends,
                         ..Default::default()
                     });
-                    let surface = gpu_handle
-                        .get_webview_window("main")
-                        .and_then(|window| instance.create_surface(window).ok());
-                    let surface_available = surface.is_some();
-                    let gpu_result = crate::wgpu_compositor::GpuContext::select_best_gpu(
-                        &instance,
-                        surface.as_ref(),
-                    )
-                    .await;
+                    let gpu_result =
+                        crate::wgpu_compositor::GpuContext::select_best_gpu(&instance).await;
 
                     let status_arc = gpu_handle
                         .try_state::<Arc<Mutex<native_core::NativeGpuRuntimeStatus>>>()
@@ -185,7 +183,7 @@ pub fn run() {
                                         gpu_ctx.info.name.clone(),
                                         gpu_ctx.info.backend.clone(),
                                         gpu_ctx.info.device_type.clone(),
-                                        surface_available,
+                                        false,
                                     );
                                 }
                             }
@@ -223,7 +221,7 @@ pub fn run() {
                                 if let Ok(mut s) = status.lock() {
                                     *s = native_core::NativeGpuRuntimeStatus::failed(
                                         error.clone(),
-                                        surface_available,
+                                        false,
                                     );
                                 }
                             }

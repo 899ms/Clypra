@@ -101,6 +101,12 @@ impl NativeGpuRuntimeStatus {
             failure_reason: Some(reason),
         }
     }
+
+    /// Surface readiness is established after the device is initialized because
+    /// native window handles may only be touched on the UI thread.
+    pub fn set_surface_available(&mut self, available: bool) {
+        self.surface_available = available;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,6 +189,22 @@ mod tests {
             status.failure_reason.as_deref(),
             Some("No compatible adapter")
         );
+    }
+
+    #[test]
+    fn surface_readiness_is_reported_after_device_initialization() {
+        let mut status = NativeGpuRuntimeStatus::ready(
+            "Test GPU".to_string(),
+            "Metal".to_string(),
+            "IntegratedGpu".to_string(),
+            false,
+        );
+
+        status.set_surface_available(true);
+
+        assert_eq!(status.state, NativeGpuRuntimeState::Ready);
+        assert!(status.available);
+        assert!(status.surface_available);
     }
 
     #[test]

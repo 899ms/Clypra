@@ -170,7 +170,7 @@ pub fn import_into_wgpu(
 
     if !device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
         log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12");
-        return None;
+        return Err(DxgiFailureReason::UnsupportedFormat);
     }
 
     let nt_handle = shared.nt_handle;
