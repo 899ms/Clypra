@@ -389,6 +389,16 @@ fn configure_surface(
     runtime_state.configured_format = Some(format);
     runtime_state.probe = Some(probe.clone());
 
+    // Device discovery deliberately happens before a viewport is available,
+    // while surface creation happens here on Tauri's UI thread. Keep their
+    // status separate so callers never mistake a ready device for a ready
+    // presentation target.
+    if let Some(status) = app.try_state::<Arc<Mutex<NativeGpuRuntimeStatus>>>() {
+        if let Ok(mut status) = status.lock() {
+            status.set_surface_available(true);
+        }
+    }
+
     // Zero-Cold-Start: Pre-warm Metal/wgpu render pipelines in the background
     // during session opening / surface configuration so Frame #1 has zero compile spike.
     let app_clone = app.clone();

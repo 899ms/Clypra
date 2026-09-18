@@ -1,6 +1,6 @@
 use super::preview_capabilities::PreviewCapabilities;
 use serde::{Deserialize, Serialize};
-use wgpu::{Adapter, Device, DeviceType, Instance, Queue, Surface};
+use wgpu::{Adapter, Device, DeviceType, Instance, Queue};
 
 /// Detailed metadata about the active GPU adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,23 +24,22 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// Enumerates and scores all available graphics adapters to select the optimal discrete GPU
-    /// and initializes the associated Device and Queue.
-    pub async fn select_best_gpu(
-        instance: &Instance,
-        compatible_surface: Option<&Surface<'_>>,
-    ) -> Result<Self, String> {
+    /// Enumerates and scores all available graphics adapters to select the
+    /// optimal device, then initializes its Device and Queue.
+    ///
+    /// This deliberately does not accept a `Surface`. Adapter/device discovery
+    /// may run on a worker, while a native surface must be created on the UI
+    /// thread (notably, CAMetalLayer creation on macOS). Surface compatibility
+    /// is negotiated later by `native_surface::configure_surface`, which is
+    /// always dispatched with `run_on_main_thread`.
+    pub async fn select_best_gpu(instance: &Instance) -> Result<Self, String> {
         // enumerate_adapters is not available on wasm32 (no enumeration API in
         // the browser sandbox). The WASM crate uses init_gpu() directly and
         // never calls select_best_gpu on that target, but the function must
         // still compile. Guard the native-only path.
         #[cfg(not(target_arch = "wasm32"))]
         let best_adapter = {
-            let mut adapters = instance.enumerate_adapters(wgpu::Backends::all());
-            if let Some(surface) = compatible_surface {
-                adapters.retain(|adapter| !surface.get_capabilities(adapter).formats.is_empty());
-            }
-
+            let adapters = instance.enumerate_adapters(wgpu::Backends::all());
             if !adapters.is_empty() {
                 // Score adapters: Prioritize Discrete GPUs (1000), then Integrated (200), penalize CPU/Virtual
                 let mut scored_adapters: Vec<(u32, Adapter)> = adapters
@@ -71,7 +70,7 @@ impl GpuContext {
                 if let Some(adapter) = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::HighPerformance,
-                        compatible_surface,
+                        compatible_surface: None,
                         force_fallback_adapter: false,
                     })
                     .await
@@ -80,7 +79,7 @@ impl GpuContext {
                 } else if let Some(adapter) = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::LowPower,
-                        compatible_surface,
+                        compatible_surface: None,
                         force_fallback_adapter: false,
                     })
                     .await
@@ -89,7 +88,7 @@ impl GpuContext {
                 } else if let Some(adapter) = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::None,
-                        compatible_surface,
+                        compatible_surface: None,
                         force_fallback_adapter: true,
                     })
                     .await
@@ -198,7 +197,7 @@ mod tests {
             ..Default::default()
         });
 
-        let result = GpuContext::select_best_gpu(&instance, None).await;
+        let result = GpuContext::select_best_gpu(&instance).await;
         if let Ok(gpu_ctx) = result {
             assert!(!gpu_ctx.info.name.is_empty(), "GPU name must not be empty");
             println!(
