@@ -56,6 +56,8 @@ pub fn augmented_path() -> String {
         }
         extras.push("C:\\ffmpeg\\bin".to_string());
         extras.push("C:\\Program Files\\ffmpeg\\bin".to_string());
+        extras.push("C:\\Program Files (x86)\\ffmpeg\\bin".to_string());
+        extras.push("C:\\tools\\ffmpeg\\bin".to_string());
 
         let extra_str = extras.join(";");
         if current.is_empty() {
@@ -91,6 +93,91 @@ pub fn augmented_path() -> String {
     }
 }
 
+/// Check if a path points to a genuine, runnable executable file rather than a
+/// placeholder or text stub.
+///
+/// On Windows, sidecar stubs in the repo have `.exe` extensions but contain
+/// batch scripts starting with `@echo off`. Attempting to spawn them directly
+/// via `Command::new` causes `ERROR_EXE_MACHINE_TYPE_MISMATCH (os error 216)`:
+/// "This version of %1 is not compatible with the version of Windows you're running."
+/// Genuine Windows PE executables must begin with the `MZ` DOS magic header.
+pub fn is_real_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let is_exe = path
+            .extension()
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("exe"));
+        if is_exe {
+            use std::io::{Read, Seek, SeekFrom};
+            let Ok(mut f) = std::fs::File::open(path) else {
+                return false;
+            };
+
+            // 1. Must have DOS header (at least 64 bytes) starting with "MZ" (0x4D, 0x5A)
+            let mut dos_header = [0u8; 64];
+            if f.read_exact(&mut dos_header).is_err() || dos_header[0] != 0x4D || dos_header[1] != 0x5A {
+                return false;
+            }
+
+            // 2. Read e_lfanew (offset to PE header) at offset 0x3C
+            let pe_offset = u32::from_le_bytes([
+                dos_header[0x3C],
+                dos_header[0x3D],
+                dos_header[0x3E],
+                dos_header[0x3F],
+            ]) as u64;
+
+            // Basic sanity check on PE header offset
+            if pe_offset < 64 || pe_offset > 10_000_000 {
+                return false;
+            }
+
+            if f.seek(SeekFrom::Start(pe_offset)).is_err() {
+                return false;
+            }
+
+            // 3. Must have "PE\0\0" signature (0x50, 0x45, 0x00, 0x00)
+            let mut pe_sig = [0u8; 4];
+            if f.read_exact(&mut pe_sig).is_err() || &pe_sig != b"PE\0\0" {
+                return false;
+            }
+
+            // 4. Read IMAGE_FILE_HEADER Machine field (2 bytes)
+            let mut machine_bytes = [0u8; 2];
+            if f.read_exact(&mut machine_bytes).is_err() {
+                return false;
+            }
+            let machine = u16::from_le_bytes(machine_bytes);
+
+            // Machine architecture compatibility check:
+            // 0x8664 = IMAGE_FILE_MACHINE_AMD64 (x86_64)
+            // 0xAA64 = IMAGE_FILE_MACHINE_ARM64 (aarch64)
+            // 0xA641 = IMAGE_FILE_MACHINE_ARM64EC (ARM64 Emulation Compatible)
+            // 0x014C = IMAGE_FILE_MACHINE_I386  (x86 32-bit)
+            #[cfg(target_arch = "x86_64")]
+            {
+                // Native x86_64 hosts can execute AMD64 (0x8664) and i386 (0x014C) via WOW64.
+                // They cannot execute native ARM64 (0xAA64) or ARM64EC (0xA641) binaries.
+                if machine == 0xAA64 || machine == 0xA641 {
+                    return false;
+                }
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                // Native ARM64 hosts can execute ARM64 (0xAA64), ARM64EC (0xA641),
+                // and on Windows 11 transparently emulate AMD64 (0x8664) and i386 (0x014C).
+            }
+        }
+    }
+
+    true
+}
+
 /// Locate an executable binary on the system using multi-tier fallback.
 pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
     let names = candidate_binary_names(base_name);
@@ -106,7 +193,7 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 let p = exe_dir.join("ffmpeg-static").join("bin").join(&exe_name);
-                if p.is_file() { return Some(p); }
+                if is_real_executable(&p) { return Some(p); }
             }
         }
         if let Ok(cwd) = std::env::current_dir() {
@@ -115,7 +202,7 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
                 cwd.join("src-tauri").join("ffmpeg-static").join("bin").join(&exe_name),
             ];
             for p in &candidates {
-                if p.is_file() { return Some(p.clone()); }
+                if is_real_executable(p) { return Some(p.clone()); }
             }
         }
     }
@@ -132,7 +219,7 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
                     exe_dir.join("..").join("Resources").join(name),
                 ];
                 for candidate in candidates {
-                    if candidate.is_file() {
+                    if is_real_executable(&candidate) {
                         return Some(candidate);
                     }
                 }
@@ -151,7 +238,7 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
                 cwd.join("..").join("src-tauri").join("bin").join(name),
             ];
             for candidate in candidates {
-                if candidate.is_file() {
+                if is_real_executable(&candidate) {
                     return Some(candidate);
                 }
             }
@@ -168,12 +255,14 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
         }
         for name in &names {
             let candidate = dir.join(name);
-            if candidate.is_file() {
+            if is_real_executable(&candidate) {
+                log::debug!("[BinaryResolver] Resolved '{}' via PATH -> {:?}", base_name, candidate);
                 return Some(candidate);
             }
         }
     }
 
+    log::warn!("[BinaryResolver] Could not resolve binary '{}' in any search tier (checked candidates: {:?})", base_name, names);
     None
 }
 
@@ -192,6 +281,14 @@ fn candidate_binary_names(base_name: &str) -> Vec<String> {
 
         names.push(exe_name.clone());
         names.push(triple_name);
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Windows 11 ARM64 natively emulates x86_64 binaries. If no native ARM64
+            // sidecar was installed, allow falling back to the bundled x86_64 sidecar.
+            names.push(format!("{}-x86_64-pc-windows-msvc.exe", base_name.trim_end_matches(".exe")));
+        }
+
         names.push(base_name.to_string());
     }
 
@@ -287,5 +384,78 @@ mod tests {
         if let Some(path) = resolved {
             assert!(path.is_file(), "Resolved path must be an existing file: {:?}", path);
         }
+    }
+
+    #[test]
+    fn test_is_real_executable_rejects_non_existent_file() {
+        let non_existent = Path::new("non_existent_file_12345.exe");
+        assert!(!is_real_executable(non_existent));
+    }
+
+    #[test]
+    fn test_is_real_executable_mock_pe_vs_batch_stub() {
+        let temp_dir = std::env::temp_dir().join(format!("clypra-exe-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        let batch_stub = temp_dir.join("ffmpeg-stub.exe");
+        std::fs::write(&batch_stub, b"@echo off\r\nwhere ffmpeg\r\n").expect("Failed to write stub");
+
+        let mut pe_bytes = vec![0u8; 256];
+        pe_bytes[0] = b'M';
+        pe_bytes[1] = b'Z';
+        // e_lfanew at 0x3C points to 0x80 (128)
+        pe_bytes[0x3C] = 0x80;
+        // PE\0\0 signature at offset 128
+        pe_bytes[128..132].copy_from_slice(b"PE\0\0");
+        // Machine field: AMD64 (0x8664)
+        pe_bytes[132] = 0x64;
+        pe_bytes[133] = 0x86;
+
+        let pe_binary = temp_dir.join("ffmpeg-real.exe");
+        std::fs::write(&pe_binary, &pe_bytes).expect("Failed to write mock PE");
+
+        #[cfg(target_os = "windows")]
+        {
+            assert!(!is_real_executable(&batch_stub), "Batch stub named .exe must be rejected");
+            assert!(is_real_executable(&pe_binary), "PE binary starting with MZ and PE header must be accepted");
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(is_real_executable(&batch_stub));
+            assert!(is_real_executable(&pe_binary));
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_is_real_executable_mock_arm64_pe() {
+        let temp_dir = std::env::temp_dir().join(format!("clypra-exe-test-arm64-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        let mut pe_bytes = vec![0u8; 256];
+        pe_bytes[0] = b'M';
+        pe_bytes[1] = b'Z';
+        pe_bytes[0x3C] = 0x80;
+        pe_bytes[128..132].copy_from_slice(b"PE\0\0");
+        // Machine field: ARM64 (0xAA64) -> 0x64, 0xAA in little-endian
+        pe_bytes[132] = 0x64;
+        pe_bytes[133] = 0xAA;
+
+        let arm64_binary = temp_dir.join("ffmpeg-arm64.exe");
+        std::fs::write(&arm64_binary, &pe_bytes).expect("Failed to write mock ARM64 PE");
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            assert!(!is_real_executable(&arm64_binary), "ARM64 PE binary on x86_64 host must be rejected");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+        {
+            assert!(is_real_executable(&arm64_binary), "ARM64 PE binary on ARM64 host must be accepted");
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

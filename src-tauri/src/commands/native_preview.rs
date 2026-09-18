@@ -2747,7 +2747,11 @@ pub(crate) async fn present_native_frame_internal(
         .ok_or_else(|| "Native surface runtime is unavailable".to_string())?;
     let presentation_epoch = surface_state
         .lock()
-        .map_err(|_| "Native surface runtime lock is poisoned".to_string())?
+        .unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            state.handle_poison_recovery("present_native_frame_internal:request_check");
+            state
+        })
         .runtime_epoch();
     let queued_key = request.decode_cache_key().map_err(|error| error.to_string())?;
     let is_playback_mode = request.mode.as_deref() == Some("playback");
@@ -2849,7 +2853,11 @@ pub(crate) async fn present_native_frame_internal(
     let gpu = Arc::clone(&session.gpu);
     let mut surface = surface_state
         .lock()
-        .map_err(|_| "Native surface runtime lock is poisoned".to_string())?;
+        .unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            state.handle_poison_recovery("present_native_frame_internal:present");
+            state
+        });
     if surface.runtime_epoch() != presentation_epoch {
         return Err("Native preview frame request is stale".to_string());
     }

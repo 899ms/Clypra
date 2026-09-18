@@ -6,11 +6,20 @@
 #   pwsh scripts/setup-sidecars.ps1 -Force
 
 param (
-    [string]$Target = "x86_64-pc-windows-msvc",
+    [string]$Target = "",
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
+
+$detectedArch = $env:PROCESSOR_ARCHITECTURE
+if (-not $Target) {
+    if ($detectedArch -eq "ARM64") {
+        $Target = "aarch64-pc-windows-msvc"
+    } else {
+        $Target = "x86_64-pc-windows-msvc"
+    }
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
@@ -38,8 +47,14 @@ $artifacts = @(
 )
 
 Write-Host "============================================================"
+Write-Host "[INFO] Host PROCESSOR_ARCHITECTURE: $detectedArch"
 Write-Host "[INFO] Installing static sidecars for target: $Target"
 Write-Host "============================================================"
+
+if ($Target -eq "aarch64-pc-windows-msvc") {
+    Write-Host "[WARN] Windows ARM64 host detected."
+    Write-Host "[WARN] For native ARM64, install via 'winget install Gyan.FFmpeg' or place native ARM64 binaries in src-tauri/bin/."
+}
 
 foreach ($item in $artifacts) {
     $destPath = Join-Path $binDir $item.dest

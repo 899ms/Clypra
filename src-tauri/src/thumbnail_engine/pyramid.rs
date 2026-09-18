@@ -627,13 +627,20 @@ pub fn scale_rgba_lanczos(
     use ffmpeg_next::software::scaling::{context::Context, flag::Flags};
 
     let mut src_frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, src_w, src_h);
+    if src_frame.planes() == 0 {
+        return Err("Failed to allocate src_frame in downsample_rgba".to_string());
+    }
     let stride = src_frame.stride(0);
     let data = src_frame.data_mut(0);
     for y in 0..src_h as usize {
         let dst_off = y * stride;
         let src_off = y * src_w as usize * 4;
-        data[dst_off..dst_off + src_w as usize * 4]
-            .copy_from_slice(&src[src_off..src_off + src_w as usize * 4]);
+        let row_bytes = src_w as usize * 4;
+        if src_off + row_bytes > src.len() || dst_off + row_bytes > data.len() {
+            return Err("Buffer overrun in downsample_rgba copy to src_frame".to_string());
+        }
+        data[dst_off..dst_off + row_bytes]
+            .copy_from_slice(&src[src_off..src_off + row_bytes]);
     }
 
     let mut scaler = Context::get(
@@ -652,12 +659,20 @@ pub fn scale_rgba_lanczos(
         .run(&src_frame, &mut dst_frame)
         .map_err(|e| e.to_string())?;
 
+    if dst_frame.planes() == 0 {
+        return Err("Scaled dst_frame has no image planes in downsample_rgba".to_string());
+    }
+
     let stride = dst_frame.stride(0);
     let out = dst_frame.data(0);
     let mut result = Vec::with_capacity(dst_w as usize * dst_h as usize * 4);
+    let row_bytes = dst_w as usize * 4;
     for y in 0..dst_h as usize {
         let off = y * stride;
-        result.extend_from_slice(&out[off..off + dst_w as usize * 4]);
+        if off + row_bytes > out.len() {
+            return Err("Buffer overrun in downsample_rgba read from dst_frame".to_string());
+        }
+        result.extend_from_slice(&out[off..off + row_bytes]);
     }
     Ok(result)
 }

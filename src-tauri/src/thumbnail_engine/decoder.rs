@@ -576,7 +576,11 @@ impl VideoDecoder {
             width: frame.width(),
             height: frame.height(),
             pixel_format: pixel_format_name(frame),
-            linesize_y: frame.stride(0).min(i32::MAX as usize) as i32,
+            linesize_y: if frame.planes() > 0 {
+                frame.stride(0).min(i32::MAX as usize) as i32
+            } else {
+                0
+            },
             // RGB/still-image frames can have one packed plane. UV stride is
             // only meaningful for planar YUV formats.
             linesize_uv: if frame.planes() > 1 {
@@ -1235,6 +1239,12 @@ impl VideoDecoder {
             || frame.format() == ffmpeg::format::Pixel::D3D11
             || frame.format() == ffmpeg::format::Pixel::VAAPI
         {
+            log::debug!(
+                "[VideoDecoder] Transferring hardware frame ({:?}, {}x{}) to host CPU memory",
+                frame.format(),
+                frame.width(),
+                frame.height()
+            );
             let mut cpu_frame = ffmpeg::frame::Video::empty();
             unsafe {
                 // VideoToolbox/D3D11 require explicit destination pixel format
@@ -1246,6 +1256,10 @@ impl VideoDecoder {
                     0,
                 );
                 if ret < 0 {
+                    log::debug!(
+                        "[VideoDecoder] NV12 HW transfer failed (ret={}), falling back to YUV420P",
+                        ret
+                    );
                     (*cpu_frame.as_mut_ptr()).format =
                         ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
                     ret = ffmpeg::ffi::av_hwframe_transfer_data(
@@ -1255,9 +1269,18 @@ impl VideoDecoder {
                     );
                 }
                 if ret < 0 {
+                    log::error!(
+                        "[VideoDecoder] Hardware frame transfer failed completely with ret={}",
+                        ret
+                    );
                     return Err(format!("HW frame transfer failed (ret={})", ret));
                 }
             }
+            log::debug!(
+                "[VideoDecoder] Hardware frame successfully transferred to CPU (format={:?}, planes={})",
+                cpu_frame.format(),
+                cpu_frame.planes()
+            );
             Ok(cpu_frame)
         } else {
             Ok(frame)
@@ -1324,7 +1347,11 @@ impl VideoDecoder {
             let mut y_plane = Vec::with_capacity(width * height);
             for y in 0..height {
                 let row_start = y * y_stride;
-                y_plane.extend_from_slice(&y_data[row_start..row_start + width]);
+                let row_end = row_start + width;
+                if row_end > y_data.len() {
+                    return None;
+                }
+                y_plane.extend_from_slice(&y_data[row_start..row_end]);
             }
 
             let uv_height = height.div_ceil(2);
@@ -1334,7 +1361,11 @@ impl VideoDecoder {
             for y in 0..uv_height {
                 let row_start = y * uv_stride;
                 let copy_len = width.min(uv_packed_stride);
-                uv_plane.extend_from_slice(&uv_data[row_start..row_start + copy_len]);
+                let row_end = row_start + copy_len;
+                if row_end > uv_data.len() {
+                    return None;
+                }
+                uv_plane.extend_from_slice(&uv_data[row_start..row_end]);
                 if copy_len < uv_packed_stride {
                     uv_plane.extend(std::iter::repeat_n(0u8, uv_packed_stride - copy_len));
                 }
@@ -1357,7 +1388,11 @@ impl VideoDecoder {
             let mut y_plane = Vec::with_capacity(width * height);
             for y in 0..height {
                 let row_start = y * y_stride;
-                y_plane.extend_from_slice(&y_data[row_start..row_start + width]);
+                let row_end = row_start + width;
+                if row_end > y_data.len() {
+                    return None;
+                }
+                y_plane.extend_from_slice(&y_data[row_start..row_end]);
             }
 
             let uv_height = height.div_ceil(2);
@@ -1368,6 +1403,9 @@ impl VideoDecoder {
             for y in 0..uv_height {
                 let u_row = y * u_stride;
                 let v_row = y * v_stride;
+                if u_row + uv_width > u_data.len() || v_row + uv_width > v_data.len() {
+                    return None;
+                }
                 for x in 0..uv_width {
                     uv_plane.push(u_data[u_row + x]);
                     uv_plane.push(v_data[v_row + x]);
@@ -1863,8 +1901,16 @@ impl VideoDecoder {
 
             if let Some(shared) = Self::try_extract_dxgi_shared_handle(&best_frame) {
                 // Zero-copy succeeded — return the handle without touching CPU.
+                log::debug!(
+                    "[VideoDecoder] D3D11VA zero-copy shared handle extracted successfully for {}x{}",
+                    *out_width,
+                    *out_height
+                );
                 return Ok(Some(shared));
             }
+            log::warn!(
+                "[VideoDecoder] D3D11VA zero-copy handle extraction returned None; falling back to CPU copy"
+            );
             // If CreateSharedHandle failed (e.g., Optimus with cross-adapter),
             // fall through to the CPU copy path below.
         }
@@ -1921,6 +1967,10 @@ impl VideoDecoder {
         let mut out = ffmpeg::frame::Video::empty();
         scaler.run(frame, &mut out).map_err(|e| e.to_string())?;
 
+        if out.planes() == 0 {
+            return Err("Scaled RGBA output has no image planes".to_string());
+        }
+
         // FFmpeg frame data may have stride padding - copy tightly packed RGBA
         let stride = out.stride(0);
         let width = out.width() as usize;
@@ -1931,6 +1981,9 @@ impl VideoDecoder {
         let mut rgba = Vec::with_capacity(width * height * 4);
         for y in 0..height {
             let row_start = y * stride;
+            if row_start + (width * 4) > src_data.len() {
+                return Err("Scaled RGBA buffer smaller than expected".to_string());
+            }
             let row_pixels = &src_data[row_start..row_start + (width * 4)];
             rgba.extend_from_slice(row_pixels);
         }
@@ -1952,6 +2005,9 @@ impl VideoDecoder {
 
         // Create a temporary frame from RGBA buffer
         let mut src_frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, src_w, src_h);
+        if src_frame.planes() == 0 {
+            return Err("Failed to allocate src_frame for scale_rgba_buffer".to_string());
+        }
 
         // Copy RGBA data into frame (row-by-row to handle stride alignment)
         let stride = src_frame.stride(0);
@@ -1961,6 +2017,9 @@ impl VideoDecoder {
         for y in 0..height {
             let row_start = y * stride;
             let src_row_start = y * width * 4;
+            if src_row_start + (width * 4) > rgba.len() || row_start + (width * 4) > src_data.len() {
+                return Err("Source buffer smaller than expected in scale_rgba_buffer".to_string());
+            }
             src_data[row_start..row_start + (width * 4)]
                 .copy_from_slice(&rgba[src_row_start..src_row_start + (width * 4)]);
         }
@@ -1982,6 +2041,10 @@ impl VideoDecoder {
             .run(&src_frame, &mut dst_frame)
             .map_err(|e| e.to_string())?;
 
+        if dst_frame.planes() == 0 {
+            return Err("Scaled dst_frame has no image planes in scale_rgba_buffer".to_string());
+        }
+
         // Extract tightly packed RGBA
         let stride = dst_frame.stride(0);
         let width = dst_frame.width() as usize;
@@ -1991,6 +2054,9 @@ impl VideoDecoder {
         let mut result = Vec::with_capacity(width * height * 4);
         for y in 0..height {
             let row_start = y * stride;
+            if row_start + (width * 4) > dst_data.len() {
+                return Err("Scaled dst_data buffer smaller than expected in scale_rgba_buffer".to_string());
+            }
             let row_pixels = &dst_data[row_start..row_start + (width * 4)];
             result.extend_from_slice(row_pixels);
         }
