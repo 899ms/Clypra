@@ -945,9 +945,7 @@ async fn probe_decode_capability(snapshot: &FrameRequest) -> (DecodeCapabilityPo
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(400),
         tokio::task::spawn_blocking(move || {
-            let mut guard = match decoder.blocking_lock() {
-                g => g,
-            };
+            let mut guard = decoder.blocking_lock();
             guard.decode_frame_raw_nv12_with_options(0.0, probe_options, || false)
         }),
     )

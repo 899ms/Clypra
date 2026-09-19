@@ -395,7 +395,7 @@ fn run_render(args: &[String]) -> Result<(), String> {
             flags: wgpu::InstanceFlags::all(),
             ..Default::default()
         });
-        GpuContext::select_best_gpu(&instance, None).await
+        GpuContext::select_best_gpu(&instance).await
     })?;
 
     eprintln!(
