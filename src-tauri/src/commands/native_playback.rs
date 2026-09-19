@@ -28,6 +28,20 @@ struct NativeRenderSession {
     running: AtomicBool,
     generation: AtomicU64,
     worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    configured_at: Instant,
+    ready_after_us: AtomicU64,
+    first_presented: AtomicBool,
+}
+
+/// One-shot, non-content startup milestones persisted by the frontend in the
+/// session archive. They expose the otherwise invisible interval between
+/// render-session configuration and first visible native frame.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePlaybackStartupMilestone {
+    stage: &'static str,
+    elapsed_us: u64,
+    ready_after_us: Option<u64>,
 }
 
 #[derive(Default)]
@@ -46,7 +60,7 @@ impl LatestPlaybackDemand {
 }
 
 impl NativeRenderSession {
-    async fn new(snapshot: FrameRequest) -> Result<Arc<Self>, String> {
+    async fn new(snapshot: FrameRequest, configured_at: Instant) -> Result<Arc<Self>, String> {
         snapshot.validate().map_err(|error| error.to_string())?;
         let mut streams = HashSet::new();
         let mut leases = Vec::new();
@@ -82,6 +96,9 @@ impl NativeRenderSession {
             running: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             worker: Mutex::new(None),
+            configured_at,
+            ready_after_us: AtomicU64::new(0),
+            first_presented: AtomicBool::new(false),
         }))
     }
 
@@ -93,6 +110,13 @@ impl NativeRenderSession {
         if let Ok(mut snapshot) = self.snapshot.lock() {
             snapshot.quality = quality;
         }
+    }
+
+    fn mark_ready(&self) {
+        self.ready_after_us.store(
+            self.configured_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
+            Ordering::Release,
+        );
     }
 
     fn start(self: &Arc<Self>, app: AppHandle) {
@@ -666,6 +690,21 @@ impl NativeRenderSession {
         {
             Ok(presentation) => {
                 if presentation.presented {
+                    if !self.first_presented.swap(true, Ordering::AcqRel) {
+                        let ready_after_us = self.ready_after_us.load(Ordering::Acquire);
+                        let _ = app.emit(
+                            "clypra://native-playback-startup",
+                            NativePlaybackStartupMilestone {
+                                stage: "first-native-frame-presented",
+                                elapsed_us: self
+                                    .configured_at
+                                    .elapsed()
+                                    .as_micros()
+                                    .min(u64::MAX as u128) as u64,
+                                ready_after_us: (ready_after_us > 0).then_some(ready_after_us),
+                            },
+                        );
+                    }
                     if let Some(surface) = app
                         .try_state::<Arc<Mutex<crate::commands::native_surface::NativeSurfaceRuntime>>>(
                         )
@@ -967,6 +1006,9 @@ pub async fn configure_native_playback_render(
     app: AppHandle,
     snapshot: FrameRequest,
 ) -> Result<(), String> {
+    // This precedes decoder-lease acquisition so the startup milestone covers
+    // the full configuration path, not merely the final GPU readiness gate.
+    let startup_started_at = Instant::now();
     let state = runtime(&app)?;
     let previous = {
         let mut runtime = state
@@ -988,7 +1030,7 @@ pub async fn configure_native_playback_render(
     // Acquire leases only after the previous revision has released its pins;
     // this prevents a project switch from temporarily growing the preview
     // decoder pool beyond its intended capacity.
-    let render_session = NativeRenderSession::new(snapshot).await?;
+    let render_session = NativeRenderSession::new(snapshot, startup_started_at).await?;
     let should_start = {
         let mut runtime = state
             .lock()
@@ -1035,6 +1077,7 @@ pub async fn configure_native_playback_render(
     // Apply the decision before the worker can start. This keeps the warmup
     // request and the audio-driven refill path on the same quality policy.
     render_session.set_preview_quality(lookahead_quality);
+    render_session.mark_ready();
 
     // Store the probe result in the preview session so every sampled native
     // presentation can be attributed to the capability policy.
