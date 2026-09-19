@@ -139,8 +139,10 @@ class PerfLogService {
 
       // Write a session-open marker so log consumers can correlate the
       // hardware context with subsequent entries without re-parsing the whole file.
+      // Uses "native-diagnostic" kind so it is stored in the R2 raw archive
+      // but never parsed as a telemetry event (it has no eventId/device/video/workload).
       this.enqueue({
-        kind: "frontend-rollup",
+        kind: "native-diagnostic",
         sessionId: this.sessionId,
         timestampEpochMs: Date.now(),
         payload: {
@@ -330,8 +332,9 @@ class PerfLogService {
     }
 
     // Write a session-close marker before the final flush.
+    // Uses "native-diagnostic" so it is stored in R2 but not parsed as a telemetry event.
     this.queue.push({
-      kind: "frontend-rollup",
+      kind: "native-diagnostic",
       sessionId,
       timestampEpochMs: Date.now(),
       payload: { marker: "session-close" },
