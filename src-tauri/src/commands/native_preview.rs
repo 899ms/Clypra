@@ -219,6 +219,8 @@ fn record_native_surface_sample(
     dropped: bool,
     stale: bool,
     drop_reason: Option<&str>,
+    capability_policy: Option<String>,
+    capability_probe_us: Option<u64>,
 ) {
     let Some(service) = app.try_state::<tokio::sync::Mutex<NativeFrameService>>() else {
         return;
@@ -272,8 +274,11 @@ fn record_native_surface_sample(
         gpu_queue_wait_us: None,
         surface_acquire_us,
         submit_present_us,
+        capability_policy,
+        capability_probe_us,
     });
 }
+
 
 /// A decoded lookahead frame can sit in the bounded preview queue while the
 /// audio clock advances. That delay is neither decode time nor GPU time, yet
@@ -2491,6 +2496,7 @@ pub(crate) fn schedule_lookahead_predecode(
     app: tauri::AppHandle,
     base_request: FrameRequest,
     lookahead_count: usize,
+    quality_override: Option<crate::native_core::QualityTier>,
 ) {
     if base_request.project.video_layers.is_empty() || lookahead_count == 0 {
         return;
@@ -2630,6 +2636,13 @@ pub(crate) fn schedule_lookahead_predecode(
                         continue;
                     }
                 }
+            }
+
+            // Apply quality tier override from the capability probe. The probe
+            // runs at session start and selects Half/Quarter when the decoder
+            // cannot sustain full-quality decode within the frame deadline.
+            if let Some(quality) = quality_override {
+                req.quality = quality;
             }
 
             let res = queue_native_frame(app.clone(), req).await;
@@ -3005,6 +3018,8 @@ pub(crate) async fn present_native_frame_internal(
                     false,
                     true,
                     Some("stale"),
+                    None,
+                    None,
                 );
                 return Err("Native preview frame request is stale".to_string());
             }
@@ -3024,6 +3039,11 @@ pub(crate) async fn present_native_frame_internal(
         .elapsed()
         .as_micros()
         .min(u64::MAX as u128) as u64;
+    // Consume the capability probe result written by probe_decode_capability.
+    // take_capability_probe returns None after the first call so the fields
+    // are attached to exactly one PerformanceSample per session.
+    let (capability_policy_value, capability_probe_us_value) = session.take_capability_probe();
+    let capability_policy_str = capability_policy_value.map(|p| p.as_str().to_string());
     let gpu = Arc::clone(&session.gpu);
     let mut surface = surface_state
         .lock()
@@ -3072,6 +3092,8 @@ pub(crate) async fn present_native_frame_internal(
             true,
             false,
             Some("stale"),
+            capability_policy_str.clone(),
+            capability_probe_us_value,
         );
         return Ok(NativeSurfacePresentation {
             contract_version: NATIVE_CORE_CONTRACT_VERSION,
@@ -3111,6 +3133,8 @@ pub(crate) async fn present_native_frame_internal(
             true,
             false,
             Some("late-for-audio"),
+            capability_policy_str.clone(),
+            capability_probe_us_value,
         );
         return Ok(NativeSurfacePresentation {
             contract_version: NATIVE_CORE_CONTRACT_VERSION,
@@ -3444,10 +3468,12 @@ pub(crate) async fn present_native_frame_internal(
         false,
         false,
         None,
+        capability_policy_str,
+        capability_probe_us_value,
     );
 
     if request.mode.as_deref() != Some("prefetch") && request.mode.as_deref() != Some("scrub") {
-        schedule_lookahead_predecode(app.clone(), request.clone(), 16);
+        schedule_lookahead_predecode(app.clone(), request.clone(), 16, None);
     }
 
     Ok(NativeSurfacePresentation {
@@ -3576,6 +3602,8 @@ pub async fn render_native_frame(
                 gpu_queue_wait_us: None,
                 surface_acquire_us: None,
                 submit_present_us: None,
+                capability_policy: None,
+                capability_probe_us: None,
             });
             record_successful_readback_metrics(&app, &request);
             return Ok(tauri::ipc::Response::new(packet.data));
@@ -3650,6 +3678,8 @@ pub async fn render_native_frame(
             gpu_queue_wait_us: None,
             surface_acquire_us: None,
             submit_present_us: None,
+            capability_policy: None,
+            capability_probe_us: None,
         });
     }
 

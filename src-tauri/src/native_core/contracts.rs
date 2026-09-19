@@ -16,6 +16,63 @@ pub enum QualityTier {
     Proxy,
 }
 
+/// Hardware decode capability tier, selected once per session by a timed
+/// keyframe probe executed before the first frame is presented.
+///
+/// The probe decodes a single keyframe with `allow_keyframe_approx: true`
+/// and maps the elapsed wall-clock time to a policy:
+///
+/// | Probe time  | Policy     | Lookahead `QualityTier` |
+/// |-------------|------------|------------------------|
+/// | < 20 ms     | `Full`     | `Full`                 |
+/// | 20 – 50 ms  | `Reduced`  | `Half`                 |
+/// | > 50 ms     | `Proxy`    | `Quarter`              |
+/// | Timeout     | `Proxy`    | `Quarter`              |
+///
+/// macOS M1 decode P50 ≈ 11 ms → `Full`.
+/// Windows Intel HD 520 max ≈ 110 ms → `Proxy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DecodeCapabilityPolicy {
+    /// Decode P50 < 20 ms: full quality native preview.
+    #[default]
+    Full,
+    /// Decode P50 20–50 ms: half-resolution lookahead decode.
+    Reduced,
+    /// Decode P50 > 50 ms or timed out: quarter-resolution (proxy) lookahead.
+    Proxy,
+}
+
+impl DecodeCapabilityPolicy {
+    /// Map the probe result to a `QualityTier` for lookahead decode.
+    pub fn lookahead_quality(self) -> QualityTier {
+        match self {
+            DecodeCapabilityPolicy::Full => QualityTier::Full,
+            DecodeCapabilityPolicy::Reduced => QualityTier::Half,
+            DecodeCapabilityPolicy::Proxy => QualityTier::Quarter,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecodeCapabilityPolicy::Full => "full",
+            DecodeCapabilityPolicy::Reduced => "reduced",
+            DecodeCapabilityPolicy::Proxy => "proxy",
+        }
+    }
+
+    pub fn from_probe_us(elapsed_us: u64) -> Self {
+        if elapsed_us < 20_000 {
+            DecodeCapabilityPolicy::Full
+        } else if elapsed_us < 50_000 {
+            DecodeCapabilityPolicy::Reduced
+        } else {
+            DecodeCapabilityPolicy::Proxy
+        }
+    }
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PlaybackClockStatus {

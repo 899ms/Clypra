@@ -154,6 +154,11 @@ pub struct NativePreviewSession {
     pub text_pipeline: TextEffectPipeline,
     matte_prefetchers: HashMap<String, Arc<crate::clymatte::MattePrefetcher>>,
     compositors: Vec<CachedCompositor>,
+    /// Set once by `probe_decode_capability` during session configuration.
+    /// Consumed (taken) by the first telemetry sample so the analytics API
+    /// sees it exactly once per session.
+    pending_capability_policy: Option<crate::native_core::DecodeCapabilityPolicy>,
+    pending_capability_probe_us: Option<u64>,
 }
 
 struct CachedCompositor {
@@ -280,6 +285,8 @@ impl NativePreviewSession {
             text_pipeline,
             matte_prefetchers: HashMap::new(),
             compositors: Vec::new(),
+            pending_capability_policy: None,
+            pending_capability_probe_us: None,
         }
     }
 
@@ -295,6 +302,28 @@ impl NativePreviewSession {
 
     pub fn mark_dxgi_supported(&mut self) {
         self.dxgi_state = DxgiImportState::Supported;
+    }
+
+    /// Store the capability probe result. Called once by
+    /// `configure_native_playback_render` after `probe_decode_capability`.
+    pub fn set_capability_probe(
+        &mut self,
+        policy: crate::native_core::DecodeCapabilityPolicy,
+        probe_us: Option<u64>,
+    ) {
+        self.pending_capability_policy = Some(policy);
+        self.pending_capability_probe_us = probe_us;
+    }
+
+    /// Consume and return the pending capability probe result. Returns `None`
+    /// after the first call so the fields are emitted exactly once per session.
+    pub fn take_capability_probe(
+        &mut self,
+    ) -> (Option<crate::native_core::DecodeCapabilityPolicy>, Option<u64>) {
+        (
+            self.pending_capability_policy.take(),
+            self.pending_capability_probe_us.take(),
+        )
     }
 
     pub fn reset_dxgi_state(&mut self) {
