@@ -355,6 +355,8 @@ export interface TelemetryEvent {
     peakVramMb?: number;
     cacheHitRatio: number;
     stageTimings: TelemetryStageTimings;
+    capabilityPolicy?: "full" | "reduced" | "proxy" | string;
+    capabilityProbeUs?: number;
     renderPercentiles?: TelemetryMetricPercentiles;
     stagePercentiles?: TelemetryStagePercentiles;
     firstFrameVisibleMs?: number;
@@ -432,6 +434,8 @@ export interface TelemetryRenderOptions {
   deadlineUs?: number;
   forceSample?: boolean;
   cacheHit?: boolean;
+  capabilityPolicy?: "full" | "reduced" | "proxy" | string;
+  capabilityProbeUs?: number;
   /** Native samples are stage evidence for a frontend frame, not a second frame. */
   includeInRollup?: boolean;
 }
@@ -586,6 +590,8 @@ class SessionRollupAccumulator {
   private cacheMisses: number = 0;
   private firstFrameVisibleMs: number | undefined;
   private lastKnownVideoProfile: Partial<TelemetryVideoProfile> = {};
+  private capabilityPolicy?: "full" | "reduced" | "proxy" | string;
+  private capabilityProbeUs?: number;
 
   public recordFrame(
     timings: TelemetryStageTimings,
@@ -595,6 +601,8 @@ class SessionRollupAccumulator {
     isStale: boolean = false,
     isCancelled: boolean = false,
     cacheHit: boolean = true,
+    capabilityPolicy?: "full" | "reduced" | "proxy" | string,
+    capabilityProbeUs?: number,
   ): void {
     const now = Date.now();
 
@@ -668,6 +676,8 @@ class SessionRollupAccumulator {
         ...videoProfile,
       };
     }
+    if (capabilityPolicy) this.capabilityPolicy = capabilityPolicy;
+    if (capabilityProbeUs !== undefined) this.capabilityProbeUs = capabilityProbeUs;
   }
 
   public recordSeek(seekLatencyMs: number): void {
@@ -697,6 +707,8 @@ class SessionRollupAccumulator {
     stagePercentiles?: TelemetryStagePercentiles;
     firstFrameVisibleMs?: number;
     videoProfile: Partial<TelemetryVideoProfile>;
+    capabilityPolicy?: "full" | "reduced" | "proxy" | string;
+    capabilityProbeUs?: number;
   } | null {
     if (this.totalFrames === 0) {
       this.windowStartMs = Date.now();
@@ -794,6 +806,8 @@ class SessionRollupAccumulator {
       },
       firstFrameVisibleMs: this.firstFrameVisibleMs,
       videoProfile: this.lastKnownVideoProfile,
+      capabilityPolicy: this.capabilityPolicy,
+      capabilityProbeUs: this.capabilityProbeUs,
     };
 
     this.windowStartMs = Date.now();
@@ -824,6 +838,8 @@ class SessionRollupAccumulator {
     this.driftSamplesMs = [];
     this.seekLatenciesMs = [];
     this.firstFrameVisibleMs = undefined;
+    this.capabilityPolicy = undefined;
+    this.capabilityProbeUs = undefined;
 
     return result;
   }
@@ -858,6 +874,8 @@ class SessionRollupAccumulator {
     this.driftSamplesMs = [];
     this.seekLatenciesMs = [];
     this.firstFrameVisibleMs = undefined;
+    this.capabilityPolicy = undefined;
+    this.capabilityProbeUs = undefined;
   }
 }
 
@@ -1347,6 +1365,8 @@ class TelemetryCollector {
         staleFrames > 0,
         cancelledFrames > 0,
         options.cacheHit ?? true,
+        options.capabilityPolicy,
+        options.capabilityProbeUs,
       );
 
       if (accumulator.shouldEmitRollup()) {
@@ -1406,6 +1426,8 @@ class TelemetryCollector {
         peakRamMb: 512,
         cacheHitRatio: 0.9,
         stageTimings: timings,
+        capabilityPolicy: options.capabilityPolicy,
+        capabilityProbeUs: options.capabilityProbeUs,
       },
       timestampMs: Date.now(),
     };
@@ -2111,6 +2133,8 @@ class TelemetryCollector {
         stale?: boolean;
         cancelled?: boolean;
         dropReason?: string;
+        capabilityPolicy?: "full" | "reduced" | "proxy" | string;
+        capabilityProbeUs?: number;
       } | null;
       windowDroppedFrames?: number;
       windowStaleFrames?: number;
@@ -2189,6 +2213,8 @@ class TelemetryCollector {
           : undefined,
         forceSample: previewContext?.scenario === "qualification",
         cacheHit: last.cacheHit,
+        capabilityPolicy: last.capabilityPolicy,
+        capabilityProbeUs: last.capabilityProbeUs,
         // The native session is the authoritative frame stream for the Native
         // path. Frontend spans are used for WebView and compatibility fallback
         // only, so Native samples can feed the session rollup without being
@@ -2246,6 +2272,8 @@ class TelemetryCollector {
           peakRamMb: 512,
           cacheHitRatio: rollup.cacheHitRatio,
           stageTimings: rollup.stageTimings,
+          capabilityPolicy: rollup.capabilityPolicy,
+          capabilityProbeUs: rollup.capabilityProbeUs,
           renderPercentiles: rollup.renderPercentiles,
           stagePercentiles: rollup.stagePercentiles,
           firstFrameVisibleMs: rollup.firstFrameVisibleMs,

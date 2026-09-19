@@ -85,6 +85,16 @@ impl NativeRenderSession {
         }))
     }
 
+    /// The startup probe chooses one quality policy for the complete
+    /// render-session revision. Persist it in the immutable render snapshot so
+    /// the worker's initial prime and every subsequent refill use the same
+    /// decode scale, rather than only the paused configuration path.
+    fn set_preview_quality(&self, quality: QualityTier) {
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            snapshot.quality = quality;
+        }
+    }
+
     fn start(self: &Arc<Self>, app: AppHandle) {
         if self.running.swap(true, Ordering::AcqRel) {
             return;
@@ -985,7 +995,7 @@ pub async fn configure_native_playback_render(
         let mut runtime = state
             .lock()
             .map_err(|_| "Native playback runtime lock is poisoned".to_string())?;
-        runtime.install_render_session(render_session);
+        runtime.install_render_session(Arc::clone(&render_session));
         let audio_running = audio_clock_time(&app, true, false).is_ok();
         let session_running = runtime
             .session
@@ -1024,8 +1034,12 @@ pub async fn configure_native_playback_render(
     let (capability_policy, capability_probe_us) = probe_decode_capability(&snapshot_clone).await;
     let lookahead_quality = capability_policy.lookahead_quality();
 
-    // Store the probe result in the preview session so the first telemetry
-    // sample can attach capability_policy and capability_probe_us.
+    // Apply the decision before the worker can start. This keeps the warmup
+    // request and the audio-driven refill path on the same quality policy.
+    render_session.set_preview_quality(lookahead_quality);
+
+    // Store the probe result in the preview session so every sampled native
+    // presentation can be attributed to the capability policy.
     if let Some(preview_state) = app.try_state::<Arc<tokio::sync::Mutex<crate::wgpu_compositor::NativePreviewSession>>>() {
         let arc = preview_state.inner().clone();
         let mut session = arc.lock().await;

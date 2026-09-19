@@ -2897,7 +2897,8 @@ pub(crate) async fn present_native_frame_internal(
         .runtime_epoch();
     let queued_key = request.decode_cache_key().map_err(|error| error.to_string())?;
     let is_playback_mode = request.mode.as_deref() == Some("playback");
-    let mut lookahead_wait_us = None;
+    let mut playback_lookahead_miss = false;
+    let lookahead_wait_us = None;
     let queued_frame =
         if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
             let queue_arc = queue.inner().clone();
@@ -2914,43 +2915,73 @@ pub(crate) async fn present_native_frame_internal(
             if let Some(frame) = q.take(&queued_key) {
                 Some(frame)
             } else if is_playback_mode {
-                let notify = q.notify();
-                drop(q);
-                // In continuous playback, give in-flight lookahead up to 75ms to finish
-                // rather than launching a competing cold decode that thrashes the decoder GOP.
-                let lookahead_wait_started = Instant::now();
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(75),
-                    notify.notified(),
-                )
-                .await;
-                lookahead_wait_us = Some(
-                    lookahead_wait_started.elapsed().as_micros().min(u64::MAX as u128) as u64,
-                );
-                let mut q = queue_arc.lock().await;
-                q.discard_expired(presentation_started);
-                q.take_matching_or_closest(&queued_key, request.frame_time.frame_index)
-            } else if q.is_pending(&queued_key) {
-                let notify = q.notify();
-                drop(q);
-                let lookahead_wait_started = Instant::now();
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(75),
-                    notify.notified(),
-                )
-                .await;
-                lookahead_wait_us = Some(
-                    lookahead_wait_started.elapsed().as_micros().min(u64::MAX as u128) as u64,
-                );
-                let mut q = queue_arc.lock().await;
-                q.discard_expired(presentation_started);
-                q.take(&queued_key)
+                // A presentation tick is a deadline, not a decode request.
+                // Never wait for in-flight lookahead and never start a second
+                // foreground decode here: either use a recent completed frame
+                // or explicitly drop this tick. The worker keeps decoding the
+                // latest demand and will refill the queue for the next tick.
+                let frame = q.take_matching_or_closest(&queued_key, request.frame_time.frame_index);
+                playback_lookahead_miss = frame.is_none();
+                frame
             } else {
                 None
             }
         } else {
             None
         };
+    if playback_lookahead_miss {
+        let probe = surface_state
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                let mut state = poisoned.into_inner();
+                state.handle_poison_recovery("present_native_frame_internal:lookahead_miss");
+                state
+            })
+            .probe()
+            .ok_or_else(|| "Native surface lost its readiness probe".to_string())?;
+        let (audio_position_ticks, frame_age_ticks, _) = native_presentation_timing(
+            &app,
+            request.frame_time.ticks,
+            request.frame_time.timescale,
+        );
+        SYNC_METRICS.record_dropped_frame();
+        record_native_surface_sample(
+            &app,
+            &request,
+            presentation_started,
+            NativeDecodeTimings::default(),
+            false,
+            0,
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            false,
+            Some("lookahead-miss"),
+            None,
+            None,
+        );
+        return Ok(NativeSurfacePresentation {
+            contract_version: NATIVE_CORE_CONTRACT_VERSION,
+            request_id: request.request_id,
+            frame_index: request.frame_time.frame_index,
+            presented: false,
+            dropped: true,
+            audio_position_ticks,
+            frame_age_ticks,
+            surface: probe,
+            generation: request.generation,
+            mode: request.mode,
+            stale: false,
+            cancelled: false,
+            drop_reason: Some("lookahead-miss".to_string()),
+            timings: None,
+        });
+    }
     let (
         decoded_frames,
         decode_timings,
@@ -3034,10 +3065,9 @@ pub(crate) async fn present_native_frame_internal(
         .elapsed()
         .as_micros()
         .min(u64::MAX as u128) as u64;
-    // Consume the capability probe result written by probe_decode_capability.
-    // take_capability_probe returns None after the first call so the fields
-    // are attached to exactly one PerformanceSample per session.
-    let (capability_policy_value, capability_probe_us_value) = session.take_capability_probe();
+    // Carry the session decision on each sampled frame. The frontend samples
+    // nominal frames adaptively, so a one-shot field can otherwise disappear.
+    let (capability_policy_value, capability_probe_us_value) = session.capability_probe();
     let capability_policy_str = capability_policy_value.map(|p| p.as_str().to_string());
     let gpu = Arc::clone(&session.gpu);
     let mut surface = surface_state
