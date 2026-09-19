@@ -97,6 +97,12 @@ pressure. Paused, scrub, and seek requests retain their synchronous recovery
 behavior because they are interactive correctness operations rather than
 continuous playback ticks.
 
+The miss path explicitly invokes the coalesced refill scheduler before it
+returns. This is a liveness invariant: the normal refill invocation is after a
+successful presentation and would otherwise be skipped by an early drop,
+leaving an empty queue to produce a black surface until pause/play re-primes
+the session.
+
 ### Capability policy is a session contract
 
 The session-start probe chooses `full`, `reduced`, or `proxy` quality before

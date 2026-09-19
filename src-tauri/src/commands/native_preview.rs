@@ -2930,6 +2930,13 @@ pub(crate) async fn present_native_frame_internal(
             None
         };
     if playback_lookahead_miss {
+        // A miss is intentionally non-blocking, but it must never become a
+        // terminal queue state. The normal refill call lives after a
+        // successful presentation, which this early return bypasses. Ensure
+        // the single bounded worker is running before reporting the drop so
+        // the next audio deadline can consume newly ready work. The scheduler
+        // coalesces an already-running worker for this generation.
+        schedule_lookahead_predecode(app.clone(), request.clone(), 16, None);
         let probe = surface_state
             .lock()
             .unwrap_or_else(|poisoned| {
