@@ -163,6 +163,32 @@ performance samples, frontend rollups, session NDJSON, and API analytics
 instead, preventing stdout/stderr backpressure from becoming a Windows preview
 variable.
 
+### Transport interaction telemetry
+
+Play, pause, and paused seek/scrub commands are recorded as individual,
+always-sampled `interaction` events. They contain no project or media content:
+only an opaque interaction ID, outcome (`completed`, `superseded`, or
+`failed`), command-queue delay, native-audio seek time, native-audio transport
+time, and total completion time. They are deliberately excluded from frame
+rollups so a burst of seeks cannot distort preview FPS or decode percentiles.
+
+This distinguishes a slow click-to-play path from a slow first video frame:
+the former will show command queue or native-audio time, while the latter will
+remain visible in native startup/presentation telemetry.
+
+The raw session archive also records a `native-playback-startup` milestone when
+the first native frame is presented. It carries `readyAfterUs` (session
+configuration through GPU readiness/probe) and `elapsedUs` (configuration
+through first visible frame). Together with the play interaction timestamp,
+these establish the startup timeline:
+
+```text
+play intent → native audio command complete → render session ready → first native frame
+```
+
+This event is emitted through Tauri and persisted in session telemetry; it is
+not Rust terminal logging and does not run in the per-frame hot path.
+
 The Cloudflare API schema and preview comparison analytics also recognize both fields. This permits cohort analysis across Windows Intel and macOS Apple Silicon without relying on untyped raw JSON.
 
 ## Files changed

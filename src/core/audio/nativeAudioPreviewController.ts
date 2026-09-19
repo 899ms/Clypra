@@ -24,8 +24,19 @@ import {
   syncNativeAudioTimeline,
   type NativeAudioTimelineSnapshot,
 } from "./nativeAudioTimeline";
+import {
+  telemetryCollector,
+  type TelemetryInteraction,
+  type TelemetryInteractionName,
+  type TelemetryInteractionOutcome,
+} from "@/services/telemetryCollector";
 
 const NATIVE_PREVIEW_AUDIO_OPTIONS = { preserveTransportPitch: true } as const;
+
+interface TimedInteraction {
+  startedAt: number;
+  telemetry: TelemetryInteraction;
+}
 
 export interface NativeAudioPreviewSource {
   projectRevision: string;
@@ -272,44 +283,68 @@ export class NativeAudioPreviewController {
 
     if (state.state === "playing" && previous?.state !== "playing") {
       this.restartPolling(true);
+      const interaction = this.beginInteraction("play");
       this.enqueue(async () => {
+        const commandStartedAt = performance.now();
         if (
           this.transportIntentRevision !== transportIntentRevision ||
           this.clock.state !== "playing"
         ) {
+          this.finishInteraction(interaction, commandStartedAt, "superseded");
           return;
         }
-        const targetTime = this.clock.time;
-        const targetTicks = secondsToTicks(targetTime);
-        await seekNativeAudio(targetTicks);
-        if (
-          this.transportIntentRevision !== transportIntentRevision ||
-          this.clock.state !== "playing"
-        ) {
-          return;
+        try {
+          const seekStartedAt = performance.now();
+          await seekNativeAudio(secondsToTicks(this.clock.time));
+          interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
+          if (
+            this.transportIntentRevision !== transportIntentRevision ||
+            this.clock.state !== "playing"
+          ) {
+            this.finishInteraction(interaction, commandStartedAt, "superseded");
+            return;
+          }
+          const transportStartedAt = performance.now();
+          const nativeState = await nativePlayFromAudio();
+          interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
+          this.adoptNativePosition(nativeState.audioPositionTicks);
+          this.finishInteraction(interaction, commandStartedAt, "completed");
+        } catch (error) {
+          this.finishInteraction(interaction, commandStartedAt, "failed");
+          throw error;
         }
-        const nativeState = await nativePlayFromAudio();
-
-        this.adoptNativePosition(nativeState.audioPositionTicks);
       }, "seek-then-play");
     } else if (state.state !== "playing" && previous?.state === "playing") {
       this.restartPolling(false);
+      const interaction = this.beginInteraction("pause");
       this.enqueue(async () => {
+        const commandStartedAt = performance.now();
         if (
           this.transportIntentRevision !== transportIntentRevision ||
           this.clock.state === "playing"
         ) {
+          this.finishInteraction(interaction, commandStartedAt, "superseded");
           return;
         }
-        const targetTime = this.clock.time;
-        const targetTicks = secondsToTicks(targetTime);
-        await nativePauseFromAudio().catch(() => undefined);
-        await pauseNativeAudio();
-        await seekNativeAudio(targetTicks);
-        await nativeSeekFromAudio(
-          Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
-        );
-        this.adoptNativePosition(targetTicks);
+        try {
+          const targetTime = this.clock.time;
+          const targetTicks = secondsToTicks(targetTime);
+          const transportStartedAt = performance.now();
+          await nativePauseFromAudio().catch(() => undefined);
+          await pauseNativeAudio();
+          interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
+          const seekStartedAt = performance.now();
+          await seekNativeAudio(targetTicks);
+          await nativeSeekFromAudio(
+            Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
+          );
+          interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
+          this.adoptNativePosition(targetTicks);
+          this.finishInteraction(interaction, commandStartedAt, "completed");
+        } catch (error) {
+          this.finishInteraction(interaction, commandStartedAt, "failed");
+          throw error;
+        }
       }, "pause");
     }
 
@@ -322,28 +357,41 @@ export class NativeAudioPreviewController {
     ) {
       this.seekIntentRevision += 1;
       const seekIntentRevision = this.seekIntentRevision;
+      const interaction = this.beginInteraction("seek");
       this.enqueue(async () => {
+        const commandStartedAt = performance.now();
         const stateBeforeSeek = this.clock.state;
         if (
           this.seekIntentRevision !== seekIntentRevision ||
           stateBeforeSeek === "playing"
         ) {
+          this.finishInteraction(interaction, commandStartedAt, "superseded");
           return;
         }
-        // Collapse rapid scrub updates and use the latest paused playhead.
-        const targetTime = this.clock.time;
-        await seekNativeAudio(secondsToTicks(targetTime));
-        const stateAfterSeek = this.clock.state;
-        if (
-          this.seekIntentRevision !== seekIntentRevision ||
-          stateAfterSeek === "playing"
-        ) {
-          return;
+        try {
+          // Collapse rapid scrub updates and use the latest paused playhead.
+          const targetTime = this.clock.time;
+          const seekStartedAt = performance.now();
+          await seekNativeAudio(secondsToTicks(targetTime));
+          const stateAfterSeek = this.clock.state;
+          if (
+            this.seekIntentRevision !== seekIntentRevision ||
+            stateAfterSeek === "playing"
+          ) {
+            interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
+            this.finishInteraction(interaction, commandStartedAt, "superseded");
+            return;
+          }
+          const nativeState = await nativeSeekFromAudio(
+            Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
+          );
+          interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
+          this.adoptNativePosition(nativeState.audioPositionTicks);
+          this.finishInteraction(interaction, commandStartedAt, "completed");
+        } catch (error) {
+          this.finishInteraction(interaction, commandStartedAt, "failed");
+          throw error;
         }
-        const nativeState = await nativeSeekFromAudio(
-          Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
-        );
-        this.adoptNativePosition(nativeState.audioPositionTicks);
       }, "seek");
     }
   }
@@ -352,6 +400,33 @@ export class NativeAudioPreviewController {
     if (!Number.isFinite(positionTicks)) return;
     const position = positionTicks / 1_000_000;
     this.clock.setNativeClockPosition(position, this.clock.speed);
+  }
+
+  private beginInteraction(name: TelemetryInteractionName): TimedInteraction {
+    return {
+      startedAt: performance.now(),
+      telemetry: {
+        id: `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name,
+        outcome: "completed",
+      },
+    };
+  }
+
+  private finishInteraction(
+    interaction: TimedInteraction,
+    commandStartedAt: number,
+    outcome: TelemetryInteractionOutcome,
+  ): void {
+    interaction.telemetry.queueWaitUs = Math.max(
+      0,
+      Math.round((commandStartedAt - interaction.startedAt) * 1_000),
+    );
+    interaction.telemetry.outcome = outcome;
+    telemetryCollector.recordPreviewInteraction({
+      interaction: interaction.telemetry,
+      totalTimeUs: elapsedUs(interaction.startedAt),
+    });
   }
 
   private async pollNativeClock(): Promise<void> {
@@ -407,6 +482,10 @@ export class NativeAudioPreviewController {
 
 function secondsToTicks(seconds: number): number {
   return Math.max(0, Math.round(seconds * 1_000_000));
+}
+
+function elapsedUs(startedAt: number): number {
+  return Math.max(0, Math.round((performance.now() - startedAt) * 1_000));
 }
 
 function hasSameClipLayout(
