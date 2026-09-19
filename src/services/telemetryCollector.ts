@@ -62,6 +62,7 @@ export interface TelemetryVideoProfile {
 export interface TelemetryStageTimings {
   decodeUs?: number;
   decoderMutexWaitUs?: number;
+  actorWaitUs?: number;
   conversionUploadUs?: number;
   composeUs?: number;
   surfaceAcquireUs?: number;
@@ -87,6 +88,7 @@ export interface TelemetryMetricPercentiles {
 export interface TelemetryStagePercentiles {
   decodeUs?: TelemetryMetricPercentiles;
   decoderMutexWaitUs?: TelemetryMetricPercentiles;
+  actorWaitUs?: TelemetryMetricPercentiles;
   conversionUploadUs?: TelemetryMetricPercentiles;
   composeUs?: TelemetryMetricPercentiles;
   surfaceAcquireUs?: TelemetryMetricPercentiles;
@@ -559,6 +561,7 @@ class SessionRollupAccumulator {
   private renderTimesUs: number[] = [];
   private decodeTimesUs: number[] = [];
   private decoderMutexWaitTimesUs: number[] = [];
+  private actorWaitTimesUs: number[] = [];
   private composeTimesUs: number[] = [];
   private uploadTimesUs: number[] = [];
   private surfaceAcquireTimesUs: number[] = [];
@@ -625,6 +628,8 @@ class SessionRollupAccumulator {
         this.decodeTimesUs.push(timings.decodeUs);
       if (timings.decoderMutexWaitUs !== undefined)
         this.decoderMutexWaitTimesUs.push(timings.decoderMutexWaitUs);
+      if (timings.actorWaitUs !== undefined)
+        this.actorWaitTimesUs.push(timings.actorWaitUs);
       if (timings.composeUs !== undefined)
         this.composeTimesUs.push(timings.composeUs);
       if (timings.conversionUploadUs !== undefined)
@@ -731,6 +736,7 @@ class SessionRollupAccumulator {
     const stageTimings: TelemetryStageTimings = {
       decodeUs: mean(this.decodeTimesUs) || undefined,
       decoderMutexWaitUs: mean(this.decoderMutexWaitTimesUs) || undefined,
+      actorWaitUs: mean(this.actorWaitTimesUs) || undefined,
       composeUs: mean(this.composeTimesUs) || undefined,
       conversionUploadUs: mean(this.uploadTimesUs) || undefined,
       surfaceAcquireUs: mean(this.surfaceAcquireTimesUs) || undefined,
@@ -770,6 +776,7 @@ class SessionRollupAccumulator {
       stagePercentiles: {
         decodeUs: metricPercentiles(this.decodeTimesUs),
         decoderMutexWaitUs: metricPercentiles(this.decoderMutexWaitTimesUs),
+        actorWaitUs: metricPercentiles(this.actorWaitTimesUs),
         conversionUploadUs: metricPercentiles(this.uploadTimesUs),
         composeUs: metricPercentiles(this.composeTimesUs),
         surfaceAcquireUs: metricPercentiles(this.surfaceAcquireTimesUs),
@@ -800,6 +807,7 @@ class SessionRollupAccumulator {
     this.renderTimesUs = [];
     this.decodeTimesUs = [];
     this.decoderMutexWaitTimesUs = [];
+    this.actorWaitTimesUs = [];
     this.composeTimesUs = [];
     this.uploadTimesUs = [];
     this.surfaceAcquireTimesUs = [];
@@ -833,6 +841,7 @@ class SessionRollupAccumulator {
     this.renderTimesUs = [];
     this.decodeTimesUs = [];
     this.decoderMutexWaitTimesUs = [];
+    this.actorWaitTimesUs = [];
     this.composeTimesUs = [];
     this.uploadTimesUs = [];
     this.surfaceAcquireTimesUs = [];
@@ -2090,6 +2099,7 @@ class TelemetryCollector {
         uploadTimeUs?: number;
         conversionUploadUs?: number;
         decoderMutexWaitUs?: number;
+        actorWaitUs?: number;
         gpuQueueWaitUs?: number;
         surfaceAcquireUs?: number;
         schedulerWaitUs?: number;
@@ -2129,6 +2139,7 @@ class TelemetryCollector {
     const timings: TelemetryStageTimings = {
       decodeUs: last.decodeTimeUs,
       decoderMutexWaitUs: last.decoderMutexWaitUs,
+      actorWaitUs: last.actorWaitUs,
       conversionUploadUs:
         last.conversionUploadUs ?? last.conversionTimeUs ?? last.uploadTimeUs,
       composeUs: last.composeTimeUs,

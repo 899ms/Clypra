@@ -369,9 +369,12 @@ mod tests {
             queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: None,
+            actor_wait_us: None,
             gpu_queue_wait_us: None,
             surface_acquire_us: None,
             submit_present_us: Some(0),
+            capability_policy: None,
+            capability_probe_us: None,
         }
     }
 

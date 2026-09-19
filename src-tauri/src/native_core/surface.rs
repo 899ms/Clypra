@@ -168,6 +168,8 @@ pub struct NativeSurfacePresentationTimings {
     pub total_us: u64,
     pub decode_us: u32,
     pub decoder_mutex_wait_us: u64,
+    #[serde(default)]
+    pub actor_wait_us: u64,
     pub conversion_upload_us: u64,
     pub compose_us: u64,
     pub surface_acquire_us: u64,

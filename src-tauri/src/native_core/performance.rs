@@ -139,6 +139,10 @@ pub struct PerformanceSample {
     pub ipc_wait_us: Option<u64>,
     #[serde(default)]
     pub decoder_mutex_wait_us: Option<u64>,
+    /// Time spent waiting on the StreamDecoderActor for a frame.
+    /// When prime cache hits, this is nearly zero (<10µs).
+    #[serde(default)]
+    pub actor_wait_us: Option<u64>,
     #[serde(default)]
     pub gpu_queue_wait_us: Option<u64>,
     #[serde(default)]
@@ -336,9 +340,12 @@ mod tests {
             queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: None,
+            actor_wait_us: None,
             gpu_queue_wait_us: None,
             surface_acquire_us: None,
             submit_present_us: None,
+            capability_policy: None,
+            capability_probe_us: None,
         };
         assert!(sample.exceeds_render_budget(&budget));
     }

@@ -127,6 +127,7 @@ export interface NativePerformanceSample {
   queueResidencyUs?: number;
   ipcWaitUs?: number;
   decoderMutexWaitUs?: number;
+  actorWaitUs?: number;
   gpuQueueWaitUs?: number;
   surfaceAcquireUs?: number;
   submitPresentUs?: number;
@@ -258,6 +259,7 @@ export interface NativeSurfacePresentation {
     totalUs: number;
     decodeUs: number;
     decoderMutexWaitUs: number;
+    actorWaitUs?: number;
     conversionUploadUs: number;
     composeUs: number;
     surfaceAcquireUs: number;

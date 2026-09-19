@@ -69,6 +69,16 @@ This suite verifies:
 - Mixer zero-filling on starvation without affecting concurrent tracks.
 - Live telemetry via `get_native_audio_diagnostics` reporting `installed_clips`, `active_clip_ids`, `mixer_peak`, and `non_silent_frames`.
 
+### Per-Stream Decoder Actor & GOP-Aware State
+
+To eliminate decoder-mutex lock thrashing and extreme cold seek spikes (which reached 32.1 seconds on low-power Intel hardware when background lookahead and foreground presentation raced for the decoder lock), video decoding is mediated by a per-stream dedicated actor (`StreamDecoderActor`):
+
+- **Sequential GOP Decoding:** The actor sequentially controls the underlying FFmpeg `VideoDecoder` for a given `(video_path, stream_id)`. Callers do not lock the decoder mutex directly.
+- **Urgent vs. Prefetch Priority:** High-priority presentation requests (scrubbing, seeking, paused stills) preempt background lookahead predecoding via dual-priority channels (`urgent_tx` vs. `prefetch_tx`).
+- **Mid-GOP Cancellation:** When an urgent request arrives during an in-flight background lookahead decode, an atomic cancellation token interrupts the packet decode loop mid-GOP via `is_cancelled`, avoiding 400ms+ wasted stalls on obsolete frames.
+- **Prime Cache & Forward Priming:** An MRU prime cache retains sequential decoded frames, fulfilling forward playback requests in `<10µs` without thread blocking or FFmpeg context switches. When idle, the actor opportunistically forward-primes upcoming frames.
+- **Queue Residency Telemetry:** Frame timing reports `actorWaitUs` (time spent queued in the actor channel), distinguishing decoder backlog from GPU or compositor presentation stalls.
+
 ### Export audio routing
 
 The native cut-only export path is eligible only for video-only timeline
