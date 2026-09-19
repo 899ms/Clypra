@@ -14,8 +14,10 @@ use crate::native_core::{
 };
 use crate::sync_metrics::SYNC_METRICS;
 use crate::thumbnail_engine::decoder::{
-    get_preview_decoder, get_preview_decoder_for_stream, DecodeFrameOptions, VideoColorMetadata,
+    get_preview_decoder, DecodeFrameOptions, VideoColorMetadata,
 };
+#[cfg(target_os = "windows")]
+use crate::thumbnail_engine::decoder::get_preview_decoder_for_stream;
 use crate::wgpu_compositor::multi_track_composer::TransitionUniforms;
 use crate::wgpu_compositor::{
     BlendMode, BodyEffectUniforms, ChromaKeyUniforms, ColorGradeUniforms, ColorTransformUniforms,
@@ -109,6 +111,7 @@ pub fn clear_native_font_warnings() -> Result<(), String> {
 struct NativeDecodeTimings {
     decode_time_us: u32,
     decoder_mutex_wait_us: u64,
+    actor_wait_us: Option<u64>,
 }
 
 struct QueuedNativeFrame {
@@ -271,6 +274,7 @@ fn record_native_surface_sample(
         queue_residency_us,
         ipc_wait_us: None,
         decoder_mutex_wait_us: Some(decode_timings.decoder_mutex_wait_us),
+        actor_wait_us: decode_timings.actor_wait_us,
         gpu_queue_wait_us: None,
         surface_acquire_us,
         submit_present_us,
@@ -1487,7 +1491,7 @@ fn color_params(color: &VideoColorMetadata) -> Result<ColorTransformUniforms, St
 
 /// Prefer metadata attached to the decoded frame, while retaining stream-level
 /// values when a decoder leaves an individual field unspecified.
-fn merge_color_metadata(
+pub(crate) fn merge_color_metadata(
     frame: VideoColorMetadata,
     stream: &VideoColorMetadata,
 ) -> VideoColorMetadata {
@@ -2242,6 +2246,9 @@ async fn decode_native_video_layers(
         quality: request.quality,
     };
 
+    let is_prefetch = request.mode.as_deref() == Some("prefetch");
+    let generation = cancellation.as_ref().map(|(_, g)| *g).unwrap_or(0);
+
     if request.layers.len() == 1 {
         let layer = &request.layers[0];
         let stream_id = if !layer.layer_id.is_empty() {
@@ -2249,34 +2256,24 @@ async fn decode_native_video_layers(
         } else {
             ""
         };
-        let decoder = get_preview_decoder_for_stream(&layer.video_path, stream_id).await?;
-        let mutex_started = Instant::now();
-        let mut guard = decoder.lock().await;
-        let mutex_wait_us = mutex_started.elapsed().as_micros() as u64;
-        let decode_started = Instant::now();
-        let stream_color = guard.metadata().color;
-        let cancel = cancellation;
-        let (y_plane, uv_plane, width, height, frame_color) = guard
-            .decode_frame_raw_nv12_with_options(layer.time_secs, decode_options, || {
-                cancel
-                    .as_ref()
-                    .map(|(latest, generation)| latest.load(Ordering::Acquire) > *generation)
-                    .unwrap_or(false)
-            })?;
-        let decode_us =
-            decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
-        let decoded = (
-            y_plane,
-            uv_plane,
-            width,
-            height,
-            merge_color_metadata(frame_color, &stream_color),
-        );
+        let actor = crate::thumbnail_engine::stream_actor::get_preview_decoder_actor_for_stream(
+            &layer.video_path,
+            stream_id,
+        )
+        .await?;
+        let actor_frame = actor
+            .decode_frame(layer.time_secs, decode_options, is_prefetch, generation)
+            .await?;
+        let decode_us = actor_frame.decode_us;
+        let mutex_wait_us = actor_frame.decoder_mutex_wait_us;
+        let actor_wait_us = actor_frame.actor_wait_us;
+        let decoded = actor_frame.into_native_video_frame();
         return Ok((
             vec![decoded],
             NativeDecodeTimings {
                 decode_time_us: decode_us,
                 decoder_mutex_wait_us: mutex_wait_us,
+                actor_wait_us: Some(actor_wait_us),
             },
         ));
     }
@@ -2306,7 +2303,6 @@ async fn decode_native_video_layers(
             let video_path = layer.video_path.clone();
             let layer_id = layer.layer_id.clone();
             let time_secs = layer.time_secs;
-            let cancel = cancellation.clone();
 
             unique_tasks.push(tauri::async_runtime::spawn(async move {
                 let stream_id = if !layer_id.is_empty() {
@@ -2314,23 +2310,19 @@ async fn decode_native_video_layers(
                 } else {
                     ""
                 };
-                let decoder = get_preview_decoder_for_stream(&video_path, stream_id).await?;
-                let mutex_started = Instant::now();
-                let mut guard = decoder.lock().await;
-                let mutex_wait_us = mutex_started.elapsed().as_micros() as u64;
-                let decode_started = Instant::now();
-                let stream_color = guard.metadata().color;
-                let (y_plane, uv_plane, width, height, frame_color) = guard
-                    .decode_frame_raw_nv12_with_options(time_secs, decode_options, || {
-                        cancel
-                            .as_ref()
-                            .map(|(latest, generation)| latest.load(Ordering::Acquire) > *generation)
-                            .unwrap_or(false)
-                    })?;
-                let decode_us =
-                    decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
-                let color = merge_color_metadata(frame_color, &stream_color);
-                Ok::<_, String>(((y_plane, uv_plane, width, height, color), decode_us, mutex_wait_us, width, height, layer_id))
+                let actor = crate::thumbnail_engine::stream_actor::get_preview_decoder_actor_for_stream(
+                    &video_path,
+                    stream_id,
+                )
+                .await?;
+                let actor_frame = actor
+                    .decode_frame(time_secs, decode_options, is_prefetch, generation)
+                    .await?;
+                let decode_us = actor_frame.decode_us;
+                let mutex_wait_us = actor_frame.decoder_mutex_wait_us;
+                let actor_wait_us = actor_frame.actor_wait_us;
+                let decoded = actor_frame.into_native_video_frame();
+                Ok::<_, String>((decoded, decode_us, mutex_wait_us, actor_wait_us, layer_id))
             }));
         }
     }
@@ -2338,6 +2330,7 @@ async fn decode_native_video_layers(
     let mut unique_results = Vec::with_capacity(unique_tasks.len());
     let mut max_decode_us = 0u32;
     let mut total_mutex_wait_us = 0u64;
+    let mut max_actor_wait_us = 0u64;
 
     for task in unique_tasks {
         let res = task
@@ -2345,6 +2338,7 @@ async fn decode_native_video_layers(
             .map_err(|e| format!("Decode worker task failed: {e}"))??;
         max_decode_us = max_decode_us.max(res.1);
         total_mutex_wait_us = total_mutex_wait_us.saturating_add(res.2);
+        max_actor_wait_us = max_actor_wait_us.max(res.3);
         unique_results.push(res);
     }
 
@@ -2359,6 +2353,7 @@ async fn decode_native_video_layers(
         NativeDecodeTimings {
             decode_time_us: max_decode_us,
             decoder_mutex_wait_us: total_mutex_wait_us,
+            actor_wait_us: Some(max_actor_wait_us),
         },
     ))
 }
@@ -3494,6 +3489,7 @@ pub(crate) async fn present_native_frame_internal(
             total_us: request_started_at.elapsed().as_micros() as u64,
             decode_us: decode_timings.decode_time_us,
             decoder_mutex_wait_us: decode_timings.decoder_mutex_wait_us,
+            actor_wait_us: decode_timings.actor_wait_us.unwrap_or(0),
             conversion_upload_us,
             compose_us,
             surface_acquire_us,
@@ -3599,6 +3595,7 @@ pub async fn render_native_frame(
                 queue_residency_us: None,
                 ipc_wait_us: None,
                 decoder_mutex_wait_us: None,
+                actor_wait_us: None,
                 gpu_queue_wait_us: None,
                 surface_acquire_us: None,
                 submit_present_us: None,
@@ -3675,6 +3672,7 @@ pub async fn render_native_frame(
             queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: Some(stage_timings.decoder_mutex_wait_us),
+            actor_wait_us: None,
             gpu_queue_wait_us: None,
             surface_acquire_us: None,
             submit_present_us: None,

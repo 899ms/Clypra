@@ -88,16 +88,36 @@ Normal short-lived mutex contention is not reported as cold start. A first use o
 
 The existing pipeline warmup remains independent. The new field makes it possible to prove whether warmup completed before the first visible frame or blocked it.
 
+### Per-stream GOP-aware decoder actor
+
+To eliminate the 32.1s max cold seek latency and decoder-mutex lock thrashing observed on hardware like Intel HD 520 (decode p95 = 442 ms, decoder-mutex p95 = 160 ms), direct concurrent locking of `Arc<Mutex<VideoDecoder>>` across presentation and background lookahead threads has been replaced by a per-stream dedicated actor:
+
+```text
+Visible Frame Request (urgent_tx) ──┐
+                                     ├──► [StreamDecoderActor] ──► VideoDecoder (serialized)
+Lookahead Request (prefetch_tx) ───┘           │
+                                                ├─ Prime Cache (4 frames, <10µs)
+                                                └─ Mid-GOP preemption token
+```
+
+Key guarantees:
+1. **Serialized Ownership:** Exactly one Tokio actor task per `(video_path, stream_id)` owns the `VideoDecoder`. Presentation and lookahead threads never compete for a raw mutex lock.
+2. **Dual-Priority Channels:** Urgent presentation requests (scrubbing, seeking, paused stills) take immediate precedence over background lookahead prefetching (`prefetch_tx`).
+3. **Mid-GOP Preemption:** Urgent presentation requests trip FFmpeg's `is_cancelled` packet loop via an atomic cancellation token (`cancel_in_flight`), aborting in-flight lookahead GOP decoding without burning hundreds of milliseconds on stale frames.
+4. **MRU Prime Cache:** A 4-frame cache of recent sequential frames allows continuous playback and tight scrubbing to be served in `<10µs` without FFmpeg decode overhead.
+5. **Opportunistic Forward Priming:** When channel queues are idle during playback, the actor proactively primes upcoming frames into the prime cache, yielding immediately upon new requests.
+
 ## Telemetry contract
 
-Two optional microsecond fields are propagated from Rust through the Tauri contract, frontend rollups, session NDJSON, and API analytics:
+Three optional microsecond fields are propagated from Rust through the Tauri contract, frontend rollups, session NDJSON, and API analytics:
 
 | Field | Meaning | Interpretation |
 | --- | --- | --- |
 | `queueResidencyUs` | Time between a lookahead frame becoming ready and being presented | High values indicate excessive decode-ahead or stale queued work, not decoder speed. |
 | `coldStartInitUs` | One-time visible-path session wait plus compositor initialization | High values indicate startup/pipeline/session initialization blocking. |
+| `actorWaitUs` | Time a frame request spent queued waiting for the stream decoder actor | High values indicate decoder backlog or long GOP seeking; mutex wait is eliminated. |
 
-Both fields have mean and percentile rollups. They are intentionally optional because steady-state frames should not be classified as startup work, and cold-decoded frames have no ready-queue residence.
+All fields have mean and percentile rollups. They are intentionally optional because steady-state frames should not be classified as startup work, and cold-decoded frames have no ready-queue residence.
 
 The native preview and playback hot paths do not write per-frame or lifecycle
 diagnostics to the terminal. These fields are emitted through native
@@ -111,11 +131,14 @@ The Cloudflare API schema and preview comparison analytics also recognize both f
 
 | Area | Files |
 | --- | --- |
-| Lookahead policy, stale-frame eviction, native log output | `src-tauri/src/commands/native_preview.rs` |
-| Native performance sample and percentile aggregation | `src-tauri/src/native_core/performance.rs`, `src-tauri/src/native_core/service.rs` |
-| Native-surface response contract | `src-tauri/src/native_core/surface.rs` |
+| Stream decoder actor & actor pool | `src-tauri/src/thumbnail_engine/stream_actor.rs`, `src-tauri/src/thumbnail_engine.rs` |
+| GOP sequential position & duration helpers | `src-tauri/src/thumbnail_engine/decoder.rs` |
+| Native playback session actor leasing & cache invalidation | `src-tauri/src/commands/native_playback.rs` |
+| Lookahead policy, stale-frame eviction, actor-based preview decode | `src-tauri/src/commands/native_preview.rs` |
+| Native performance sample and percentile aggregation (`actor_wait_us`) | `src-tauri/src/native_core/performance.rs`, `src-tauri/src/native_core/service.rs` |
+| Native-surface response contract (`actor_wait_us`) | `src-tauri/src/native_core/surface.rs` |
 | Compositor warm-state inspection + Windows Bgra8UnormSrgb pre-warm | `src-tauri/src/wgpu_compositor.rs` |
-| TypeScript native bridge and session rollups | `src/lib/platform/nativeCore.ts`, `src/services/telemetryCollector.ts` |
+| TypeScript native bridge, preview telemetry, and session rollups | `src/lib/platform/nativeCore.ts`, `src/services/telemetryCollector.ts`, `src/components/editor/preview/NativeProgramPreview.tsx` |
 | API schema and comparison analytics | sibling `clypra-api/src/types/performance.ts`, `clypra-api/src/services/analyticsEngine.ts` |
 
 ## Verification

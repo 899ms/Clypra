@@ -4,6 +4,7 @@ pub mod atlas;
 pub mod decoder;
 pub mod geometry;
 pub mod pyramid;
+pub mod stream_actor;
 
 pub mod cache;
 pub mod metrics;

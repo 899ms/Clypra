@@ -556,6 +556,29 @@ impl VideoDecoder {
         self.stream_metadata.clone()
     }
 
+    /// Estimated duration in seconds of a single video frame.
+    pub fn frame_duration_secs(&self) -> f64 {
+        let stream_fps = if self.stream_metadata.average_frame_rate_den > 0
+            && self.stream_metadata.average_frame_rate_num > 0
+        {
+            self.stream_metadata.average_frame_rate_num as f64
+                / self.stream_metadata.average_frame_rate_den as f64
+        } else if self.stream_metadata.nominal_frame_rate_den > 0
+            && self.stream_metadata.nominal_frame_rate_num > 0
+        {
+            self.stream_metadata.nominal_frame_rate_num as f64
+                / self.stream_metadata.nominal_frame_rate_den as f64
+        } else {
+            30.0
+        };
+        (1.0 / stream_fps.max(1.0)).min(0.2)
+    }
+
+    /// Current sequential decoder PTS position.
+    pub fn sequential_position(&self) -> i64 {
+        self.state.current_pts
+    }
+
     /// Describe the actual decoded frame, rather than only the encoded stream.
     pub fn frame_metadata(&self, frame: &ffmpeg::frame::Video) -> DecodedFrameMetadata {
         let raw = unsafe { &*frame.as_ptr() };
@@ -2446,6 +2469,7 @@ pub fn release_decoder(path: &str) {
     for key in keys_to_remove {
         PREVIEW_DECODER_POOL.remove(&key);
     }
+    crate::thumbnail_engine::stream_actor::release_all_preview_decoder_actors_for_path(path);
 }
 
 /// Release a specific stream-isolated decoder
@@ -2458,6 +2482,7 @@ pub fn release_decoder_stream(path: &str, stream_id: &str) {
     {
         PREVIEW_DECODER_POOL.remove(&key);
     }
+    crate::thumbnail_engine::stream_actor::release_preview_decoder_actor_for_stream(path, stream_id);
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

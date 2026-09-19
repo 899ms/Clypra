@@ -3025,6 +3025,7 @@ export const NativeProgramPreview: React.FC = () => {
                           ? {
                               decodeUs: timings.decodeUs,
                               decoderMutexWaitUs: timings.decoderMutexWaitUs,
+                              actorWaitUs: timings.actorWaitUs,
                               conversionUploadUs: timings.conversionUploadUs,
                               composeUs: timings.composeUs,
                               surfaceAcquireUs: timings.surfaceAcquireUs,

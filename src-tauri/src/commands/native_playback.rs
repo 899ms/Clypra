@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 struct NativeRenderSession {
     snapshot: Mutex<FrameRequest>,
     leases: Mutex<Vec<PreviewDecoderLease>>,
+    actors: Mutex<Vec<Arc<crate::thumbnail_engine::stream_actor::StreamDecoderActorHandle>>>,
     pending: Mutex<LatestPlaybackDemand>,
     notify: tokio::sync::Notify,
     running: AtomicBool,
@@ -49,6 +50,7 @@ impl NativeRenderSession {
         snapshot.validate().map_err(|error| error.to_string())?;
         let mut streams = HashSet::new();
         let mut leases = Vec::new();
+        let mut actors = Vec::new();
         for layer in &snapshot.project.video_layers {
             if layer.layer_id.ends_with(":subject-cutout") {
                 continue;
@@ -62,11 +64,19 @@ impl NativeRenderSession {
                     )
                     .await?,
                 );
+                actors.push(
+                    crate::thumbnail_engine::stream_actor::get_preview_decoder_actor_for_stream(
+                        &layer.video_path,
+                        &layer.layer_id,
+                    )
+                    .await?,
+                );
             }
         }
         Ok(Arc::new(Self {
             snapshot: Mutex::new(snapshot),
             leases: Mutex::new(leases),
+            actors: Mutex::new(actors),
             pending: Mutex::new(LatestPlaybackDemand::default()),
             notify: tokio::sync::Notify::new(),
             running: AtomicBool::new(false),
@@ -104,6 +114,14 @@ impl NativeRenderSession {
                 handle.abort();
             }
         }
+        if let Ok(actors) = self.actors.lock() {
+            for actor in actors.iter() {
+                let a = actor.clone();
+                tauri::async_runtime::spawn(async move {
+                    a.clear_prime_cache().await;
+                });
+            }
+        }
         if let Some(app) = app {
             tauri::async_runtime::spawn(async move {
                 crate::commands::native_preview::reset_native_preview_queue(&app).await;
@@ -125,6 +143,11 @@ impl NativeRenderSession {
                 .unwrap_or(false)
             {
                 pending.value = None;
+            }
+        }
+        if let Ok(actors) = self.actors.lock() {
+            for actor in actors.iter() {
+                actor.invalidate(generation);
             }
         }
         self.notify.notify_one();
@@ -1291,6 +1314,7 @@ mod tests {
         let session = NativeRenderSession {
             snapshot: Mutex::new(test_snapshot_with_text()),
             leases: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
             notify: tokio::sync::Notify::new(),
             running: AtomicBool::new(false),
@@ -1330,6 +1354,7 @@ mod tests {
         let session = NativeRenderSession {
             snapshot: Mutex::new(test_snapshot_with_text()),
             leases: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
             notify: tokio::sync::Notify::new(),
             running: AtomicBool::new(false),
@@ -1363,6 +1388,7 @@ mod tests {
         let session = NativeRenderSession {
             snapshot: Mutex::new(test_snapshot()),
             leases: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
             notify: tokio::sync::Notify::new(),
             running: AtomicBool::new(false),
@@ -1432,6 +1458,7 @@ mod tests {
         let session = NativeRenderSession {
             snapshot: Mutex::new(snapshot),
             leases: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
             notify: tokio::sync::Notify::new(),
             running: AtomicBool::new(false),
@@ -1526,6 +1553,7 @@ mod tests {
         let session = NativeRenderSession {
             snapshot: Mutex::new(snapshot),
             leases: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
             notify: tokio::sync::Notify::new(),
             running: AtomicBool::new(false),
