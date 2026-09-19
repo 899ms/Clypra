@@ -542,6 +542,16 @@ pub(crate) async fn prepare_native_preview_pipelines(
     if !session.has_compositor(width, height, target_format) {
         session.warmup_gpu_pipelines(width, height, target_format);
     }
+    // On Windows the swapchain always negotiates to Bgra8UnormSrgb, but this
+    // function may be called before configured_format() is set (e.g. the
+    // readiness gate in configure_native_playback_render runs while the surface
+    // is still being probed). If the caller passed a different format we still
+    // need Bgra8UnormSrgb compiled now so the first native surface presentation
+    // never pays an inline D3D12 pipeline-compile cost.
+    #[cfg(target_os = "windows")]
+    if !session.has_compositor(width, height, wgpu::TextureFormat::Bgra8UnormSrgb) {
+        session.warmup_gpu_pipelines(width, height, wgpu::TextureFormat::Bgra8UnormSrgb);
+    }
     Ok(())
 }
 
