@@ -1,11 +1,12 @@
 use crate::native_audio::NativeAudioClock;
 use crate::native_core::playback::frame_for_audio_position;
 use crate::native_core::{
-    FrameRequest, FrameTime, NativeCoreError, NativePlaybackFrameDemand, PlaybackPlan,
-    PlaybackSession, PlaybackState, DEFAULT_TIME_SCALE, NATIVE_CORE_CONTRACT_VERSION,
+    DecodeCapabilityPolicy, FrameRequest, FrameTime, NativeCoreError, NativePlaybackFrameDemand,
+    PlaybackPlan, PlaybackSession, PlaybackState, QualityTier, DEFAULT_TIME_SCALE,
+    NATIVE_CORE_CONTRACT_VERSION,
 };
 use crate::thumbnail_engine::decoder::{
-    acquire_preview_decoder_lease_for_stream, PreviewDecoderLease,
+    acquire_preview_decoder_lease_for_stream, get_preview_decoder_for_stream, PreviewDecoderLease,
 };
 use serde::Serialize;
 use std::collections::HashSet;
@@ -81,7 +82,7 @@ impl NativeRenderSession {
         if let Ok(snapshot_guard) = self.snapshot.lock() {
             let base_request = snapshot_guard.clone();
             drop(snapshot_guard);
-            crate::commands::native_preview::schedule_lookahead_predecode(app.clone(), base_request, 16);
+            crate::commands::native_preview::schedule_lookahead_predecode(app.clone(), base_request, 16, None);
         }
         let session = Arc::clone(self);
         let handle = tauri::async_runtime::spawn(async move {
@@ -873,6 +874,61 @@ pub fn configure_native_playback(
     with_runtime(&app, |runtime| runtime.configure(plan))
 }
 
+/// Probe the hardware's decode capability for the first video layer in the
+/// snapshot. Decodes one keyframe at `time_secs = 0.0` with
+/// `allow_keyframe_approx: true` and maps the elapsed wall-clock time to a
+/// `DecodeCapabilityPolicy`. The probe is bounded by a 400 ms Tokio timeout;
+/// if the decoder does not return within that window the policy is `Proxy`.
+///
+/// The probe runs after `prepare_native_preview_pipelines` (GPU warm) and
+/// before `schedule_lookahead_predecode`. It must not be spawned in the
+/// background; awaiting it is what makes the quality policy available before
+/// the first lookahead frame is queued.
+async fn probe_decode_capability(snapshot: &FrameRequest) -> (DecodeCapabilityPolicy, Option<u64>) {
+    let layer = match snapshot.project.video_layers.first() {
+        Some(layer) => layer,
+        None => return (DecodeCapabilityPolicy::Full, None),
+    };
+
+    let stream_id = if !layer.layer_id.is_empty() {
+        layer.layer_id.as_str()
+    } else {
+        ""
+    };
+
+    let decoder = match get_preview_decoder_for_stream(&layer.video_path, stream_id).await {
+        Ok(d) => d,
+        Err(_) => return (DecodeCapabilityPolicy::Full, None),
+    };
+
+    let probe_options = crate::thumbnail_engine::decoder::DecodeFrameOptions {
+        allow_keyframe_approx: true,
+        quality: QualityTier::Full,
+    };
+
+    // Bound the probe to 400 ms so the session never hangs on a completely
+    // stuck hardware decoder (e.g., driver crash, permission issue).
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(400),
+        tokio::task::spawn_blocking(move || {
+            let mut guard = match decoder.blocking_lock() {
+                g => g,
+            };
+            guard.decode_frame_raw_nv12_with_options(0.0, probe_options, || false)
+        }),
+    )
+    .await;
+
+    let elapsed_us = started.elapsed().as_micros() as u64;
+
+    match result {
+        Ok(Ok(Ok(_))) => (DecodeCapabilityPolicy::from_probe_us(elapsed_us), Some(elapsed_us)),
+        // Timeout or decode error: conservative fallback
+        _ => (DecodeCapabilityPolicy::Proxy, Some(elapsed_us)),
+    }
+}
+
 /// Install the immutable Native render graph for one project/render revision.
 /// This payload is sent once; playback submits only compact frame demand.
 #[tauri::command]
@@ -938,6 +994,21 @@ pub async fn configure_native_playback_render(
     )
     .await?;
 
+    // Capability probe: decode one keyframe from the first video layer with a
+    // 400 ms timeout. This runs synchronously here — after the GPU readiness
+    // gate and before the first lookahead frame is queued — so the chosen
+    // quality tier takes effect immediately for the entire lookahead window.
+    let (capability_policy, capability_probe_us) = probe_decode_capability(&snapshot_clone).await;
+    let lookahead_quality = capability_policy.lookahead_quality();
+
+    // Store the probe result in the preview session so the first telemetry
+    // sample can attach capability_policy and capability_probe_us.
+    if let Some(preview_state) = app.try_state::<Arc<tokio::sync::Mutex<crate::wgpu_compositor::NativePreviewSession>>>() {
+        let arc = preview_state.inner().clone();
+        let mut session = arc.lock().await;
+        session.set_capability_probe(capability_policy, capability_probe_us);
+    }
+
     if should_start {
         state
             .lock()
@@ -946,7 +1017,12 @@ pub async fn configure_native_playback_render(
     } else {
         // Prime the bounded decode queue only after the GPU graph is ready so
         // no first visible frame competes with initialization for the session.
-        crate::commands::native_preview::schedule_lookahead_predecode(app.clone(), snapshot_clone, 16);
+        crate::commands::native_preview::schedule_lookahead_predecode(
+            app.clone(),
+            snapshot_clone,
+            16,
+            Some(lookahead_quality),
+        );
     }
     Ok(())
 }
