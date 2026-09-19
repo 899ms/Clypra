@@ -212,6 +212,9 @@ impl NativeFrameService {
                 scheduler_wait: optional_stage_percentiles(&samples, |sample| {
                     sample.scheduler_wait_us
                 }),
+                lookahead_wait: optional_stage_percentiles(&samples, |sample| {
+                    sample.lookahead_wait_us
+                }),
                 cold_start_init: optional_stage_percentiles(&samples, |sample| {
                     sample.cold_start_init_us
                 }),
@@ -361,6 +364,7 @@ mod tests {
             readback_us: None,
             present_us: Some(0),
             scheduler_wait_us: None,
+            lookahead_wait_us: None,
             cold_start_init_us: None,
             queue_residency_us: None,
             ipc_wait_us: None,

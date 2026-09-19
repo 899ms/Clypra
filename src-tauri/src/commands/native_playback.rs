@@ -93,7 +93,7 @@ impl NativeRenderSession {
         }
     }
 
-    fn stop(&self) {
+    fn stop(&self, app: Option<AppHandle>) {
         self.running.store(false, Ordering::Release);
         eprintln!("[NativePlayback] Persistent background render worker STOPPED");
         if let Ok(mut pending) = self.pending.lock() {
@@ -104,6 +104,11 @@ impl NativeRenderSession {
             if let Some(handle) = worker.take() {
                 handle.abort();
             }
+        }
+        if let Some(app) = app {
+            tauri::async_runtime::spawn(async move {
+                crate::commands::native_preview::reset_native_preview_queue(&app).await;
+            });
         }
     }
 
@@ -692,7 +697,7 @@ impl NativePlaybackRuntime {
 
     fn install_render_session(&mut self, render_session: Arc<NativeRenderSession>) {
         if let Some(previous) = self.render_session.take() {
-            previous.stop();
+            previous.stop(None);
         }
         self.render_session = Some(render_session);
     }
@@ -714,9 +719,9 @@ impl NativePlaybackRuntime {
         }
     }
 
-    pub fn stop_render(&self) {
+    pub fn stop_render(&self, app: AppHandle) {
         if let Some(session) = &self.render_session {
-            session.stop();
+            session.stop(Some(app));
         }
     }
 
@@ -827,7 +832,7 @@ impl NativePlaybackRuntime {
     /// clean. Called as part of project-close runtime reset.
     pub fn reset(&mut self) {
         if let Some(render_session) = self.render_session.take() {
-            render_session.stop();
+            render_session.stop(None);
         }
         self.session = None;
     }
@@ -918,7 +923,7 @@ pub async fn configure_native_playback_render(
         runtime.take_render_session()
     };
     if let Some(previous) = previous {
-        previous.stop();
+        previous.stop(Some(app.clone()));
         // Clear obsolete frames from previous configuration so newly configured
         // layers have immediate access to all queue capacity.
         if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<crate::commands::native_preview::NativePreviewFrameQueue>>>() {
@@ -1017,7 +1022,7 @@ pub fn native_pause(app: AppHandle, clock: FrameTime) -> Result<PlaybackState, S
             .clone()
             .lock()
             .map_err(|_| "Native playback runtime lock is poisoned".to_string())?
-            .stop_render();
+            .stop_render(app.clone());
     }
     Ok(state)
 }
@@ -1063,7 +1068,7 @@ pub fn native_pause_from_audio(app: AppHandle) -> Result<PlaybackState, String> 
     let _ = set_audio_playing(&app, false);
     if let Some(runtime) = app.try_state::<Arc<Mutex<NativePlaybackRuntime>>>() {
         if let Ok(runtime) = runtime.inner().clone().lock() {
-            runtime.stop_render();
+            runtime.stop_render(app.clone());
         }
     }
     if let Some(surface) =

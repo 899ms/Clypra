@@ -123,6 +123,10 @@ pub struct PerformanceSample {
     pub present_us: Option<u64>,
     #[serde(default)]
     pub scheduler_wait_us: Option<u64>,
+    /// Time spent waiting for an in-flight lookahead decode before the
+    /// presentation path falls back to a cold decode.
+    #[serde(default)]
+    pub lookahead_wait_us: Option<u64>,
     /// One-time initialization work observed on a visible presentation path,
     /// such as waiting for pipeline warmup or creating a new compositor graph.
     #[serde(default)]
@@ -225,6 +229,7 @@ pub struct ModeStats {
     pub readback: StagePercentiles,
     pub present: StagePercentiles,
     pub scheduler_wait: StagePercentiles,
+    pub lookahead_wait: StagePercentiles,
     pub cold_start_init: StagePercentiles,
     pub queue_residency: StagePercentiles,
     pub ipc_wait: StagePercentiles,
@@ -315,6 +320,7 @@ mod tests {
             readback_us: None,
             present_us: None,
             scheduler_wait_us: None,
+            lookahead_wait_us: None,
             cold_start_init_us: None,
             queue_residency_us: None,
             ipc_wait_us: None,
