@@ -31,6 +31,33 @@ The cold outliers also could not be attributed to a single stage from the old lo
 
 ## Architecture
 
+### Startup readiness gate
+
+Native preview has a strict startup order:
+
+```text
+surface configured → playback snapshot configured → GPU graph prepared
+→ bounded decoder queue primed → render worker / audio-driven presentation
+```
+
+Pipeline warmup is no longer launched from native-surface configuration or as
+a second best-effort task from playback configuration. Those two independent
+tasks could both acquire `NativePreviewSession` while a visible frame waited
+for the same lock. That race was tolerable on Apple Silicon but produced
+multi-second `coldStartInitUs` delays on the Intel HD 520 Windows cohort.
+
+`prepare_native_preview_pipelines` is now awaited during
+`configure_native_playback_render`, before its render worker is started or its
+lookahead queue is primed. The session-owned compositor cache makes repeated
+preparation for the same canvas and target format a no-op. GPU initialization
+is consequently a readiness prerequisite rather than work that races audio
+and visible presentation.
+
+If GPU preparation cannot complete because the native GPU session is absent or
+invalid, playback configuration returns an explicit error. The frontend can
+then use its established native-surface fallback path; it must not start an
+audio clock against a blank native surface.
+
 ### Deadline-aware decode ahead
 
 `NativePreviewFrameQueue` records an EWMA of completed decode duration. Each lookahead worker derives its depth from both this measured lead requirement and a presentation-latency cap:
@@ -72,13 +99,11 @@ Two optional microsecond fields are propagated from Rust through the Tauri contr
 
 Both fields have mean and percentile rollups. They are intentionally optional because steady-state frames should not be classified as startup work, and cold-decoded frames have no ready-queue residence.
 
-Native anomaly logs now include `cold-init` beside `decode`, `queue`, `upload`, `compose`, and `present`, for example:
-
-```text
-[NativePresent] Frame #42 [QUEUE_HIT] total: 18.20ms
-  (decode: 0.00ms, queue: 12.10ms, cold-init: 0.00ms,
-   upload: 2.60ms, compose: 2.90ms, present: 0.60ms)
-```
+The native preview and playback hot paths do not write per-frame or lifecycle
+diagnostics to the terminal. These fields are emitted through native
+performance samples, frontend rollups, session NDJSON, and API analytics
+instead, preventing stdout/stderr backpressure from becoming a Windows preview
+variable.
 
 The Cloudflare API schema and preview comparison analytics also recognize both fields. This permits cohort analysis across Windows Intel and macOS Apple Silicon without relying on untyped raw JSON.
 
