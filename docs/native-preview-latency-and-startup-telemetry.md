@@ -114,7 +114,7 @@ The Cloudflare API schema and preview comparison analytics also recognize both f
 | Lookahead policy, stale-frame eviction, native log output | `src-tauri/src/commands/native_preview.rs` |
 | Native performance sample and percentile aggregation | `src-tauri/src/native_core/performance.rs`, `src-tauri/src/native_core/service.rs` |
 | Native-surface response contract | `src-tauri/src/native_core/surface.rs` |
-| Compositor warm-state inspection | `src-tauri/src/wgpu_compositor.rs` |
+| Compositor warm-state inspection + Windows Bgra8UnormSrgb pre-warm | `src-tauri/src/wgpu_compositor.rs` |
 | TypeScript native bridge and session rollups | `src/lib/platform/nativeCore.ts`, `src/services/telemetryCollector.ts` |
 | API schema and comparison analytics | sibling `clypra-api/src/types/performance.ts`, `clypra-api/src/services/analyticsEngine.ts` |
 
@@ -150,7 +150,20 @@ The focused Rust regression test verifies that a configured 16-frame queue resol
    - decode and decoder mutex timings for FFmpeg/GOP behavior;
    - upload, compose, surface acquisition, and present timings for GPU bottlenecks.
 
-Expected result: queue-residency p95 should remain near the 100 ms policy budget instead of the previous 482 ms, and any remaining first-run stall should be attributed explicitly to `coldStartInitUs` or another measured stage.
+Expected result after the Bgra8UnormSrgb warmup fix: `coldStartInitUs` should be absent or under 200 ms on the first native frame (matching the macOS ~120 ms baseline). Any remaining first-run stall should be attributed to a different measured stage, not compositor pipeline compilation.
+
+## v1.5.1 session analysis
+
+Four sessions were analyzed from DB + R2 telemetry (September 2026):
+
+| Session | Platform | `coldStartInitUs` (first occurrence) | Cause |
+| --- | --- | --- | --- |
+| `launch-1789807958711-p4yoli` | Windows Intel HD 520 | **4,963 ms** | Bgra8UnormSrgb compositor compiled synchronously inside Frame 2 presentation |
+| `launch-1789807298689-5csq0k` | macOS Apple M1 | **120 ms** | Normal first-use Metal pipeline initialization |
+
+The root cause on Windows: `configure_native_playback_render` calls `prepare_native_preview_pipelines` before the swapchain has set `configured_format()`, so it warms `Rgba8UnormSrgb`. When the native surface presents Frame 2 it uses `Bgra8UnormSrgb` (the DXGI swapchain default), finds no compositor cached for that format, and compiles all five D3D12 pipelines synchronously while holding the session mutex — blocking the decoder thread for 536 ms and producing 4.96 s of presentation latency.
+
+The fix (`#[cfg(target_os = "windows")]` block in `warmup_gpu_pipelines` and `prepare_native_preview_pipelines`) pre-compiles `Bgra8UnormSrgb` during the readiness gate, regardless of the format passed by the caller. `has_compositor` makes subsequent calls no-ops.
 
 ## Non-goals
 
@@ -158,4 +171,4 @@ Expected result: queue-residency p95 should remain near the 100 ms policy budget
 - It does not hide startup latency with a placeholder frame.
 - It does not alter media decoding correctness, FFmpeg binaries, or native-surface fallback policy.
 
-Its purpose is to eliminate queue-created latency and make remaining cold-start delay diagnosable with durable, cross-platform telemetry.
+Its purpose is to eliminate queue-created and compositor-compilation latency and make remaining cold-start delay diagnosable with durable, cross-platform telemetry.

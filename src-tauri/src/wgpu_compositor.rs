@@ -357,6 +357,17 @@ impl NativePreviewSession {
     /// dimensions and surface target format. Calling this during session opening
     /// or surface configuration completely eliminates the ~70ms first-frame
     /// compilation spike from the playback presentation path.
+    ///
+    /// On Windows, DXGI swapchains always negotiate to `Bgra8UnormSrgb` (the
+    /// first preference in `choose_surface_format`). If this function is called
+    /// before the surface has stored its negotiated format — which happens when
+    /// `configure_native_playback_render`'s readiness gate runs before the
+    /// swapchain is configured — the caller passes `Rgba8UnormSrgb` as a safe
+    /// default. Frame 2 then finds no compositor for `Bgra8UnormSrgb` and is
+    /// forced to compile all five D3D12 pipelines synchronously inside the
+    /// presentation thread, producing the ~5s `coldStartInitUs` spike observed
+    /// on Intel HD 520. Warming both formats here removes the race regardless
+    /// of call order.
     pub fn warmup_gpu_pipelines(
         &mut self,
         width: u32,
@@ -368,9 +379,17 @@ impl NativePreviewSession {
         }
         // Pre-compile the surface presentation compositor (5 pipelines: normal, additive, multiply, screen, transition)
         let _ = self.get_or_create_compositor(width, height, target_format);
-        // Pre-compile the offscreen/readback compositor if distinct
+        // Pre-compile the offscreen/readback compositor if distinct from the surface format.
         if target_format != wgpu::TextureFormat::Rgba8UnormSrgb {
             let _ = self.get_or_create_compositor(width, height, wgpu::TextureFormat::Rgba8UnormSrgb);
+        }
+        // On Windows, DXGI always prefers Bgra8UnormSrgb for the swapchain
+        // surface. Pre-compiling it here ensures that a Bgra8UnormSrgb surface
+        // presentation never pays a first-compile cost even when the readiness
+        // gate ran before the swapchain was fully negotiated.
+        #[cfg(target_os = "windows")]
+        if target_format != wgpu::TextureFormat::Bgra8UnormSrgb {
+            let _ = self.get_or_create_compositor(width, height, wgpu::TextureFormat::Bgra8UnormSrgb);
         }
     }
 
