@@ -212,6 +212,9 @@ impl NativeFrameService {
                 scheduler_wait: optional_stage_percentiles(&samples, |sample| {
                     sample.scheduler_wait_us
                 }),
+                queue_residency: optional_stage_percentiles(&samples, |sample| {
+                    sample.queue_residency_us
+                }),
                 ipc_wait: optional_stage_percentiles(&samples, |sample| sample.ipc_wait_us),
                 decoder_mutex_wait: optional_stage_percentiles(&samples, |sample| {
                     sample.decoder_mutex_wait_us
@@ -355,6 +358,7 @@ mod tests {
             readback_us: None,
             present_us: Some(0),
             scheduler_wait_us: None,
+            queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: None,
             gpu_queue_wait_us: None,

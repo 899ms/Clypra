@@ -123,6 +123,10 @@ pub struct PerformanceSample {
     pub present_us: Option<u64>,
     #[serde(default)]
     pub scheduler_wait_us: Option<u64>,
+    /// Time a fully decoded lookahead frame spent waiting in the preview queue
+    /// before presentation. This is distinct from lock/scheduler contention.
+    #[serde(default)]
+    pub queue_residency_us: Option<u64>,
     #[serde(default)]
     pub ipc_wait_us: Option<u64>,
     #[serde(default)]
@@ -217,6 +221,7 @@ pub struct ModeStats {
     pub readback: StagePercentiles,
     pub present: StagePercentiles,
     pub scheduler_wait: StagePercentiles,
+    pub queue_residency: StagePercentiles,
     pub ipc_wait: StagePercentiles,
     pub decoder_mutex_wait: StagePercentiles,
     pub gpu_queue_wait: StagePercentiles,
@@ -305,6 +310,7 @@ mod tests {
             readback_us: None,
             present_us: None,
             scheduler_wait_us: None,
+            queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: None,
             gpu_queue_wait_us: None,
