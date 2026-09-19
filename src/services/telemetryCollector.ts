@@ -332,6 +332,7 @@ export interface TelemetryEvent {
   frameSequence?: number;
   dropReason?: string;
   deadlineUs?: number;
+  interaction?: TelemetryInteraction;
   subsystem?: TelemetrySubsystem;
   forceSample?: boolean;
   appVersion: string;
@@ -415,6 +416,19 @@ export type TelemetrySampleKind =
   | "qualification-summary"
   | "interaction";
 
+export type TelemetryInteractionName = "play" | "pause" | "seek";
+export type TelemetryInteractionOutcome = "completed" | "superseded" | "failed";
+
+/** Bounded, content-free timing for one editor transport action. */
+export interface TelemetryInteraction {
+  id: string;
+  name: TelemetryInteractionName;
+  outcome: TelemetryInteractionOutcome;
+  queueWaitUs?: number;
+  audioSeekUs?: number;
+  audioTransportUs?: number;
+}
+
 export interface TelemetryPreviewContext {
   view: TelemetryPreviewView;
   surface: TelemetryPreviewSurface;
@@ -436,6 +450,7 @@ export interface TelemetryRenderOptions {
   cacheHit?: boolean;
   capabilityPolicy?: "full" | "reduced" | "proxy" | string;
   capabilityProbeUs?: number;
+  interaction?: TelemetryInteraction;
   /** Native samples are stage evidence for a frontend frame, not a second frame. */
   includeInRollup?: boolean;
 }
@@ -1400,6 +1415,7 @@ class TelemetryCollector {
       frameSequence: options.frameSequence,
       dropReason: options.dropReason,
       deadlineUs: options.deadlineUs,
+      interaction: options.interaction,
       appVersion: this.appVersion,
       appBuildNumber: import.meta.env.MODE || "prod",
       appEnvironment: import.meta.env.DEV ? "beta" : "production",
@@ -1433,6 +1449,41 @@ class TelemetryCollector {
     };
 
     this.enqueueEvent(event);
+  }
+
+  /** Records a play, pause, or seek interaction at 100% sampling. */
+  public recordPreviewInteraction(input: {
+    interaction: TelemetryInteraction;
+    totalTimeUs: number;
+    previewContext?: TelemetryPreviewContext;
+  }): void {
+    const mode: TelemetryOperationMode =
+      input.interaction.name === "seek" ? "seek-warm" : "playback";
+    this.recordRenderSpan(
+      {
+        schedulerWaitUs: input.interaction.queueWaitUs,
+        ipcWaitUs:
+          (input.interaction.audioSeekUs ?? 0) +
+            (input.interaction.audioTransportUs ?? 0) || undefined,
+        totalTimeUs: Math.max(0, Math.round(input.totalTimeUs)),
+      },
+      input.interaction.outcome === "failed" ? 1 : 0,
+      1,
+      {},
+      mode,
+      undefined,
+      0,
+      input.interaction.outcome === "superseded" ? 1 : 0,
+      {
+        measurementId: `interaction:${input.interaction.id}`,
+        measurementSource: "frontend-span",
+        sampleKind: "interaction",
+        forceSample: true,
+        includeInRollup: false,
+        previewContext: input.previewContext,
+        interaction: input.interaction,
+      },
+    );
   }
 
   /**

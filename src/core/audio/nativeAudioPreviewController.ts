@@ -37,6 +37,18 @@ interface TimedInteraction {
   audioSeekUs: number;
   audioTransportUs: number;
   outcome: TransportInteractionOutcome;
+import {
+  telemetryCollector,
+  type TelemetryInteraction,
+  type TelemetryInteractionName,
+  type TelemetryInteractionOutcome,
+} from "@/services/telemetryCollector";
+
+const NATIVE_PREVIEW_AUDIO_OPTIONS = { preserveTransportPitch: true } as const;
+
+interface TimedInteraction {
+  startedAt: number;
+  telemetry: TelemetryInteraction;
 }
 
 export interface NativeAudioPreviewSource {
@@ -298,6 +310,7 @@ export class NativeAudioPreviewController {
       this.restartPolling(true);
       const interaction = this.beginInteraction("play");
       this.enqueueTransport(async () => {
+      this.enqueue(async () => {
         const commandStartedAt = performance.now();
         if (
           this.transportIntentRevision !== transportIntentRevision ||
@@ -310,6 +323,7 @@ export class NativeAudioPreviewController {
           const seekStartedAt = performance.now();
           await seekNativeAudio(secondsToTicks(this.clock.time));
           interaction.audioSeekUs = elapsedUs(seekStartedAt);
+          interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
           if (
             this.transportIntentRevision !== transportIntentRevision ||
             this.clock.state !== "playing"
@@ -321,6 +335,7 @@ export class NativeAudioPreviewController {
           const nativeState = await nativePlayFromAudio();
           interaction.audioTransportUs =
             elapsedUs(transportStartedAt);
+          interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
           this.adoptNativePosition(nativeState.audioPositionTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
         } catch (error) {
@@ -332,6 +347,7 @@ export class NativeAudioPreviewController {
       this.restartPolling(false);
       const interaction = this.beginInteraction("pause");
       this.enqueueTransport(async () => {
+      this.enqueue(async () => {
         const commandStartedAt = performance.now();
         if (
           this.transportIntentRevision !== transportIntentRevision ||
@@ -348,12 +364,14 @@ export class NativeAudioPreviewController {
           await pauseNativeAudio();
           interaction.audioTransportUs =
             elapsedUs(transportStartedAt);
+          interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
           const seekStartedAt = performance.now();
           await seekNativeAudio(targetTicks);
           await nativeSeekFromAudio(
             Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
           );
           interaction.audioSeekUs = elapsedUs(seekStartedAt);
+          interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
           this.adoptNativePosition(targetTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
         } catch (error) {
@@ -374,6 +392,7 @@ export class NativeAudioPreviewController {
       const seekIntentRevision = this.seekIntentRevision;
       const interaction = this.beginInteraction("seek");
       this.enqueueTransport(async () => {
+      this.enqueue(async () => {
         const commandStartedAt = performance.now();
         const stateBeforeSeek = this.clock.state;
         if (
@@ -394,6 +413,7 @@ export class NativeAudioPreviewController {
             stateAfterSeek === "playing"
           ) {
             interaction.audioSeekUs = elapsedUs(seekStartedAt);
+            interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
             this.finishInteraction(interaction, commandStartedAt, "superseded");
             return;
           }
@@ -401,6 +421,7 @@ export class NativeAudioPreviewController {
             Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
           );
           interaction.audioSeekUs = elapsedUs(seekStartedAt);
+          interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
           this.adoptNativePosition(nativeState.audioPositionTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
         } catch (error) {
@@ -425,6 +446,14 @@ export class NativeAudioPreviewController {
       audioSeekUs: 0,
       audioTransportUs: 0,
       outcome: "completed",
+  private beginInteraction(name: TelemetryInteractionName): TimedInteraction {
+    return {
+      startedAt: performance.now(),
+      telemetry: {
+        id: `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name,
+        outcome: "completed",
+      },
     };
   }
 
@@ -444,6 +473,15 @@ export class NativeAudioPreviewController {
       queueWaitUs: interaction.queueWaitUs,
       audioSeekUs: interaction.audioSeekUs,
       audioTransportUs: interaction.audioTransportUs,
+    outcome: TelemetryInteractionOutcome,
+  ): void {
+    interaction.telemetry.queueWaitUs = Math.max(
+      0,
+      Math.round((commandStartedAt - interaction.startedAt) * 1_000),
+    );
+    interaction.telemetry.outcome = outcome;
+    telemetryCollector.recordPreviewInteraction({
+      interaction: interaction.telemetry,
       totalTimeUs: elapsedUs(interaction.startedAt),
     });
   }
