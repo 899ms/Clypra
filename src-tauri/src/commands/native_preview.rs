@@ -122,6 +122,9 @@ struct QueuedNativeFrame {
     decoded_frames: Vec<DecodedNativeVideoFrame>,
     decode_timings: NativeDecodeTimings,
     queued_at: Instant,
+    /// Recorded after decode completes, so queue telemetry excludes decoder
+    /// work and measures only the wait for a ready frame to be presented.
+    ready_at: Instant,
     scheduler_wait_us: u64,
 }
 
@@ -205,6 +208,7 @@ fn record_native_surface_sample(
     decode_timings: NativeDecodeTimings,
     queue_hit: bool,
     scheduler_wait_us: u64,
+    queue_residency_us: Option<u64>,
     conversion_upload_us: Option<u64>,
     compose_us: Option<u64>,
     surface_acquire_us: Option<u64>,
@@ -257,12 +261,23 @@ fn record_native_surface_sample(
         readback_us: None,
         present_us: submit_present_us,
         scheduler_wait_us: Some(scheduler_wait_us),
+        queue_residency_us,
         ipc_wait_us: None,
         decoder_mutex_wait_us: Some(decode_timings.decoder_mutex_wait_us),
         gpu_queue_wait_us: None,
         surface_acquire_us,
         submit_present_us,
     });
+}
+
+/// A decoded lookahead frame can sit in the bounded preview queue while the
+/// audio clock advances. That delay is neither decode time nor GPU time, yet
+/// it is often the dominant contributor to a visibly slow preview.
+fn queue_residency_us(ready_at: Instant, presentation_started: Instant) -> u64 {
+    presentation_started
+        .saturating_duration_since(ready_at)
+        .as_micros()
+        .min(u64::MAX as u128) as u64
 }
 
 /// Bounded native decode-ahead storage for continuous preview playback.
@@ -2335,6 +2350,10 @@ pub async fn queue_native_frame(
     }
     match decode_native_video_layers(&legacy_request, cancellation).await {
         Ok((decoded_frames, decode_timings)) => {
+            // Start this clock as soon as decoding is complete, before taking
+            // the queue lock. A contended producer lock should be visible as
+            // part of the time the decoded result is unavailable to present.
+            let ready_at = Instant::now();
             let mut queue_state = queue.lock().await;
             if is_prefetch || queue_state.is_generation_current(generation) {
                 pending_guard.key = None;
@@ -2345,6 +2364,7 @@ pub async fn queue_native_frame(
                         decoded_frames,
                         decode_timings,
                         queued_at: command_started,
+                        ready_at,
                         scheduler_wait_us,
                     },
                 );
@@ -2789,12 +2809,20 @@ pub(crate) async fn present_native_frame_internal(
         } else {
             None
         };
-    let (decoded_frames, decode_timings, scheduler_wait_us, request_started_at, queue_hit) =
+    let (
+        decoded_frames,
+        decode_timings,
+        scheduler_lock_wait_us,
+        ready_at,
+        request_started_at,
+        queue_hit,
+    ) =
         match queued_frame {
             Some(frame) => (
                 frame.decoded_frames,
                 frame.decode_timings,
                 frame.scheduler_wait_us,
+                Some(frame.ready_at),
                 frame.queued_at,
                 true,
             ),
@@ -2808,11 +2836,15 @@ pub(crate) async fn present_native_frame_internal(
                     decoded_frames,
                     decode_timings,
                     0,
+                    None,
                     presentation_started,
                     false,
                 )
             }
         };
+    let queue_residency_us = ready_at
+        .map(|ready_at| queue_residency_us(ready_at, presentation_started));
+    let scheduler_wait_us = scheduler_lock_wait_us;
     if let Some(generation) = request.generation {
         if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
             if !queue
@@ -2829,6 +2861,7 @@ pub(crate) async fn present_native_frame_internal(
                     decode_timings,
                     queue_hit,
                     scheduler_wait_us,
+                    queue_residency_us,
                     None,
                     None,
                     None,
@@ -2888,6 +2921,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
+            queue_residency_us,
             None,
             None,
             None,
@@ -2924,6 +2958,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
+            queue_residency_us,
             None,
             None,
             None,
@@ -3251,6 +3286,7 @@ pub(crate) async fn present_native_frame_internal(
         decode_timings,
         queue_hit,
         scheduler_wait_us,
+        queue_residency_us,
         Some(conversion_upload_us),
         Some(compose_us),
         Some(surface_acquire_us),
@@ -3270,11 +3306,12 @@ pub(crate) async fn present_native_frame_internal(
 
     if layers_count > 0 && (*VERBOSE_PREVIEW_LOGS || !queue_hit || total_ms > 33.33) {
         eprintln!(
-            "[NativePresent] Frame #{} [{}] total: {:.2}ms (decode: {:.2}ms, upload: {:.2}ms, compose: {:.2}ms, present: {:.2}ms) | layers: {}",
+            "[NativePresent] Frame #{} [{}] total: {:.2}ms (decode: {:.2}ms, queue: {:.2}ms, upload: {:.2}ms, compose: {:.2}ms, present: {:.2}ms) | layers: {}",
             request.frame_time.frame_index,
             hit_tag,
             total_ms,
             decode_ms,
+            queue_residency_us.unwrap_or(0) as f64 / 1000.0,
             upload_ms,
             compose_ms,
             present_ms,
@@ -3308,6 +3345,7 @@ pub(crate) async fn present_native_frame_internal(
             compose_us,
             surface_acquire_us,
             submit_present_us,
+            queue_residency_us: queue_residency_us.unwrap_or(0),
             queue_hit,
         }),
     })
@@ -3401,6 +3439,7 @@ pub async fn render_native_frame(
                 readback_us: None,
                 present_us: None,
                 scheduler_wait_us: None,
+                queue_residency_us: None,
                 ipc_wait_us: None,
                 decoder_mutex_wait_us: None,
                 gpu_queue_wait_us: None,
@@ -3472,6 +3511,7 @@ pub async fn render_native_frame(
             readback_us: Some(u64::from(stage_timings.readback_time_us)),
             present_us: None,
             scheduler_wait_us: None,
+            queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: Some(stage_timings.decoder_mutex_wait_us),
             gpu_queue_wait_us: None,
@@ -3587,9 +3627,10 @@ pub async fn reset_native_preview_runtime(app: tauri::AppHandle) -> Result<(), S
 mod tests {
     use super::{
         color_params, compute_text_layer_scale, merge_color_metadata, parse_blend_mode,
-        project_layer_transform, validate_project_request, validate_video_project_request,
-        NativeDecodeTimings, NativePreviewFrameQueue, NativeProjectFrameRequest,
-        NativeVideoProjectFrameRequest, QueuedNativeFrame,
+        project_layer_transform, queue_residency_us,
+        validate_project_request, validate_video_project_request, NativeDecodeTimings,
+        NativePreviewFrameQueue, NativeProjectFrameRequest, NativeVideoProjectFrameRequest,
+        QueuedNativeFrame,
     };
     use crate::native_core::TextLayerSnapshot;
     use crate::thumbnail_engine::decoder::VideoColorMetadata;
@@ -3783,6 +3824,7 @@ mod tests {
             decoded_frames: Vec::new(),
             decode_timings: NativeDecodeTimings::default(),
             queued_at: Instant::now(),
+            ready_at: Instant::now(),
             scheduler_wait_us: 0,
         };
         assert!(queue.begin("frame-1", None));
@@ -3801,6 +3843,20 @@ mod tests {
         assert!(!queue.contains("frame-2"));
         assert!(queue.contains("frame-3"));
         assert!(queue.contains("frame-4"));
+    }
+
+    #[test]
+    fn queue_residency_measures_only_ready_frame_wait() {
+        let ready_at = Instant::now();
+        let presentation_started = ready_at + std::time::Duration::from_micros(400_000);
+
+        assert_eq!(queue_residency_us(ready_at, presentation_started), 400_000);
+    }
+
+    #[test]
+    fn queue_residency_is_zero_when_a_ready_frame_is_immediately_presented() {
+        let now = Instant::now();
+        assert_eq!(queue_residency_us(now, now), 0);
     }
 
     #[test]
