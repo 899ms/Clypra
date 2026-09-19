@@ -362,7 +362,8 @@ impl NativePreviewFrameQueue {
         let stale: Vec<String> = self
             .entries
             .iter()
-            .filter_map(|(key, frame)| (frame.frame_index < frame_index).then(|| key.clone()))
+            .filter(|&(_, frame)| frame.frame_index < frame_index)
+            .map(|(key, _)| key.clone())
             .collect();
         for key in stale {
             self.entries.remove(&key);
@@ -374,11 +375,11 @@ impl NativePreviewFrameQueue {
         let expired: Vec<String> = self
             .entries
             .iter()
-            .filter_map(|(key, frame)| {
-                (queue_residency_us(frame.ready_at, presentation_started)
-                    > MAX_LOOKAHEAD_RESIDENCY_US)
-                    .then(|| key.clone())
+            .filter(|&(_, frame)| {
+                queue_residency_us(frame.ready_at, presentation_started)
+                    > MAX_LOOKAHEAD_RESIDENCY_US
             })
+            .map(|(key, _)| key.clone())
             .collect();
         for key in expired {
             self.entries.remove(&key);
@@ -2898,7 +2899,7 @@ pub(crate) async fn present_native_frame_internal(
     let queued_key = request.decode_cache_key().map_err(|error| error.to_string())?;
     let is_playback_mode = request.mode.as_deref() == Some("playback");
     let mut playback_lookahead_miss = false;
-    let lookahead_wait_us = None;
+    let lookahead_wait_us: u64 = 0;
     let queued_frame =
         if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
             let queue_arc = queue.inner().clone();
@@ -3041,7 +3042,7 @@ pub(crate) async fn present_native_frame_internal(
                     decode_timings,
                     queue_hit,
                     scheduler_wait_us,
-                    lookahead_wait_us,
+                    Some(lookahead_wait_us),
                     None,
                     queue_residency_us,
                     None,
@@ -3114,7 +3115,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
-            lookahead_wait_us,
+            Some(lookahead_wait_us),
             None,
             queue_residency_us,
             None,
@@ -3155,7 +3156,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
-            lookahead_wait_us,
+            Some(lookahead_wait_us),
             None,
             queue_residency_us,
             None,
@@ -3490,7 +3491,7 @@ pub(crate) async fn present_native_frame_internal(
         decode_timings,
         queue_hit,
         scheduler_wait_us,
-        lookahead_wait_us,
+        Some(lookahead_wait_us),
         cold_start_init_us,
         queue_residency_us,
         Some(conversion_upload_us),
@@ -3531,7 +3532,7 @@ pub(crate) async fn present_native_frame_internal(
             compose_us,
             surface_acquire_us,
             submit_present_us,
-            lookahead_wait_us: lookahead_wait_us.unwrap_or(0),
+            lookahead_wait_us,
             cold_start_init_us: cold_start_init_us.unwrap_or(0),
             queue_residency_us: queue_residency_us.unwrap_or(0),
             queue_hit,
