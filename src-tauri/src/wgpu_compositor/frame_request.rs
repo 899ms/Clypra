@@ -64,8 +64,8 @@ impl PreviewQuality {
     pub fn scale_factor(&self) -> f32 {
         match self {
             Self::Quarter => 0.25,
-            Self::Half    => 0.5,
-            Self::Full    => 1.0,
+            Self::Half => 0.5,
+            Self::Full => 1.0,
         }
     }
 }
@@ -103,9 +103,9 @@ pub struct PresentationRequest {
 /// A sub-region of a render target to present into (letterbox / pillarbox).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
-    pub x:      u32,
-    pub y:      u32,
-    pub width:  u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
     pub height: u32,
 }
 
@@ -120,21 +120,21 @@ mod tests {
     #[test]
     fn frame_priority_ordering() {
         // Principle 2: Realtime > Interactive > Background.
-        assert!(FramePriority::Realtime   > FramePriority::Interactive);
+        assert!(FramePriority::Realtime > FramePriority::Interactive);
         assert!(FramePriority::Interactive > FramePriority::Background);
-        assert!(FramePriority::Realtime   > FramePriority::Background);
+        assert!(FramePriority::Realtime > FramePriority::Background);
     }
 
     #[test]
     fn preview_quality_ordering() {
-        assert!(PreviewQuality::Full    > PreviewQuality::Half);
-        assert!(PreviewQuality::Half    > PreviewQuality::Quarter);
+        assert!(PreviewQuality::Full > PreviewQuality::Half);
+        assert!(PreviewQuality::Half > PreviewQuality::Quarter);
     }
 
     #[test]
     fn preview_quality_scale_factors() {
-        assert!((PreviewQuality::Full.scale_factor()    - 1.0).abs() < f32::EPSILON);
-        assert!((PreviewQuality::Half.scale_factor()    - 0.5).abs() < f32::EPSILON);
+        assert!((PreviewQuality::Full.scale_factor() - 1.0).abs() < f32::EPSILON);
+        assert!((PreviewQuality::Half.scale_factor() - 0.5).abs() < f32::EPSILON);
         assert!((PreviewQuality::Quarter.scale_factor() - 0.25).abs() < f32::EPSILON);
     }
 
@@ -144,9 +144,9 @@ mod tests {
         // This is verified structurally by the fact that the struct definition
         // compiles without one. The test below documents the design decision.
         let req = FrameRequest {
-            timestamp:             std::time::Duration::from_secs(10),
-            priority:              FramePriority::Realtime,
-            quality:               PreviewQuality::Full,
+            timestamp: std::time::Duration::from_secs(10),
+            priority: FramePriority::Realtime,
+            quality: PreviewQuality::Full,
             allow_keyframe_approx: false,
         };
         assert_eq!(req.priority, FramePriority::Realtime);
@@ -155,7 +155,12 @@ mod tests {
 
     #[test]
     fn viewport_fields() {
-        let vp = Viewport { x: 0, y: 100, width: 1920, height: 800 };
+        let vp = Viewport {
+            x: 0,
+            y: 100,
+            width: 1920,
+            height: 800,
+        };
         assert_eq!(vp.height, 800);
     }
 }

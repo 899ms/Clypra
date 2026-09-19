@@ -161,7 +161,9 @@ impl GpuContext {
             .await
             .map_err(|e| format!("Failed to request wgpu device: {}", e))?;
 
-        let nv12_supported = device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12);
+        let nv12_supported = device
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_NV12);
         let capabilities = PreviewCapabilities::probe(&best_adapter, &device);
 
         log::info!(

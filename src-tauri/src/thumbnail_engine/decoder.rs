@@ -741,17 +741,14 @@ impl VideoDecoder {
                 return false;
             }
 
-            let required_method =
-                ffmpeg::ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32;
+            let required_method = ffmpeg::ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32;
             let mut index = 0;
             loop {
                 let config = ffmpeg::ffi::avcodec_get_hw_config(codec, index);
                 if config.is_null() {
                     return false;
                 }
-                if (*config).device_type == hw_type
-                    && ((*config).methods & required_method) != 0
-                {
+                if (*config).device_type == hw_type && ((*config).methods & required_method) != 0 {
                     return true;
                 }
                 index += 1;
@@ -1461,9 +1458,7 @@ impl VideoDecoder {
         }
         // SAFETY: `frame.as_ptr()` is a valid, non-null AVFrame* and the
         // hardware context is still live because the frame is in scope.
-        unsafe {
-            crate::wgpu_compositor::dxgi_import::extract_shared_handle(frame.as_ptr())
-        }
+        unsafe { crate::wgpu_compositor::dxgi_import::extract_shared_handle(frame.as_ptr()) }
     }
 
     /// Extract raw NV12 planes (Y plane + interleaved UV plane) directly from a decoded frame without CPU sws_scale.
@@ -1618,8 +1613,10 @@ impl VideoDecoder {
             30.0
         };
         let frame_duration_secs = (1.0 / stream_fps.max(1.0)).min(0.2);
-        let pts_tolerance =
-            ((frame_duration_secs * 0.95) * self.time_base.1 as f64 / self.time_base.0 as f64).round().max(1.0) as i64;
+        let pts_tolerance = ((frame_duration_secs * 0.95) * self.time_base.1 as f64
+            / self.time_base.0 as f64)
+            .round()
+            .max(1.0) as i64;
 
         // 1. Check LRU ring-buffer cache for recently decoded frames
         if let Some(pos) = self
@@ -1639,7 +1636,13 @@ impl VideoDecoder {
 
         if let Some((cached_pts, y, uv, width, height, color)) = &self.last_raw_nv12 {
             if (*cached_pts - target_pts).abs() <= pts_tolerance {
-                return Ok((Arc::clone(y), Arc::clone(uv), *width, *height, color.clone()));
+                return Ok((
+                    Arc::clone(y),
+                    Arc::clone(uv),
+                    *width,
+                    *height,
+                    color.clone(),
+                ));
             }
         }
         let sequential_window = (2.0 * self.time_base.1 as f64 / self.time_base.0 as f64) as i64;
@@ -1921,8 +1924,7 @@ impl VideoDecoder {
             30.0
         };
         let frame_duration_secs = (1.0 / stream_fps.max(1.0)).min(0.2);
-        let pts_tolerance = ((frame_duration_secs * 0.95)
-            * self.time_base.1 as f64
+        let pts_tolerance = ((frame_duration_secs * 0.95) * self.time_base.1 as f64
             / self.time_base.0 as f64)
             .round()
             .max(1.0) as i64;
@@ -1934,8 +1936,7 @@ impl VideoDecoder {
         let is_backward = target_pts < self.state.current_pts;
         let needs_seek = self.state.current_pts < 0
             || (is_backward && backward_distance > pts_tolerance)
-            || (!is_backward
-                && !self.state.can_decode_forward(target_pts, sequential_window));
+            || (!is_backward && !self.state.can_decode_forward(target_pts, sequential_window));
 
         if needs_seek {
             if is_cancelled() {
@@ -2022,8 +2023,7 @@ impl VideoDecoder {
                     }
                     let pts = frame.pts().unwrap_or(0);
                     self.state.current_pts = pts;
-                    let frame_ts =
-                        pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
+                    let frame_ts = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
                     best_frame = frame;
                     if frame_ts >= ts - (1.0 / 60.0) {
                         found = true;
@@ -2164,7 +2164,8 @@ impl VideoDecoder {
         for y in 0..height {
             let row_start = y * stride;
             let src_row_start = y * width * 4;
-            if src_row_start + (width * 4) > rgba.len() || row_start + (width * 4) > src_data.len() {
+            if src_row_start + (width * 4) > rgba.len() || row_start + (width * 4) > src_data.len()
+            {
                 return Err("Source buffer smaller than expected in scale_rgba_buffer".to_string());
             }
             src_data[row_start..row_start + (width * 4)]
@@ -2202,7 +2203,9 @@ impl VideoDecoder {
         for y in 0..height {
             let row_start = y * stride;
             if row_start + (width * 4) > dst_data.len() {
-                return Err("Scaled dst_data buffer smaller than expected in scale_rgba_buffer".to_string());
+                return Err(
+                    "Scaled dst_data buffer smaller than expected in scale_rgba_buffer".to_string(),
+                );
             }
             let row_pixels = &dst_data[row_start..row_start + (width * 4)];
             result.extend_from_slice(row_pixels);
@@ -2482,7 +2485,9 @@ pub fn release_decoder_stream(path: &str, stream_id: &str) {
     {
         PREVIEW_DECODER_POOL.remove(&key);
     }
-    crate::thumbnail_engine::stream_actor::release_preview_decoder_actor_for_stream(path, stream_id);
+    crate::thumbnail_engine::stream_actor::release_preview_decoder_actor_for_stream(
+        path, stream_id,
+    );
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -2808,15 +2813,21 @@ mod still_image_tests {
 
         assert_eq!(w1, w2);
         assert_eq!(h1, h2);
-        assert!(Arc::ptr_eq(&y1, &y2), "Y plane Arc should be shared from LRU cache");
-        assert!(Arc::ptr_eq(&uv1, &uv2), "UV plane Arc should be shared from LRU cache");
+        assert!(
+            Arc::ptr_eq(&y1, &y2),
+            "Y plane Arc should be shared from LRU cache"
+        );
+        assert!(
+            Arc::ptr_eq(&uv1, &uv2),
+            "UV plane Arc should be shared from LRU cache"
+        );
     }
 
     #[test]
     fn raw_nv12_lru_cache_evicts_oldest_when_exceeding_capacity() {
+        use super::{CachedNv12Frame, VideoColorMetadata, MAX_RAW_NV12_CACHE_ENTRIES};
         use std::collections::VecDeque;
         use std::sync::Arc;
-        use super::{CachedNv12Frame, VideoColorMetadata, MAX_RAW_NV12_CACHE_ENTRIES};
 
         let mut cache: VecDeque<CachedNv12Frame> = VecDeque::new();
         for i in 0..25 {

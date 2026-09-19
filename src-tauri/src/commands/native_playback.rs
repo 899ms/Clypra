@@ -58,11 +58,8 @@ impl NativeRenderSession {
             let key = (layer.video_path.clone(), layer.layer_id.clone());
             if streams.insert(key) {
                 leases.push(
-                    acquire_preview_decoder_lease_for_stream(
-                        &layer.video_path,
-                        &layer.layer_id,
-                    )
-                    .await?,
+                    acquire_preview_decoder_lease_for_stream(&layer.video_path, &layer.layer_id)
+                        .await?,
                 );
                 actors.push(
                     crate::thumbnail_engine::stream_actor::get_preview_decoder_actor_for_stream(
@@ -102,7 +99,12 @@ impl NativeRenderSession {
         if let Ok(snapshot_guard) = self.snapshot.lock() {
             let base_request = snapshot_guard.clone();
             drop(snapshot_guard);
-            crate::commands::native_preview::schedule_lookahead_predecode(app.clone(), base_request, 16, None);
+            crate::commands::native_preview::schedule_lookahead_predecode(
+                app.clone(),
+                base_request,
+                16,
+                None,
+            );
         }
         let session = Arc::clone(self);
         let handle = tauri::async_runtime::spawn(async move {
@@ -212,7 +214,12 @@ impl NativeRenderSession {
             let base_demand_video_count = demand
                 .video_layers
                 .iter()
-                .filter(|l| !l.layer_id.as_deref().map(|id| id.ends_with(":subject-cutout")).unwrap_or(false))
+                .filter(|l| {
+                    !l.layer_id
+                        .as_deref()
+                        .map(|id| id.ends_with(":subject-cutout"))
+                        .unwrap_or(false)
+                })
                 .count();
 
             if demand.video_layers.len() == request.project.video_layers.len() {
@@ -238,8 +245,13 @@ impl NativeRenderSession {
                     }
                     if update.body_effect.is_some() {
                         layer.body_effect = update.body_effect.clone();
-                    } else if layer.layer_id.ends_with(":subject-cutout") && layer.body_effect.is_none() {
-                        let base_id = layer.layer_id.strip_suffix(":subject-cutout").unwrap_or(&layer.layer_id);
+                    } else if layer.layer_id.ends_with(":subject-cutout")
+                        && layer.body_effect.is_none()
+                    {
+                        let base_id = layer
+                            .layer_id
+                            .strip_suffix(":subject-cutout")
+                            .unwrap_or(&layer.layer_id);
                         layer.body_effect = Some(crate::native_core::BodyEffectSnapshot {
                             mask_asset_id: format!("{}_fx-body-cutout-{}", layer.layer_id, base_id),
                             renderer: "body_cutout".to_string(),
@@ -282,7 +294,12 @@ impl NativeRenderSession {
                         new_video_layers.push(layer);
                     } else if lid.ends_with(":subject-cutout") {
                         let base_id = lid.strip_suffix(":subject-cutout").unwrap_or("");
-                        if let Some(base_layer) = request.project.video_layers.iter().find(|l| l.layer_id == base_id) {
+                        if let Some(base_layer) = request
+                            .project
+                            .video_layers
+                            .iter()
+                            .find(|l| l.layer_id == base_id)
+                        {
                             let mut layer = base_layer.clone();
                             layer.layer_id = lid.to_string();
                             layer.source_time = update.source_time;
@@ -316,12 +333,14 @@ impl NativeRenderSession {
                     request.project.video_layers = new_video_layers;
                 } else {
                     return Err(
-                        "Native playback demand video layers could not be resolved from snapshot".to_string(),
+                        "Native playback demand video layers could not be resolved from snapshot"
+                            .to_string(),
                     );
                 }
             } else {
                 return Err(
-                    "Native playback demand does not match the configured render snapshot".to_string(),
+                    "Native playback demand does not match the configured render snapshot"
+                        .to_string(),
                 );
             }
 
@@ -559,9 +578,9 @@ impl NativeRenderSession {
                             let base_source_time_secs = (layer.source_time.ticks as f64)
                                 / (layer.source_time.timescale.max(1) as f64);
                             let current_source_secs = (base_source_time_secs + delta_secs).max(0.0);
-                            let source_frame_index = (current_source_secs
-                                * request.project.frame_rate as f64)
-                                .round() as u64;
+                            let source_frame_index =
+                                (current_source_secs * request.project.frame_rate as f64).round()
+                                    as u64;
                             let ticks =
                                 (current_source_secs * DEFAULT_TIME_SCALE as f64).round() as i64;
                             if let Ok(ft) =
@@ -595,8 +614,7 @@ impl NativeRenderSession {
                             } else {
                                 30.0
                             };
-                            let hit_rate =
-                                (queue_hits as f64 / frames_rendered as f64) * 100.0;
+                            let hit_rate = (queue_hits as f64 / frames_rendered as f64) * 100.0;
                             let avg_total_ms =
                                 (total_time_sum_us as f64 / frames_rendered as f64) / 1000.0;
                             let avg_decode_ms =
@@ -954,7 +972,10 @@ async fn probe_decode_capability(snapshot: &FrameRequest) -> (DecodeCapabilityPo
     let elapsed_us = started.elapsed().as_micros() as u64;
 
     match result {
-        Ok(Ok(Ok(_))) => (DecodeCapabilityPolicy::from_probe_us(elapsed_us), Some(elapsed_us)),
+        Ok(Ok(Ok(_))) => (
+            DecodeCapabilityPolicy::from_probe_us(elapsed_us),
+            Some(elapsed_us),
+        ),
         // Timeout or decode error: conservative fallback
         _ => (DecodeCapabilityPolicy::Proxy, Some(elapsed_us)),
     }
@@ -1008,11 +1029,17 @@ pub async fn configure_native_playback_render(
             .unwrap_or(false);
         audio_running || session_running
     };
-    let target_format = if let Some(surface_runtime) = app.try_state::<Arc<std::sync::Mutex<crate::commands::native_surface::NativeSurfaceRuntime>>>() {
-        surface_runtime.lock().ok().and_then(|s| s.configured_format())
+    let target_format = if let Some(surface_runtime) = app
+        .try_state::<Arc<std::sync::Mutex<crate::commands::native_surface::NativeSurfaceRuntime>>>()
+    {
+        surface_runtime
+            .lock()
+            .ok()
+            .and_then(|s| s.configured_format())
     } else {
         None
-    }.unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
+    }
+    .unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
 
     // This is a readiness gate, not background best-effort work. It makes
     // expensive Windows pipeline compilation complete before the render worker
@@ -1038,7 +1065,9 @@ pub async fn configure_native_playback_render(
 
     // Store the probe result in the preview session so every sampled native
     // presentation can be attributed to the capability policy.
-    if let Some(preview_state) = app.try_state::<Arc<tokio::sync::Mutex<crate::wgpu_compositor::NativePreviewSession>>>() {
+    if let Some(preview_state) =
+        app.try_state::<Arc<tokio::sync::Mutex<crate::wgpu_compositor::NativePreviewSession>>>()
+    {
         let arc = preview_state.inner().clone();
         let mut session = arc.lock().await;
         session.set_capability_probe(capability_policy, capability_probe_us);
@@ -1143,9 +1172,8 @@ pub fn native_play_from_audio(app: AppHandle) -> Result<PlaybackState, String> {
 
 #[tauri::command]
 pub fn native_pause_from_audio(app: AppHandle) -> Result<PlaybackState, String> {
-    let clock = audio_clock_time(&app, false, false).unwrap_or_else(|_| {
-        FrameTime::new(0, 0, DEFAULT_TIME_SCALE).unwrap()
-    });
+    let clock = audio_clock_time(&app, false, false)
+        .unwrap_or_else(|_| FrameTime::new(0, 0, DEFAULT_TIME_SCALE).unwrap());
     let state = with_runtime(&app, |runtime| runtime.pause(clock));
     let _ = set_audio_playing(&app, false);
     if let Some(runtime) = app.try_state::<Arc<Mutex<NativePlaybackRuntime>>>() {
@@ -1352,7 +1380,9 @@ mod tests {
         }];
         d.text_layers = Vec::new();
 
-        let materialized = session.materialize_request(Some(&d)).expect("transition should succeed");
+        let materialized = session
+            .materialize_request(Some(&d))
+            .expect("transition should succeed");
         assert_eq!(materialized.project.raster_layers.len(), 1);
         assert_eq!(materialized.project.text_layers.len(), 0);
         let raster = &materialized.project.raster_layers[0];
@@ -1425,7 +1455,9 @@ mod tests {
             blend_mode: Some("screen".to_string()),
             is_mask: false,
         }];
-        let mat1 = session.materialize_request(Some(&d1)).expect("dynamic addition should succeed");
+        let mat1 = session
+            .materialize_request(Some(&d1))
+            .expect("dynamic addition should succeed");
         assert_eq!(mat1.project.raster_layers.len(), 1);
         let layer = &mat1.project.raster_layers[0];
         assert_eq!(layer.layer_id.as_deref(), Some("clip-title"));
@@ -1437,7 +1469,9 @@ mod tests {
         // Frame 428: text clip exits timeline
         let mut d2 = demand("demand-exit", 428);
         d2.raster_layers = Vec::new();
-        let mat2 = session.materialize_request(Some(&d2)).expect("dynamic removal should succeed");
+        let mat2 = session
+            .materialize_request(Some(&d2))
+            .expect("dynamic removal should succeed");
         assert_eq!(mat2.project.raster_layers.len(), 0);
 
         // Frame 429: missed tick after exit retains empty overlay state
@@ -1449,24 +1483,22 @@ mod tests {
     fn materialize_request_dynamically_adds_and_removes_subject_cutout_layers() {
         // Session configured with base video only (layer_id: "video-1")
         let mut snapshot = test_snapshot();
-        snapshot.project.video_layers = vec![
-            crate::native_core::VideoLayerSnapshot {
-                layer_id: "video-1".to_string(),
-                asset_id: "video-1".to_string(),
-                video_path: "/test/video.mp4".to_string(),
-                source_time: FrameTime::new(0, 0, 30).unwrap(),
-                x: 0.0,
-                y: 0.0,
-                width: 1920.0,
-                height: 1080.0,
-                rotation: 0.0,
-                opacity: 1.0,
-                z_index: 0,
-                blend_mode: "normal".to_string(),
-                color_grade: None,
-                body_effect: None,
-            },
-        ];
+        snapshot.project.video_layers = vec![crate::native_core::VideoLayerSnapshot {
+            layer_id: "video-1".to_string(),
+            asset_id: "video-1".to_string(),
+            video_path: "/test/video.mp4".to_string(),
+            source_time: FrameTime::new(0, 0, 30).unwrap(),
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            rotation: 0.0,
+            opacity: 1.0,
+            z_index: 0,
+            blend_mode: "normal".to_string(),
+            color_grade: None,
+            body_effect: None,
+        }];
         let session = NativeRenderSession {
             snapshot: Mutex::new(snapshot),
             leases: Mutex::new(Vec::new()),
@@ -1508,35 +1540,44 @@ mod tests {
                 body_effect: None,
             },
         ];
-        let mat1 = session.materialize_request(Some(&d1)).expect("dynamic cutout addition should succeed");
+        let mat1 = session
+            .materialize_request(Some(&d1))
+            .expect("dynamic cutout addition should succeed");
         assert_eq!(mat1.project.video_layers.len(), 2);
         assert_eq!(mat1.project.video_layers[0].layer_id, "video-1");
-        assert_eq!(mat1.project.video_layers[1].layer_id, "video-1:subject-cutout");
+        assert_eq!(
+            mat1.project.video_layers[1].layer_id,
+            "video-1:subject-cutout"
+        );
         assert_eq!(mat1.project.video_layers[1].opacity, 0.0);
         assert!(mat1.project.video_layers[1].body_effect.is_some());
         assert_eq!(
-            mat1.project.video_layers[1].body_effect.as_ref().unwrap().renderer,
+            mat1.project.video_layers[1]
+                .body_effect
+                .as_ref()
+                .unwrap()
+                .renderer,
             "body_cutout"
         );
 
         // Frame 120: Cutout ends, reverting to single base video layer
         let mut d2 = demand("demand-cutout-exit", 120);
-        d2.video_layers = vec![
-            crate::native_core::NativePlaybackVideoLayerUpdate {
-                layer_id: Some("video-1".to_string()),
-                source_time: FrameTime::new(120, 120, 30).unwrap(),
-                x: 0.0,
-                y: 0.0,
-                width: 1920.0,
-                height: 1080.0,
-                rotation: 0.0,
-                opacity: 1.0,
-                z_index: 0,
-                color_grade: None,
-                body_effect: None,
-            },
-        ];
-        let mat2 = session.materialize_request(Some(&d2)).expect("dynamic cutout removal should succeed");
+        d2.video_layers = vec![crate::native_core::NativePlaybackVideoLayerUpdate {
+            layer_id: Some("video-1".to_string()),
+            source_time: FrameTime::new(120, 120, 30).unwrap(),
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            rotation: 0.0,
+            opacity: 1.0,
+            z_index: 0,
+            color_grade: None,
+            body_effect: None,
+        }];
+        let mat2 = session
+            .materialize_request(Some(&d2))
+            .expect("dynamic cutout removal should succeed");
         assert_eq!(mat2.project.video_layers.len(), 1);
         assert_eq!(mat2.project.video_layers[0].layer_id, "video-1");
     }
@@ -1544,24 +1585,22 @@ mod tests {
     #[test]
     fn materialize_request_preserves_body_effect_on_cutout_layers_across_steady_playback() {
         let mut snapshot = test_snapshot();
-        snapshot.project.video_layers = vec![
-            crate::native_core::VideoLayerSnapshot {
-                layer_id: "vid-main".to_string(),
-                asset_id: "vid-main".to_string(),
-                video_path: "/test/v.mp4".to_string(),
-                source_time: FrameTime::new(0, 0, 30).unwrap(),
-                x: 0.0,
-                y: 0.0,
-                width: 1280.0,
-                height: 720.0,
-                rotation: 0.0,
-                opacity: 1.0,
-                z_index: 0,
-                blend_mode: "normal".to_string(),
-                color_grade: None,
-                body_effect: None,
-            },
-        ];
+        snapshot.project.video_layers = vec![crate::native_core::VideoLayerSnapshot {
+            layer_id: "vid-main".to_string(),
+            asset_id: "vid-main".to_string(),
+            video_path: "/test/v.mp4".to_string(),
+            source_time: FrameTime::new(0, 0, 30).unwrap(),
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+            rotation: 0.0,
+            opacity: 1.0,
+            z_index: 0,
+            blend_mode: "normal".to_string(),
+            color_grade: None,
+            body_effect: None,
+        }];
         let session = NativeRenderSession {
             snapshot: Mutex::new(snapshot),
             leases: Mutex::new(Vec::new()),

@@ -44,13 +44,13 @@ use std::time::Instant;
 #[serde(rename_all = "camelCase")]
 pub struct FramesBySource {
     /// Frames imported via DXGI zero-copy (NV12 or P010).
-    pub dxgi_nv12:  u64,
+    pub dxgi_nv12: u64,
     /// Frames uploaded via CPU path as NV12.
-    pub cpu_nv12:   u64,
+    pub cpu_nv12: u64,
     /// Frames uploaded via CPU path as RGBA8.
-    pub cpu_rgba:   u64,
+    pub cpu_rgba: u64,
     /// Frames with an unrecognised source (should be zero in normal operation).
-    pub unknown:    u64,
+    pub unknown: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,39 +66,39 @@ pub struct FramesBySource {
 pub struct SessionSnapshot {
     // ── Identity ─────────────────────────────────────────────────────────────
     /// Seconds elapsed since the session started (or last `reset_session`).
-    pub session_duration_secs:    f64,
+    pub session_duration_secs: f64,
 
     // ── Frame counts ─────────────────────────────────────────────────────────
     /// Total frames pushed through `PerformanceManager::record`.
-    pub frames_produced:          u64,
+    pub frames_produced: u64,
     /// Frames with `dropped = true`.
-    pub frames_dropped:           u64,
+    pub frames_dropped: u64,
     /// Frames with `deadline_miss = true`.
-    pub deadline_misses:          u64,
+    pub deadline_misses: u64,
     /// `frames_dropped / frames_produced * 100.0` — `None` if no frames yet.
-    pub drop_rate_pct:            Option<f64>,
+    pub drop_rate_pct: Option<f64>,
     /// `deadline_misses / frames_produced * 100.0` — `None` if no frames yet.
-    pub miss_rate_pct:            Option<f64>,
+    pub miss_rate_pct: Option<f64>,
 
     // ── Decode latency (CPU, µs) ─────────────────────────────────────────────
-    pub avg_decode_us:            Option<u64>,
-    pub peak_decode_us:           Option<u64>,
+    pub avg_decode_us: Option<u64>,
+    pub peak_decode_us: Option<u64>,
 
     // ── Scheduler queue-wait (µs) — Phase 5 ─────────────────────────────────
     /// Average queue-wait for frames that had a `queue_wait_us` measurement.
-    pub avg_queue_wait_us:        Option<u64>,
-    pub peak_queue_wait_us:       Option<u64>,
+    pub avg_queue_wait_us: Option<u64>,
+    pub peak_queue_wait_us: Option<u64>,
 
     // ── IPC round-trip (µs) — Phase 5 ────────────────────────────────────────
-    pub avg_ipc_wait_us:          Option<u64>,
-    pub peak_ipc_wait_us:         Option<u64>,
+    pub avg_ipc_wait_us: Option<u64>,
+    pub peak_ipc_wait_us: Option<u64>,
 
     // ── GPU render (µs) — Phase 6 will populate ──────────────────────────────
-    pub avg_gpu_render_us:        Option<u64>,
-    pub peak_gpu_render_us:       Option<u64>,
+    pub avg_gpu_render_us: Option<u64>,
+    pub peak_gpu_render_us: Option<u64>,
 
     // ── Source-path breakdown ─────────────────────────────────────────────────
-    pub frames_by_source:         FramesBySource,
+    pub frames_by_source: FramesBySource,
 
     // ── Policy events (how many times the manager intervened) ────────────────
     /// Number of times `PerformanceManager::record` triggered a policy change
@@ -113,39 +113,39 @@ pub struct SessionSnapshot {
 // ---------------------------------------------------------------------------
 
 struct SessionState {
-    started_at:                  Instant,
+    started_at: Instant,
 
-    frames_produced:             u64,
-    frames_dropped:              u64,
-    deadline_misses:             u64,
+    frames_produced: u64,
+    frames_dropped: u64,
+    deadline_misses: u64,
 
     // Decode
-    total_decode_us:             u64,
-    peak_decode_us:              u64,
+    total_decode_us: u64,
+    peak_decode_us: u64,
 
     // Queue wait (Phase 5)
-    total_queue_wait_us:         u64,
-    queue_wait_samples:          u64,
-    peak_queue_wait_us:          u64,
+    total_queue_wait_us: u64,
+    queue_wait_samples: u64,
+    peak_queue_wait_us: u64,
 
     // IPC wait (Phase 5)
-    total_ipc_wait_us:           u64,
-    ipc_wait_samples:            u64,
-    peak_ipc_wait_us:            u64,
+    total_ipc_wait_us: u64,
+    ipc_wait_samples: u64,
+    peak_ipc_wait_us: u64,
 
     // GPU render (Phase 6)
-    total_gpu_render_us:         u64,
-    gpu_render_samples:          u64,
-    peak_gpu_render_us:          u64,
+    total_gpu_render_us: u64,
+    gpu_render_samples: u64,
+    peak_gpu_render_us: u64,
 
     // Source breakdown
-    dxgi_nv12_frames:            u64,
-    cpu_nv12_frames:             u64,
-    cpu_rgba_frames:             u64,
-    unknown_frames:              u64,
+    dxgi_nv12_frames: u64,
+    cpu_nv12_frames: u64,
+    cpu_rgba_frames: u64,
+    unknown_frames: u64,
 
     // Policy event counters
-    policy_background_pauses:    u64,
+    policy_background_pauses: u64,
     policy_interactive_throttles: u64,
 }
 
@@ -181,8 +181,12 @@ impl SessionState {
     fn push(&mut self, t: &FrameTelemetry) {
         self.frames_produced += 1;
 
-        if t.dropped       { self.frames_dropped  += 1; }
-        if t.deadline_miss { self.deadline_misses += 1; }
+        if t.dropped {
+            self.frames_dropped += 1;
+        }
+        if t.deadline_miss {
+            self.deadline_misses += 1;
+        }
 
         // Decode
         self.total_decode_us += t.decode_cpu_us;
@@ -193,7 +197,7 @@ impl SessionState {
         // Queue wait — only samples that have been measured (Phase 5)
         if let Some(qw) = t.queue_wait_us {
             self.total_queue_wait_us += qw;
-            self.queue_wait_samples  += 1;
+            self.queue_wait_samples += 1;
             if qw > self.peak_queue_wait_us {
                 self.peak_queue_wait_us = qw;
             }
@@ -202,7 +206,7 @@ impl SessionState {
         // IPC wait — only measured samples (Phase 5)
         if let Some(ipc) = t.ipc_wait_us {
             self.total_ipc_wait_us += ipc;
-            self.ipc_wait_samples  += 1;
+            self.ipc_wait_samples += 1;
             if ipc > self.peak_ipc_wait_us {
                 self.peak_ipc_wait_us = ipc;
             }
@@ -211,7 +215,7 @@ impl SessionState {
         // GPU render — only measured samples (Phase 6)
         if let Some(gpu) = t.gpu_render_us {
             self.total_gpu_render_us += gpu;
-            self.gpu_render_samples  += 1;
+            self.gpu_render_samples += 1;
             if gpu > self.peak_gpu_render_us {
                 self.peak_gpu_render_us = gpu;
             }
@@ -220,8 +224,8 @@ impl SessionState {
         // Source breakdown
         match &t.source {
             FrameSource::DxgiNv12 { .. } => self.dxgi_nv12_frames += 1,
-            FrameSource::CpuNv12 { .. }  => self.cpu_nv12_frames += 1,
-            FrameSource::CpuRgba { .. }  => self.cpu_rgba_frames += 1,
+            FrameSource::CpuNv12 { .. } => self.cpu_nv12_frames += 1,
+            FrameSource::CpuRgba { .. } => self.cpu_rgba_frames += 1,
         }
     }
 
@@ -231,39 +235,61 @@ impl SessionState {
 
         SessionSnapshot {
             session_duration_secs: duration,
-            frames_produced:       n,
-            frames_dropped:        self.frames_dropped,
-            deadline_misses:       self.deadline_misses,
+            frames_produced: n,
+            frames_dropped: self.frames_dropped,
+            deadline_misses: self.deadline_misses,
 
-            drop_rate_pct:  if n > 0 { Some(self.frames_dropped  as f64 / n as f64 * 100.0) } else { None },
-            miss_rate_pct:  if n > 0 { Some(self.deadline_misses as f64 / n as f64 * 100.0) } else { None },
+            drop_rate_pct: if n > 0 {
+                Some(self.frames_dropped as f64 / n as f64 * 100.0)
+            } else {
+                None
+            },
+            miss_rate_pct: if n > 0 {
+                Some(self.deadline_misses as f64 / n as f64 * 100.0)
+            } else {
+                None
+            },
 
-            avg_decode_us:  self.total_decode_us.checked_div(n),
-            peak_decode_us: if n > 0 { Some(self.peak_decode_us) } else { None },
+            avg_decode_us: self.total_decode_us.checked_div(n),
+            peak_decode_us: if n > 0 {
+                Some(self.peak_decode_us)
+            } else {
+                None
+            },
 
-            avg_queue_wait_us:  self.total_queue_wait_us.checked_div(self.queue_wait_samples),
+            avg_queue_wait_us: self
+                .total_queue_wait_us
+                .checked_div(self.queue_wait_samples),
             peak_queue_wait_us: if self.queue_wait_samples > 0 {
                 Some(self.peak_queue_wait_us)
-            } else { None },
+            } else {
+                None
+            },
 
-            avg_ipc_wait_us:  self.total_ipc_wait_us.checked_div(self.ipc_wait_samples),
+            avg_ipc_wait_us: self.total_ipc_wait_us.checked_div(self.ipc_wait_samples),
             peak_ipc_wait_us: if self.ipc_wait_samples > 0 {
                 Some(self.peak_ipc_wait_us)
-            } else { None },
+            } else {
+                None
+            },
 
-            avg_gpu_render_us:  self.total_gpu_render_us.checked_div(self.gpu_render_samples),
+            avg_gpu_render_us: self
+                .total_gpu_render_us
+                .checked_div(self.gpu_render_samples),
             peak_gpu_render_us: if self.gpu_render_samples > 0 {
                 Some(self.peak_gpu_render_us)
-            } else { None },
+            } else {
+                None
+            },
 
             frames_by_source: FramesBySource {
                 dxgi_nv12: self.dxgi_nv12_frames,
-                cpu_nv12:  self.cpu_nv12_frames,
-                cpu_rgba:  self.cpu_rgba_frames,
-                unknown:   self.unknown_frames,
+                cpu_nv12: self.cpu_nv12_frames,
+                cpu_rgba: self.cpu_rgba_frames,
+                unknown: self.unknown_frames,
             },
 
-            policy_background_pauses:     self.policy_background_pauses,
+            policy_background_pauses: self.policy_background_pauses,
             policy_interactive_throttles: self.policy_interactive_throttles,
         }
     }
@@ -286,7 +312,9 @@ pub struct SessionTelemetryCollector {
 impl SessionTelemetryCollector {
     /// Create a new collector. The session clock starts now.
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(SessionState::default())) }
+        Self {
+            inner: Arc::new(Mutex::new(SessionState::default())),
+        }
     }
 
     /// Record one completed frame.
@@ -301,8 +329,12 @@ impl SessionTelemetryCollector {
     /// Record a policy event — call when `PerformanceManager` updates policy.
     pub fn record_policy_event(&self, background_paused: bool, interactive_throttled: bool) {
         let mut s = self.inner.lock();
-        if background_paused        { s.policy_background_pauses    += 1; }
-        if interactive_throttled    { s.policy_interactive_throttles += 1; }
+        if background_paused {
+            s.policy_background_pauses += 1;
+        }
+        if interactive_throttled {
+            s.policy_interactive_throttles += 1;
+        }
     }
 
     /// Return a snapshot of all session statistics.
@@ -328,7 +360,9 @@ impl SessionTelemetryCollector {
 }
 
 impl Default for SessionTelemetryCollector {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,16 +376,22 @@ mod tests {
     use crate::wgpu_compositor::render_path::FrameSource;
     use std::time::Instant;
 
-    fn rgba_frame(decode_us: u64, queue_wait_us: Option<u64>, deadline_miss: bool, dropped: bool)
-        -> FrameTelemetry
-    {
+    fn rgba_frame(
+        decode_us: u64,
+        queue_wait_us: Option<u64>,
+        deadline_miss: bool,
+        dropped: bool,
+    ) -> FrameTelemetry {
         FrameTelemetry {
             decode_cpu_us: decode_us,
             queue_wait_us,
             deadline_miss,
             dropped,
             recorded_at: Some(Instant::now()),
-            source: FrameSource::CpuRgba { width: 1920, height: 1080 },
+            source: FrameSource::CpuRgba {
+                width: 1920,
+                height: 1080,
+            },
             ..Default::default()
         }
     }
@@ -371,13 +411,13 @@ mod tests {
     fn frame_counts_are_accurate() {
         let c = SessionTelemetryCollector::new();
         c.push(&rgba_frame(5000, Some(200), false, false));
-        c.push(&rgba_frame(4000, Some(300), true,  false));
+        c.push(&rgba_frame(4000, Some(300), true, false));
         c.push(&rgba_frame(6000, Some(100), false, true));
 
         let s = c.snapshot();
         assert_eq!(s.frames_produced, 3);
         assert_eq!(s.deadline_misses, 1, "one deadline_miss");
-        assert_eq!(s.frames_dropped, 1,  "one dropped");
+        assert_eq!(s.frames_dropped, 1, "one dropped");
     }
 
     #[test]
@@ -387,26 +427,26 @@ mod tests {
         c.push(&rgba_frame(8000, None, false, false));
 
         let s = c.snapshot();
-        assert_eq!(s.avg_decode_us,  Some(5000), "avg of 2000+8000 = 5000");
+        assert_eq!(s.avg_decode_us, Some(5000), "avg of 2000+8000 = 5000");
         assert_eq!(s.peak_decode_us, Some(8000), "peak is 8000");
     }
 
     #[test]
     fn queue_wait_only_counted_when_some() {
         let c = SessionTelemetryCollector::new();
-        c.push(&rgba_frame(1000, None,         false, false)); // no queue_wait
-        c.push(&rgba_frame(1000, Some(400),    false, false));
-        c.push(&rgba_frame(1000, Some(600),    false, false));
+        c.push(&rgba_frame(1000, None, false, false)); // no queue_wait
+        c.push(&rgba_frame(1000, Some(400), false, false));
+        c.push(&rgba_frame(1000, Some(600), false, false));
 
         let s = c.snapshot();
-        assert_eq!(s.avg_queue_wait_us,  Some(500), "avg of 400+600 / 2");
+        assert_eq!(s.avg_queue_wait_us, Some(500), "avg of 400+600 / 2");
         assert_eq!(s.peak_queue_wait_us, Some(600));
     }
 
     #[test]
     fn drop_rate_and_miss_rate_percentages() {
         let c = SessionTelemetryCollector::new();
-        c.push(&rgba_frame(1000, None, true,  false));
+        c.push(&rgba_frame(1000, None, true, false));
         c.push(&rgba_frame(1000, None, false, true));
         c.push(&rgba_frame(1000, None, false, false));
         c.push(&rgba_frame(1000, None, false, false));
@@ -422,23 +462,32 @@ mod tests {
     fn source_breakdown_counts_correctly() {
         let c = SessionTelemetryCollector::new();
         c.push(&FrameTelemetry {
-            source: FrameSource::DxgiNv12 { width: 1920, height: 1080 },
+            source: FrameSource::DxgiNv12 {
+                width: 1920,
+                height: 1080,
+            },
             ..Default::default()
         });
         c.push(&FrameTelemetry {
-            source: FrameSource::CpuNv12 { width: 1920, height: 1080 },
+            source: FrameSource::CpuNv12 {
+                width: 1920,
+                height: 1080,
+            },
             ..Default::default()
         });
         c.push(&FrameTelemetry {
-            source: FrameSource::CpuRgba { width: 1920, height: 1080 },
+            source: FrameSource::CpuRgba {
+                width: 1920,
+                height: 1080,
+            },
             ..Default::default()
         });
 
         let s = c.snapshot();
         assert_eq!(s.frames_by_source.dxgi_nv12, 1);
-        assert_eq!(s.frames_by_source.cpu_nv12,  1);
-        assert_eq!(s.frames_by_source.cpu_rgba,  1);
-        assert_eq!(s.frames_by_source.unknown,   0);
+        assert_eq!(s.frames_by_source.cpu_nv12, 1);
+        assert_eq!(s.frames_by_source.cpu_rgba, 1);
+        assert_eq!(s.frames_by_source.unknown, 0);
     }
 
     #[test]
@@ -457,12 +506,12 @@ mod tests {
     #[test]
     fn policy_events_accumulate() {
         let c = SessionTelemetryCollector::new();
-        c.record_policy_event(true,  false);
-        c.record_policy_event(true,  false);
+        c.record_policy_event(true, false);
+        c.record_policy_event(true, false);
         c.record_policy_event(false, true);
 
         let s = c.snapshot();
-        assert_eq!(s.policy_background_pauses,     2);
+        assert_eq!(s.policy_background_pauses, 2);
         assert_eq!(s.policy_interactive_throttles, 1);
     }
 

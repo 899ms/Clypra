@@ -72,7 +72,6 @@ impl DecodeCapabilityPolicy {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PlaybackClockStatus {
@@ -1636,7 +1635,10 @@ impl FrameRequest {
             NativeCoreError::InvalidContract(format!("Unable to serialize FrameRequest: {error}"))
         })?;
         let digest = Sha256::digest(bytes);
-        Ok(format!("native-decode-v{}-{:x}", self.contract_version, digest))
+        Ok(format!(
+            "native-decode-v{}-{:x}",
+            self.contract_version, digest
+        ))
     }
 
     /// Cache key for the final composited frame packet (NativeFrameService).
@@ -1817,7 +1819,10 @@ mod tests {
         second.project.video_layers[0].z_index = 4;
         second.project.video_layers[0].color_grade = Some(serde_json::from_str("{}").unwrap());
 
-        assert_eq!(first.decode_cache_key().unwrap(), second.decode_cache_key().unwrap());
+        assert_eq!(
+            first.decode_cache_key().unwrap(),
+            second.decode_cache_key().unwrap()
+        );
     }
 
     #[test]
@@ -1829,7 +1834,10 @@ mod tests {
         cutout_layer.z_index = 2;
         second.project.video_layers.push(cutout_layer);
 
-        assert_eq!(first.decode_cache_key().unwrap(), second.decode_cache_key().unwrap());
+        assert_eq!(
+            first.decode_cache_key().unwrap(),
+            second.decode_cache_key().unwrap()
+        );
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub struct FrameDeadline {
     /// After this point the frame is useless (missed deadline).
     pub present_by: Instant,
     /// Priority class — used as a tiebreaker when two deadlines are equal.
-    pub priority:   FramePriority,
+    pub priority: FramePriority,
 }
 
 impl FrameDeadline {
@@ -94,9 +94,9 @@ impl Ord for FrameDeadline {
         match other.present_by.cmp(&self.present_by) {
             // self is earlier (more urgent) → Greater
             Ordering::Greater => Ordering::Greater,
-            Ordering::Less    => Ordering::Less,
+            Ordering::Less => Ordering::Less,
             // Equal deadlines: higher FramePriority wins
-            Ordering::Equal   => self.priority.cmp(&other.priority),
+            Ordering::Equal => self.priority.cmp(&other.priority),
         }
     }
 }
@@ -115,21 +115,33 @@ mod tests {
     fn earlier_deadline_is_more_urgent() {
         let sooner = FrameDeadline {
             present_by: Instant::now() + Duration::from_millis(8),
-            priority:   FramePriority::Realtime,
+            priority: FramePriority::Realtime,
         };
         let later = FrameDeadline {
             present_by: Instant::now() + Duration::from_millis(24),
-            priority:   FramePriority::Realtime,
+            priority: FramePriority::Realtime,
         };
-        assert!(sooner > later, "Earlier deadline must be 'greater' (more urgent) in Ord");
+        assert!(
+            sooner > later,
+            "Earlier deadline must be 'greater' (more urgent) in Ord"
+        );
     }
 
     #[test]
     fn equal_deadline_higher_priority_wins() {
         let now = Instant::now() + Duration::from_millis(16);
-        let rt = FrameDeadline { present_by: now, priority: FramePriority::Realtime };
-        let bg = FrameDeadline { present_by: now, priority: FramePriority::Background };
-        assert!(rt > bg, "Same deadline: higher priority class is more urgent");
+        let rt = FrameDeadline {
+            present_by: now,
+            priority: FramePriority::Realtime,
+        };
+        let bg = FrameDeadline {
+            present_by: now,
+            priority: FramePriority::Background,
+        };
+        assert!(
+            rt > bg,
+            "Same deadline: higher priority class is more urgent"
+        );
     }
 
     #[test]
@@ -150,7 +162,10 @@ mod tests {
         // Most urgent (10ms) should pop first.
         let first = heap.pop().unwrap();
         let second = heap.pop().unwrap();
-        assert!(first.present_by < second.present_by, "Heap must pop earliest deadline first");
+        assert!(
+            first.present_by < second.present_by,
+            "Heap must pop earliest deadline first"
+        );
     }
 
     #[test]
@@ -158,8 +173,11 @@ mod tests {
         let d = FrameDeadline::for_fps(60.0, FramePriority::Realtime);
         assert!(!d.is_expired(), "60fps deadline must be in the future");
         let remaining = d.time_remaining().expect("must have remaining time");
-        assert!(remaining <= Duration::from_millis(17), "16.67ms frame duration");
-        assert!(remaining >  Duration::from_millis(0),  "must be positive");
+        assert!(
+            remaining <= Duration::from_millis(17),
+            "16.67ms frame duration"
+        );
+        assert!(remaining > Duration::from_millis(0), "must be positive");
     }
 
     #[test]
@@ -167,14 +185,17 @@ mod tests {
         let d = FrameDeadline::immediate(FramePriority::Realtime);
         // Allow 1 ms of slack for the test itself to run.
         let remaining = d.time_remaining().unwrap_or(Duration::ZERO);
-        assert!(remaining < Duration::from_millis(1), "immediate deadline must be now or past");
+        assert!(
+            remaining < Duration::from_millis(1),
+            "immediate deadline must be now or past"
+        );
     }
 
     #[test]
     fn time_remaining_returns_none_after_expiry() {
         let past = FrameDeadline {
             present_by: Instant::now() - Duration::from_millis(1),
-            priority:   FramePriority::Background,
+            priority: FramePriority::Background,
         };
         assert!(past.is_expired());
         assert!(past.time_remaining().is_none());

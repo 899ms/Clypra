@@ -9,24 +9,26 @@ use tauri::{Emitter, Manager};
 
 pub mod ai;
 pub mod audio;
-pub mod commands;
 pub mod clymatte;
+pub mod commands;
 pub mod diagnostics;
+pub mod golden_harness;
 pub mod models;
 pub mod native_audio;
 pub mod native_core;
 pub mod preview_golden;
-pub mod golden_harness;
 pub mod sync_metrics;
 pub mod thumbnail_engine;
 pub mod transfer;
 pub mod wgpu_compositor;
 
 use commands::*;
-use diagnostics::crash_handler::{get_unreported_crashes, mark_crash_reported, purge_crash_reports};
+use diagnostics::crash_handler::{
+    get_unreported_crashes, mark_crash_reported, purge_crash_reports,
+};
 use diagnostics::{
-    open_perf_log_session, append_perf_log_entries, close_perf_log_session,
-    upload_perf_log_session, upload_pending_perf_logs, list_perf_log_files, purge_perf_logs,
+    append_perf_log_entries, close_perf_log_session, list_perf_log_files, open_perf_log_session,
+    purge_perf_logs, upload_pending_perf_logs, upload_perf_log_session,
 };
 use thumbnail_engine::init_thumbnail_engine;
 
@@ -198,9 +200,7 @@ pub fn run() {
                             });
                             let gpu_ctx = Arc::new(gpu_ctx);
                             let preview_session = Arc::new(tokio::sync::Mutex::new(
-                                crate::wgpu_compositor::NativePreviewSession::new(
-                                    gpu_ctx.clone(),
-                                ),
+                                crate::wgpu_compositor::NativePreviewSession::new(gpu_ctx.clone()),
                             ));
                             gpu_handle.manage(gpu_ctx);
                             gpu_handle.manage(preview_session);

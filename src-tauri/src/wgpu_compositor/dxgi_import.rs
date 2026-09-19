@@ -27,16 +27,14 @@
 
 #![cfg(target_os = "windows")]
 
+use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Texture2D, D3D11_TEXTURE2D_DESC,
-};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Texture2D, D3D11_TEXTURE2D_DESC};
 use windows::Win32::Graphics::Direct3D12::{
     ID3D12Device, ID3D12Resource, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 };
-use windows::Win32::Graphics::Dxgi::IDXGIResource1;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_NV12;
-use windows::core::{Interface, PCWSTR};
+use windows::Win32::Graphics::Dxgi::IDXGIResource1;
 
 /// Raw handles needed to import a D3D11VA frame into wgpu without a PCIe copy.
 pub struct D3d11SharedFrame {
@@ -97,8 +95,7 @@ pub unsafe fn extract_shared_handle(
     // Bind the cast to a named local first: MSVC's stricter NLL rules reject
     // the inline temporary `&(texture_raw as *mut _)` with E0716.
     let texture_ptr = texture_raw as *mut _;
-    let texture: &ID3D11Texture2D =
-        windows::core::from_raw_borrowed(&texture_ptr)?;
+    let texture: &ID3D11Texture2D = windows::core::from_raw_borrowed(&texture_ptr)?;
 
     // Get DXGI resource interface so we can create an NT shared handle.
     let resource: IDXGIResource1 = texture.cast().ok()?;
@@ -168,7 +165,10 @@ pub fn import_into_wgpu(
 ) -> Result<ImportedNv12Texture, DxgiFailureReason> {
     use wgpu::hal::api::Dx12;
 
-    if !device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+    if !device
+        .features()
+        .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+    {
         log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12");
         return Err(DxgiFailureReason::UnsupportedFormat);
     }

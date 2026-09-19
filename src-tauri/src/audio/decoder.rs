@@ -283,7 +283,7 @@ fn decode_with_ffmpeg_next(
 
         if let Some(target_len) = target_duration_samples {
             if all_samples.len() >= target_len {
-            all_samples.truncate(target_len);
+                all_samples.truncate(target_len);
                 reached_source_end = false;
                 break;
             }
@@ -330,12 +330,15 @@ fn decode_with_ffmpeg_next(
         final_config.duration_ticks = actual_duration_ticks;
     }
 
-    Ok((DecodedAudioClip {
-        config: final_config,
-        sample_rate: target_sample_rate,
-        channels: target_channels,
-        samples: all_samples.into(),
-    }, reached_source_end))
+    Ok((
+        DecodedAudioClip {
+            config: final_config,
+            sample_rate: target_sample_rate,
+            channels: target_channels,
+            samples: all_samples.into(),
+        },
+        reached_source_end,
+    ))
 }
 
 /// Safely extract ONLY the valid audio samples from a resampled FFmpeg frame.

@@ -639,8 +639,7 @@ pub fn scale_rgba_lanczos(
         if src_off + row_bytes > src.len() || dst_off + row_bytes > data.len() {
             return Err("Buffer overrun in downsample_rgba copy to src_frame".to_string());
         }
-        data[dst_off..dst_off + row_bytes]
-            .copy_from_slice(&src[src_off..src_off + row_bytes]);
+        data[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
     }
 
     let mut scaler = Context::get(

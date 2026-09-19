@@ -53,7 +53,13 @@ pub struct DecodedActorFrame {
 
 impl DecodedActorFrame {
     pub fn into_native_video_frame(self) -> (Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata) {
-        (self.y_plane, self.uv_plane, self.width, self.height, self.color)
+        (
+            self.y_plane,
+            self.uv_plane,
+            self.width,
+            self.height,
+            self.color,
+        )
     }
 }
 
@@ -156,7 +162,8 @@ impl StreamDecoderActorHandle {
 
     /// Invalidate in-flight and queued decodes from older generations.
     pub fn invalidate(&self, generation: u64) {
-        self.current_generation.fetch_max(generation, Ordering::AcqRel);
+        self.current_generation
+            .fetch_max(generation, Ordering::AcqRel);
         self.cancel_in_flight.store(true, Ordering::Release);
     }
 
@@ -246,7 +253,9 @@ impl StreamDecoderActor {
             if job.request.is_prefetch {
                 let current_gen = self.current_generation.load(Ordering::Acquire);
                 if job.request.generation < current_gen {
-                    let _ = job.response_tx.send(Err("Request superseded by newer generation".to_string()));
+                    let _ = job
+                        .response_tx
+                        .send(Err("Request superseded by newer generation".to_string()));
                     continue;
                 }
             }
@@ -283,7 +292,9 @@ impl StreamDecoderActor {
             // Perform single decode
             let target_time = job.request.time_secs;
             let options = job.request.options;
-            let res = self.decode_one(target_time, options, job.request.generation).await;
+            let res = self
+                .decode_one(target_time, options, job.request.generation)
+                .await;
 
             match res {
                 Ok(frame) => {
@@ -349,7 +360,9 @@ impl StreamDecoderActor {
             // Check if already in cache
             {
                 let cache = self.prime_cache.lock().await;
-                if cache.iter().any(|f| (f.time_secs - prime_time).abs() <= tolerance && f.quality == options.quality) {
+                if cache.iter().any(|f| {
+                    (f.time_secs - prime_time).abs() <= tolerance && f.quality == options.quality
+                }) {
                     continue;
                 }
             }
@@ -395,14 +408,10 @@ impl StreamDecoderActor {
             let decode_started = Instant::now();
             let stream_color = guard.metadata().color;
 
-            let frame_res = guard.decode_frame_raw_nv12_with_options(
-                target_time,
-                options,
-                is_cancelled,
-            );
+            let frame_res =
+                guard.decode_frame_raw_nv12_with_options(target_time, options, is_cancelled);
 
-            let decode_us =
-                decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
+            let decode_us = decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
 
             match frame_res {
                 Ok((y_plane, uv_plane, width, height, frame_color)) => {
@@ -410,7 +419,15 @@ impl StreamDecoderActor {
                         frame_color,
                         &stream_color,
                     );
-                    Ok((y_plane, uv_plane, width, height, color, decode_us, mutex_wait_us))
+                    Ok((
+                        y_plane,
+                        uv_plane,
+                        width,
+                        height,
+                        color,
+                        decode_us,
+                        mutex_wait_us,
+                    ))
                 }
                 Err(err) => Err(err),
             }
@@ -476,9 +493,7 @@ pub fn release_preview_decoder_actor_for_stream(path: &str, stream_id: &str) {
 pub fn release_all_preview_decoder_actors_for_path(path: &str) {
     let keys_to_remove: Vec<String> = PREVIEW_ACTOR_POOL
         .iter()
-        .filter(|kv| {
-            kv.key() == path || kv.key().starts_with(&format!("{path}::stream::"))
-        })
+        .filter(|kv| kv.key() == path || kv.key().starts_with(&format!("{path}::stream::")))
         .map(|kv| kv.key().clone())
         .collect();
     for key in keys_to_remove {
@@ -532,12 +547,18 @@ mod tests {
         };
 
         // Exact match
-        let res = handle.decode_frame(1.0, opts, false, 0).await.expect("should hit prime cache");
+        let res = handle
+            .decode_frame(1.0, opts, false, 0)
+            .await
+            .expect("should hit prime cache");
         assert!(res.from_prime_cache);
         assert_eq!(res.time_secs, 1.0);
 
         // Within tolerance match (frame duration is 0.0333s, diff 0.01s is within tolerance)
-        let res_near = handle.decode_frame(1.01, opts, false, 0).await.expect("should hit near match");
+        let res_near = handle
+            .decode_frame(1.01, opts, false, 0)
+            .await
+            .expect("should hit near match");
         assert!(res_near.from_prime_cache);
 
         // Quality mismatch should NOT hit cache
@@ -594,7 +615,10 @@ mod tests {
         };
 
         // Frame 0 decode
-        let f0 = actor.decode_frame(0.0, opts, false, 1).await.expect("decode frame 0");
+        let f0 = actor
+            .decode_frame(0.0, opts, false, 1)
+            .await
+            .expect("decode frame 0");
         assert!(!f0.from_prime_cache);
         assert_eq!(f0.width > 0, true);
         assert_eq!(f0.height > 0, true);
@@ -604,16 +628,21 @@ mod tests {
 
         // Next sequential frame should ideally hit the prime cache
         let frame_duration = actor.frame_duration_secs();
-        let f1 = actor.decode_frame(frame_duration, opts, false, 1).await.expect("decode frame 1");
+        let f1 = actor
+            .decode_frame(frame_duration, opts, false, 1)
+            .await
+            .expect("decode frame 1");
         assert_eq!(f1.width, f0.width);
         assert_eq!(f1.height, f0.height);
 
         // Invalidate and seek
         actor.invalidate(2);
-        let f_seek = actor.decode_frame(1.5, opts, false, 2).await.expect("seek decode");
+        let f_seek = actor
+            .decode_frame(1.5, opts, false, 2)
+            .await
+            .expect("seek decode");
         assert_eq!(f_seek.width, f0.width);
 
         release_preview_decoder_actor_for_stream(test_asset, "test-stream-1");
     }
 }
-

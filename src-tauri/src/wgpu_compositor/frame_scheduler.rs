@@ -95,11 +95,11 @@ impl fmt::Display for SequenceId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FrameKey {
     /// Which clip / sequence this frame belongs to.
-    pub sequence_id:     SequenceId,
+    pub sequence_id: SequenceId,
     /// Presentation timestamp in microseconds.
-    pub timestamp_us:    i64,
+    pub timestamp_us: i64,
     /// Quality tier. Different qualities are separate production jobs.
-    pub quality:         PreviewQuality,
+    pub quality: PreviewQuality,
     /// Incremented when timeline composition changes (effects, transitions).
     /// Invalidates the [`CompositionCache`] without discarding decoded frames.
     pub render_revision: u64,
@@ -110,9 +110,9 @@ impl FrameKey {
     /// Strips `render_revision` so a composition change doesn't force re-decode.
     pub fn decoded_key(&self) -> DecodedCacheKey {
         DecodedCacheKey {
-            sequence_id:  self.sequence_id,
+            sequence_id: self.sequence_id,
             timestamp_us: self.timestamp_us,
-            quality:      self.quality,
+            quality: self.quality,
         }
     }
 }
@@ -138,9 +138,9 @@ impl fmt::Display for FrameKey {
 /// the underlying video frame — the decoded result can be recomposed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DecodedCacheKey {
-    pub sequence_id:  SequenceId,
+    pub sequence_id: SequenceId,
     pub timestamp_us: i64,
-    pub quality:      PreviewQuality,
+    pub quality: PreviewQuality,
 }
 
 // ---------------------------------------------------------------------------
@@ -166,9 +166,9 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            decoded_cache_capacity:     8,
+            decoded_cache_capacity: 8,
             composition_cache_capacity: 4,
-            max_in_flight:              2,
+            max_in_flight: 2,
         }
     }
 }
@@ -188,8 +188,8 @@ pub enum SchedulerError {
 impl fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Cancelled          => write!(f, "frame request cancelled"),
-            Self::ProducerFailed(e)  => write!(f, "frame production failed: {e}"),
+            Self::Cancelled => write!(f, "frame request cancelled"),
+            Self::ProducerFailed(e) => write!(f, "frame production failed: {e}"),
         }
     }
 }
@@ -252,7 +252,9 @@ pub struct CancelledTicket;
 
 impl From<CancelledTicket> for FrameTicket {
     fn from(_: CancelledTicket) -> Self {
-        FrameTicket { inner: TicketInner::Cancelled }
+        FrameTicket {
+            inner: TicketInner::Cancelled,
+        }
     }
 }
 
@@ -272,9 +274,9 @@ struct InFlight {
 
 struct FrameSchedulerInner {
     /// Jobs currently running on the blocking thread pool.
-    in_flight:         HashMap<FrameKey, InFlight>,
+    in_flight: HashMap<FrameKey, InFlight>,
     /// Raw decoded frames — keyed without render_revision.
-    decoded_cache:     FrameResourceCache<DecodedCacheKey, Arc<FrameResource>>,
+    decoded_cache: FrameResourceCache<DecodedCacheKey, Arc<FrameResource>>,
     /// Fully composed frames — keyed with full FrameKey.
     composition_cache: FrameResourceCache<FrameKey, Arc<FrameResource>>,
     /// Monotonically increasing count of production invocations.
@@ -285,10 +287,10 @@ struct FrameSchedulerInner {
 impl FrameSchedulerInner {
     fn new(config: &SchedulerConfig) -> Self {
         Self {
-            in_flight:         HashMap::new(),
-            decoded_cache:     FrameResourceCache::new(config.decoded_cache_capacity),
+            in_flight: HashMap::new(),
+            decoded_cache: FrameResourceCache::new(config.decoded_cache_capacity),
             composition_cache: FrameResourceCache::new(config.composition_cache_capacity),
-            production_count:  0,
+            production_count: 0,
         }
     }
 }
@@ -312,7 +314,7 @@ impl FrameSchedulerInner {
 /// the same production state, caches, and in-flight map.
 #[derive(Clone)]
 pub struct FrameScheduler {
-    inner:    Arc<Mutex<FrameSchedulerInner>>,
+    inner: Arc<Mutex<FrameSchedulerInner>>,
     producer: Arc<dyn FrameProducer>,
 }
 
@@ -320,7 +322,7 @@ impl FrameScheduler {
     /// Create a new scheduler with the given producer and configuration.
     pub fn new(producer: Arc<dyn FrameProducer>, config: SchedulerConfig) -> Self {
         Self {
-            inner:    Arc::new(Mutex::new(FrameSchedulerInner::new(&config))),
+            inner: Arc::new(Mutex::new(FrameSchedulerInner::new(&config))),
             producer,
         }
     }
@@ -346,24 +348,33 @@ impl FrameScheduler {
         {
             let mut inner = self.inner.lock();
             if let Some(resource) = inner.composition_cache.get(&key) {
-                return FrameTicket { inner: TicketInner::CacheHit(resource) };
+                return FrameTicket {
+                    inner: TicketInner::CacheHit(resource),
+                };
             }
 
             // --- join existing in-flight job --------------------------------
             if let Some(in_flight) = inner.in_flight.get(&key) {
                 let rx = in_flight.tx.subscribe();
-                return FrameTicket { inner: TicketInner::InFlight(rx) };
+                return FrameTicket {
+                    inner: TicketInner::InFlight(rx),
+                };
             }
 
             // --- start new production job -----------------------------------
             let (tx, rx) = watch::channel(None);
             let tx = Arc::new(tx);
-            inner.in_flight.insert(key.clone(), InFlight { tx: Arc::clone(&tx) });
+            inner.in_flight.insert(
+                key.clone(),
+                InFlight {
+                    tx: Arc::clone(&tx),
+                },
+            );
 
             // Clone handles for the async task.
-            let inner_arc    = Arc::clone(&self.inner);
+            let inner_arc = Arc::clone(&self.inner);
             let producer_arc = Arc::clone(&self.producer);
-            let key_clone    = key.clone();
+            let key_clone = key.clone();
 
             tokio::spawn(async move {
                 // Run the blocking producer on the thread pool.
@@ -382,8 +393,12 @@ impl FrameScheduler {
 
                     if let Ok(ref resource) = result {
                         // Populate both cache layers.
-                        guard.composition_cache.insert(key_clone.clone(), Arc::clone(resource));
-                        guard.decoded_cache.insert(key_clone.decoded_key(), Arc::clone(resource));
+                        guard
+                            .composition_cache
+                            .insert(key_clone.clone(), Arc::clone(resource));
+                        guard
+                            .decoded_cache
+                            .insert(key_clone.decoded_key(), Arc::clone(resource));
                     }
                 }
 
@@ -391,7 +406,9 @@ impl FrameScheduler {
                 let _ = tx.send(Some(result));
             });
 
-            FrameTicket { inner: TicketInner::InFlight(rx) }
+            FrameTicket {
+                inner: TicketInner::InFlight(rx),
+            }
         }
     }
 
@@ -404,7 +421,10 @@ impl FrameScheduler {
     /// - If the ticket is a cache hit, returns immediately.
     /// - If the ticket is in-flight, suspends until production completes.
     /// - If the ticket was cancelled, returns `Err(SchedulerError::Cancelled)`.
-    pub async fn await_frame(&self, ticket: FrameTicket) -> Result<Arc<FrameResource>, SchedulerError> {
+    pub async fn await_frame(
+        &self,
+        ticket: FrameTicket,
+    ) -> Result<Arc<FrameResource>, SchedulerError> {
         match ticket.inner {
             TicketInner::CacheHit(r) => Ok(r),
 
@@ -414,10 +434,9 @@ impl FrameScheduler {
                 // wait_for suspends until the predicate returns true.
                 // The Ref from wait_for is dropped before we clone the value.
                 let result_clone = {
-                    let borrow = rx
-                        .wait_for(|v| v.is_some())
-                        .await
-                        .map_err(|_| SchedulerError::ProducerFailed("watch channel closed".to_string()))?;
+                    let borrow = rx.wait_for(|v| v.is_some()).await.map_err(|_| {
+                        SchedulerError::ProducerFailed("watch channel closed".to_string())
+                    })?;
                     borrow.as_ref().unwrap().clone()
                 };
                 result_clone.map_err(SchedulerError::ProducerFailed)
@@ -438,7 +457,9 @@ impl FrameScheduler {
     /// Phase 5 will add queue-level cancellation for Background priority jobs
     /// that haven't yet started.
     pub fn cancel(&self, _ticket: FrameTicket) -> FrameTicket {
-        FrameTicket { inner: TicketInner::Cancelled }
+        FrameTicket {
+            inner: TicketInner::Cancelled,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -495,9 +516,6 @@ impl FrameScheduler {
     }
 }
 
-
-
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -520,9 +538,19 @@ mod tests {
     #[test]
     fn frame_key_eq_and_hash() {
         use std::collections::HashSet;
-        let k1 = FrameKey { sequence_id: SequenceId(1), timestamp_us: 1000, quality: PreviewQuality::Full, render_revision: 0 };
+        let k1 = FrameKey {
+            sequence_id: SequenceId(1),
+            timestamp_us: 1000,
+            quality: PreviewQuality::Full,
+            render_revision: 0,
+        };
         let k2 = k1.clone();
-        let k3 = FrameKey { sequence_id: SequenceId(1), timestamp_us: 1000, quality: PreviewQuality::Full, render_revision: 1 };
+        let k3 = FrameKey {
+            sequence_id: SequenceId(1),
+            timestamp_us: 1000,
+            quality: PreviewQuality::Full,
+            render_revision: 1,
+        };
         assert_eq!(k1, k2);
         assert_ne!(k1, k3);
         let mut set = HashSet::new();
@@ -533,8 +561,18 @@ mod tests {
 
     #[test]
     fn decoded_key_strips_render_revision() {
-        let k0 = FrameKey { sequence_id: SequenceId(1), timestamp_us: 500, quality: PreviewQuality::Half, render_revision: 0 };
-        let k1 = FrameKey { sequence_id: SequenceId(1), timestamp_us: 500, quality: PreviewQuality::Half, render_revision: 1 };
+        let k0 = FrameKey {
+            sequence_id: SequenceId(1),
+            timestamp_us: 500,
+            quality: PreviewQuality::Half,
+            render_revision: 0,
+        };
+        let k1 = FrameKey {
+            sequence_id: SequenceId(1),
+            timestamp_us: 500,
+            quality: PreviewQuality::Half,
+            render_revision: 1,
+        };
         // Different FrameKeys (different render_revision)…
         assert_ne!(k0, k1);
         // …but same DecodedCacheKey (render_revision absent).
@@ -554,13 +592,17 @@ mod tests {
     #[test]
     fn scheduler_error_display() {
         assert!(!SchedulerError::Cancelled.to_string().is_empty());
-        assert!(!SchedulerError::ProducerFailed("boom".to_string()).to_string().is_empty());
+        assert!(!SchedulerError::ProducerFailed("boom".to_string())
+            .to_string()
+            .is_empty());
     }
 
     #[test]
     fn cancelled_ticket_does_not_require_production() {
         // Structural: CancelledTicket → FrameTicket roundtrip.
-        let ticket = FrameTicket { inner: TicketInner::Cancelled };
+        let ticket = FrameTicket {
+            inner: TicketInner::Cancelled,
+        };
         // Matches Cancelled variant — no GPU or async needed.
         assert!(matches!(ticket.inner, TicketInner::Cancelled));
     }
@@ -579,7 +621,7 @@ mod tests {
 
     /// Simple mock that counts invocations and returns a pre-provided resource.
     struct CountingProducer {
-        count:    Arc<AtomicU64>,
+        count: Arc<AtomicU64>,
         /// The resource to return. Wrapped in Option so we can detect
         /// when produce() is called unexpectedly.
         resource: Arc<FrameResource>,

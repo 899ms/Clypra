@@ -30,9 +30,18 @@ pub const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 pub const TARGET_TRIPLE: &str = "aarch64-unknown-linux-gnu";
 
 #[cfg(not(any(
-    all(target_os = "windows", any(target_arch = "x86_64", target_arch = "aarch64")),
-    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
-    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(
+        target_os = "windows",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
 )))]
 pub const TARGET_TRIPLE: &str = "unknown";
 
@@ -49,7 +58,10 @@ pub fn augmented_path() -> String {
         }
         if let Ok(user_profile) = std::env::var("USERPROFILE") {
             extras.push(format!("{}\\scoop\\shims", user_profile));
-            extras.push(format!("{}\\scoop\\apps\\ffmpeg\\current\\bin", user_profile));
+            extras.push(format!(
+                "{}\\scoop\\apps\\ffmpeg\\current\\bin",
+                user_profile
+            ));
         }
         if let Ok(program_data) = std::env::var("ProgramData") {
             extras.push(format!("{}\\chocolatey\\bin", program_data));
@@ -69,7 +81,8 @@ pub fn augmented_path() -> String {
 
     #[cfg(target_os = "macos")]
     {
-        let extra = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        let extra =
+            "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
         if current.is_empty() {
             extra.to_string()
         } else {
@@ -119,7 +132,10 @@ pub fn is_real_executable(path: &Path) -> bool {
 
             // 1. Must have DOS header (at least 64 bytes) starting with "MZ" (0x4D, 0x5A)
             let mut dos_header = [0u8; 64];
-            if f.read_exact(&mut dos_header).is_err() || dos_header[0] != 0x4D || dos_header[1] != 0x5A {
+            if f.read_exact(&mut dos_header).is_err()
+                || dos_header[0] != 0x4D
+                || dos_header[1] != 0x5A
+            {
                 return false;
             }
 
@@ -193,16 +209,23 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 let p = exe_dir.join("ffmpeg-static").join("bin").join(&exe_name);
-                if is_real_executable(&p) { return Some(p); }
+                if is_real_executable(&p) {
+                    return Some(p);
+                }
             }
         }
         if let Ok(cwd) = std::env::current_dir() {
             let candidates = [
                 cwd.join("ffmpeg-static").join("bin").join(&exe_name),
-                cwd.join("src-tauri").join("ffmpeg-static").join("bin").join(&exe_name),
+                cwd.join("src-tauri")
+                    .join("ffmpeg-static")
+                    .join("bin")
+                    .join(&exe_name),
             ];
             for p in &candidates {
-                if is_real_executable(p) { return Some(p.clone()); }
+                if is_real_executable(p) {
+                    return Some(p.clone());
+                }
             }
         }
     }
@@ -247,7 +270,11 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
 
     // Tier 3: Search within the augmented PATH
     let path_var = augmented_path();
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+    let sep = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
     for dir_str in path_var.split(sep) {
         let dir = Path::new(dir_str.trim());
         if !dir.is_dir() {
@@ -256,7 +283,11 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
         for name in &names {
             let candidate = dir.join(name);
             if is_real_executable(&candidate) {
-                log::debug!("[BinaryResolver] Resolved '{}' via PATH -> {:?}", base_name, candidate);
+                log::debug!(
+                    "[BinaryResolver] Resolved '{}' via PATH -> {:?}",
+                    base_name,
+                    candidate
+                );
                 return Some(candidate);
             }
         }
@@ -277,7 +308,11 @@ fn candidate_binary_names(base_name: &str) -> Vec<String> {
         } else {
             format!("{}.exe", base_name)
         };
-        let triple_name = format!("{}-{}.exe", base_name.trim_end_matches(".exe"), TARGET_TRIPLE);
+        let triple_name = format!(
+            "{}-{}.exe",
+            base_name.trim_end_matches(".exe"),
+            TARGET_TRIPLE
+        );
 
         names.push(exe_name.clone());
         names.push(triple_name);
@@ -286,7 +321,10 @@ fn candidate_binary_names(base_name: &str) -> Vec<String> {
         {
             // Windows 11 ARM64 natively emulates x86_64 binaries. If no native ARM64
             // sidecar was installed, allow falling back to the bundled x86_64 sidecar.
-            names.push(format!("{}-x86_64-pc-windows-msvc.exe", base_name.trim_end_matches(".exe")));
+            names.push(format!(
+                "{}-x86_64-pc-windows-msvc.exe",
+                base_name.trim_end_matches(".exe")
+            ));
         }
 
         names.push(base_name.to_string());
@@ -356,7 +394,8 @@ mod tests {
     #[test]
     fn test_resolve_binary_discovers_sidecar_independently_of_system_path() {
         // Create a temporary sandbox directory mimicking a Tauri bundle resources structure
-        let temp_dir = std::env::temp_dir().join(format!("clypra-resolver-test-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("clypra-resolver-test-{}", uuid::Uuid::new_v4()));
         let bin_dir = temp_dir.join("bin");
         std::fs::create_dir_all(&bin_dir).expect("Failed to create mock bin dir");
 
@@ -367,7 +406,9 @@ mod tests {
         // Verify candidate_binary_names includes the target triple variant
         let candidates = candidate_binary_names("mocktool");
         assert!(
-            candidates.iter().any(|c| c == &target_name || c.starts_with("mocktool")),
+            candidates
+                .iter()
+                .any(|c| c == &target_name || c.starts_with("mocktool")),
             "Expected candidate list {:?} to include {:?}",
             candidates,
             target_name
@@ -382,7 +423,11 @@ mod tests {
         // When running in workspace, resolver locates sidecar in src-tauri/bin/ or bin/
         let resolved = resolve_binary_path("ffmpeg");
         if let Some(path) = resolved {
-            assert!(path.is_file(), "Resolved path must be an existing file: {:?}", path);
+            assert!(
+                path.is_file(),
+                "Resolved path must be an existing file: {:?}",
+                path
+            );
         }
     }
 
@@ -394,11 +439,13 @@ mod tests {
 
     #[test]
     fn test_is_real_executable_mock_pe_vs_batch_stub() {
-        let temp_dir = std::env::temp_dir().join(format!("clypra-exe-test-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("clypra-exe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
 
         let batch_stub = temp_dir.join("ffmpeg-stub.exe");
-        std::fs::write(&batch_stub, b"@echo off\r\nwhere ffmpeg\r\n").expect("Failed to write stub");
+        std::fs::write(&batch_stub, b"@echo off\r\nwhere ffmpeg\r\n")
+            .expect("Failed to write stub");
 
         let mut pe_bytes = vec![0u8; 256];
         pe_bytes[0] = b'M';
@@ -416,8 +463,14 @@ mod tests {
 
         #[cfg(target_os = "windows")]
         {
-            assert!(!is_real_executable(&batch_stub), "Batch stub named .exe must be rejected");
-            assert!(is_real_executable(&pe_binary), "PE binary starting with MZ and PE header must be accepted");
+            assert!(
+                !is_real_executable(&batch_stub),
+                "Batch stub named .exe must be rejected"
+            );
+            assert!(
+                is_real_executable(&pe_binary),
+                "PE binary starting with MZ and PE header must be accepted"
+            );
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -431,7 +484,8 @@ mod tests {
 
     #[test]
     fn test_is_real_executable_mock_arm64_pe() {
-        let temp_dir = std::env::temp_dir().join(format!("clypra-exe-test-arm64-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("clypra-exe-test-arm64-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
 
         let mut pe_bytes = vec![0u8; 256];
@@ -448,12 +502,18 @@ mod tests {
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         {
-            assert!(!is_real_executable(&arm64_binary), "ARM64 PE binary on x86_64 host must be rejected");
+            assert!(
+                !is_real_executable(&arm64_binary),
+                "ARM64 PE binary on x86_64 host must be rejected"
+            );
         }
 
         #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
         {
-            assert!(is_real_executable(&arm64_binary), "ARM64 PE binary on ARM64 host must be accepted");
+            assert!(
+                is_real_executable(&arm64_binary),
+                "ARM64 PE binary on ARM64 host must be accepted"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);

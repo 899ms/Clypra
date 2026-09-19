@@ -14,7 +14,9 @@ fn urlencoding_decode(s: &str) -> String {
             let h1 = chars.next();
             let h2 = chars.next();
             if let (Some(c1), Some(c2)) = (h1, h2) {
-                if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&[c1, c2]).unwrap_or(""), 16) {
+                if let Ok(val) =
+                    u8::from_str_radix(std::str::from_utf8(&[c1, c2]).unwrap_or(""), 16)
+                {
                     bytes.push(val);
                     continue;
                 }
@@ -444,7 +446,10 @@ pub async fn extract_audio_track(path: String) -> Result<String, String> {
 /// If the video is in an unsupported container (.mkv, .avi, .flv, .wmv, etc.) or fails playback,
 /// this generates a fast stream-copied or lightweight proxy MP4 in the app cache directory.
 #[tauri::command]
-pub async fn get_or_create_preview_video(app: tauri::AppHandle, path: String) -> Result<String, String> {
+pub async fn get_or_create_preview_video(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<String, String> {
     use tauri::Manager;
     let path = normalize_file_path(&path);
     let path_obj = std::path::Path::new(&path);
@@ -477,7 +482,8 @@ pub async fn get_or_create_preview_video(app: tauri::AppHandle, path: String) ->
         .await
         .map_err(|e| format!("Failed to create preview cache dir: {e}"))?;
 
-    let meta = std::fs::metadata(&path).map_err(|e| format!("Failed to read metadata for {}: {e}", path))?;
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| format!("Failed to read metadata for {}: {e}", path))?;
     let modified = meta
         .modified()
         .ok()
@@ -523,7 +529,10 @@ pub async fn get_or_create_preview_video(app: tauri::AppHandle, path: String) ->
         if output.status.success() && output_path.exists() {
             if let Ok(m) = std::fs::metadata(&output_path) {
                 if m.len() > 1024 {
-                    eprintln!("🦀 [get_or_create_preview_video] Stage 1 (stream copy) succeeded for {}", path);
+                    eprintln!(
+                        "🦀 [get_or_create_preview_video] Stage 1 (stream copy) succeeded for {}",
+                        path
+                    );
                     return Ok(out_str);
                 }
             }
@@ -589,7 +598,10 @@ pub async fn get_or_create_preview_video(app: tauri::AppHandle, path: String) ->
 
     match stage3_status {
         Ok(output) if output.status.success() => {
-            eprintln!("🦀 [get_or_create_preview_video] Stage 3 (ultrafast proxy) succeeded for {}", path);
+            eprintln!(
+                "🦀 [get_or_create_preview_video] Stage 3 (ultrafast proxy) succeeded for {}",
+                path
+            );
             Ok(out_str)
         }
         Ok(output) => {

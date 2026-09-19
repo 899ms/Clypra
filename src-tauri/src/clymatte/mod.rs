@@ -3,13 +3,13 @@
 //! Provides zero-contention, lock-free sequential prefetching and $O(\log N)$ seeks
 //! for pre-rendered neural subject masks (replacing thousands of individual frame files).
 
+use memmap2::Mmap;
+use parking_lot::RwLock;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use memmap2::Mmap;
-use parking_lot::RwLock;
 
 pub const CLYMATTE_MAGIC: &[u8; 8] = b"CLYMATTE";
 pub const CLYMATTE_VERSION: u16 = 1;
@@ -225,8 +225,9 @@ impl ClymatteReader {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
-        let header = ClymatteHeader::from_bytes(&mmap)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid .clymatte header"))?;
+        let header = ClymatteHeader::from_bytes(&mmap).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid .clymatte header")
+        })?;
 
         let frame_count = header.frame_count as usize;
         let index_table_size = frame_count * INDEX_ENTRY_SIZE;
@@ -262,7 +263,10 @@ impl ClymatteReader {
             return None;
         }
 
-        let idx = match self.index.binary_search_by_key(&timestamp_us, |e| e.timestamp_us) {
+        let idx = match self
+            .index
+            .binary_search_by_key(&timestamp_us, |e| e.timestamp_us)
+        {
             Ok(exact) => exact,
             Err(pos) => {
                 if pos == 0 {
@@ -406,24 +410,22 @@ mod tests {
 
     #[test]
     fn test_clymatte_roundtrip() {
-        let temp_dir = std::env::temp_dir().join(format!("clymatte_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "clymatte_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let path = temp_dir.join("test.clymatte");
 
         let model_sig = [0xAA; 32];
         let clip_hash = [0xBB; 32];
 
-        let mut writer = ClymatteWriter::create(
-            &path,
-            128,
-            128,
-            30,
-            1,
-            model_sig,
-            clip_hash,
-            CODEC_LZ4,
-        )
-        .unwrap();
+        let mut writer =
+            ClymatteWriter::create(&path, 128, 128, 30, 1, model_sig, clip_hash, CODEC_LZ4)
+                .unwrap();
 
         let dummy_frame1 = vec![255u8; 128 * 128];
         let dummy_frame2 = vec![128u8; 128 * 128];

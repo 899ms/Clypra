@@ -126,8 +126,7 @@ pub async fn open_perf_log_session(
         .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
 
     let log_dir = get_perf_log_dir(&app_data_dir);
-    fs::create_dir_all(&log_dir)
-        .map_err(|e| format!("Failed to create perf_logs dir: {e}"))?;
+    fs::create_dir_all(&log_dir).map_err(|e| format!("Failed to create perf_logs dir: {e}"))?;
 
     let epoch = now_epoch_ms();
     // Use a short UUID suffix to avoid collisions when the app is restarted
@@ -135,7 +134,11 @@ pub async fn open_perf_log_session(
     let file_name = format!(
         "session-{}-{}.ndjson",
         epoch,
-        Uuid::new_v4().to_string().split('-').next().unwrap_or("xxxx")
+        Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("xxxx")
     );
     let file_path = log_dir.join(&file_name);
 
@@ -238,8 +241,7 @@ pub async fn upload_perf_log_session(
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            serde_json::from_str::<serde_json::Value>(line)
-                .unwrap_or(serde_json::Value::Null)
+            serde_json::from_str::<serde_json::Value>(line).unwrap_or(serde_json::Value::Null)
         })
         .filter(|v| !v.is_null())
         .collect();
@@ -249,7 +251,10 @@ pub async fn upload_perf_log_session(
         return Ok(());
     }
 
-    let url = format!("{}/performance/telemetry/ingest/session", api_base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/performance/telemetry/ingest/session",
+        api_base_url.trim_end_matches('/')
+    );
 
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -325,7 +330,10 @@ pub async fn upload_pending_perf_logs(
 
     let mut uploaded_count = 0usize;
     for file_path in pending {
-        if upload_perf_log_session(file_path, api_base_url.clone(), api_key.clone()).await.is_ok() {
+        if upload_perf_log_session(file_path, api_base_url.clone(), api_key.clone())
+            .await
+            .is_ok()
+        {
             uploaded_count += 1;
         }
     }
@@ -388,10 +396,7 @@ pub fn list_perf_log_files(app: tauri::AppHandle) -> Result<Vec<PerfLogFileInfo>
 /// Deletes perf-log files older than `max_age_days` (default 7).
 /// Skips any session that is currently open.
 #[tauri::command]
-pub fn purge_perf_logs(
-    app: tauri::AppHandle,
-    max_age_days: Option<u32>,
-) -> Result<usize, String> {
+pub fn purge_perf_logs(app: tauri::AppHandle, max_age_days: Option<u32>) -> Result<usize, String> {
     let max_age = max_age_days.unwrap_or(DEFAULT_MAX_AGE_DAYS);
     let app_data_dir = app
         .path()

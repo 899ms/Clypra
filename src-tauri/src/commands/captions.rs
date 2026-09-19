@@ -42,29 +42,29 @@ static SENTENCE_START_RE: OnceLock<Regex> = OnceLock::new();
 fn fix_english_capitalisation(text: &str) -> String {
     // 1. Standalone `i` (word boundary on both sides, case-insensitive match
     //    only when already lowercase so we don't re-process already-correct text)
-    let re_i = I_STANDALONE_RE.get_or_init(|| {
-        Regex::new(r"\bi\b").expect("invalid i regex")
-    });
+    let re_i = I_STANDALONE_RE.get_or_init(|| Regex::new(r"\bi\b").expect("invalid i regex"));
     let s = re_i.replace_all(text, "I").into_owned();
 
     // 2. `i` contractions: i'm i've i'll i'd i'ma i'mma → I'm I've I'll I'd…
     let re_ic = I_CONTRACTION_RE.get_or_init(|| {
         Regex::new(r"\bi'(m|ve|ll|d|ma|mma)\b").expect("invalid contraction regex")
     });
-    let s = re_ic.replace_all(&s, |caps: &regex::Captures| {
-        format!("I'{}", &caps[1])
-    }).into_owned();
+    let s = re_ic
+        .replace_all(&s, |caps: &regex::Captures| format!("I'{}", &caps[1]))
+        .into_owned();
 
     // 3. Capitalise first letter of the string and first letter after . ! ?
     let re_sent = SENTENCE_START_RE.get_or_init(|| {
         Regex::new(r"(?:^|[.!?]\s+)([a-z])").expect("invalid sentence-start regex")
     });
-    let s = re_sent.replace_all(&s, |caps: &regex::Captures| {
-        let full = caps.get(0).unwrap().as_str();
-        let letter = caps.get(1).unwrap();
-        let upper = letter.as_str().to_uppercase();
-        full.replacen(letter.as_str(), &upper, 1)
-    }).into_owned();
+    let s = re_sent
+        .replace_all(&s, |caps: &regex::Captures| {
+            let full = caps.get(0).unwrap().as_str();
+            let letter = caps.get(1).unwrap();
+            let upper = letter.as_str().to_uppercase();
+            full.replacen(letter.as_str(), &upper, 1)
+        })
+        .into_owned();
 
     s
 }
@@ -292,7 +292,6 @@ pub async fn generate_auto_captions(
                     continue;
                 }
 
-
                 let token_data = token.token_data();
                 let word_start_cs = token_data.t0;
                 let word_end_cs = token_data.t1;
@@ -304,7 +303,6 @@ pub async fn generate_auto_captions(
                     end_ticks: whisper_centiseconds_to_ticks(word_end_cs),
                 });
             }
-
 
             segments.push(SubtitleSegment {
                 id: i as usize,

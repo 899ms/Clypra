@@ -25,8 +25,8 @@ async fn test_live_whisper_on_device_transcription() {
         "is_valid_whisper_model_file must approve real downloaded model"
     );
 
-    let audio_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("temp/c9e67a7bf27636b001604b349b66942c.mp3");
+    let audio_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("temp/c9e67a7bf27636b001604b349b66942c.mp3");
     assert!(
         audio_path.exists(),
         "Sample audio must exist at {:?}",
@@ -74,9 +74,7 @@ async fn test_live_whisper_on_device_transcription() {
     )
     .expect("Failed to initialize WhisperContext with ggml-tiny.bin");
 
-    let mut state = ctx
-        .create_state()
-        .expect("Failed to create Whisper state");
+    let mut state = ctx.create_state().expect("Failed to create Whisper state");
 
     // 3. Configure inference
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -107,7 +105,8 @@ async fn test_live_whisper_on_device_transcription() {
         let text = seg.to_str_lossy().unwrap_or_default().trim().to_string();
         let start_cs = seg.start_timestamp();
         let end_cs = seg.end_timestamp();
-        let start_ticks = tauri_app_lib::commands::captions::whisper_centiseconds_to_ticks(start_cs);
+        let start_ticks =
+            tauri_app_lib::commands::captions::whisper_centiseconds_to_ticks(start_cs);
         let end_ticks = tauri_app_lib::commands::captions::whisper_centiseconds_to_ticks(end_cs);
 
         println!(

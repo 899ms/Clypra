@@ -1217,6 +1217,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("FFmpeg exited with status"));
-        assert!(err.contains("No such filter") || err.contains("Error") || err.contains("an_invalid_lavfi"));
+        assert!(
+            err.contains("No such filter")
+                || err.contains("Error")
+                || err.contains("an_invalid_lavfi")
+        );
     }
 }

@@ -22,9 +22,9 @@ impl VideoPixelFormat {
     /// Returns the wgpu texture format used for this pixel format's primary plane.
     pub fn wgpu_format(&self) -> wgpu::TextureFormat {
         match self {
-            Self::Nv12   => wgpu::TextureFormat::NV12,
-            Self::P010   => wgpu::TextureFormat::NV12, // P010 uses same wgpu type; plane format differs
-            Self::Rgba8  => wgpu::TextureFormat::Rgba8Unorm,
+            Self::Nv12 => wgpu::TextureFormat::NV12,
+            Self::P010 => wgpu::TextureFormat::NV12, // P010 uses same wgpu type; plane format differs
+            Self::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
             Self::Rgba16F => wgpu::TextureFormat::Rgba16Float,
         }
     }
@@ -49,8 +49,8 @@ pub enum ColorPrimaries {
 pub enum TransferFunction {
     #[default]
     Bt709,
-    Pq,          // PQ / ST.2084 — HDR10
-    Hlg,         // Hybrid Log-Gamma
+    Pq,  // PQ / ST.2084 — HDR10
+    Hlg, // Hybrid Log-Gamma
     Linear,
     Srgb,
     Unspecified,
@@ -63,7 +63,7 @@ pub enum ColorMatrix {
     Bt709,
     Bt601,
     Bt2020NonConstant,
-    Identity,    // for RGB sources
+    Identity, // for RGB sources
     Unspecified,
 }
 
@@ -77,7 +77,6 @@ pub enum ColorRange {
     Full,
 }
 
-
 /// Complete color metadata for a video frame.
 ///
 /// Carried through the full pipeline:
@@ -88,19 +87,19 @@ pub enum ColorRange {
 /// `Default` = BT.709 limited (safe SDR fallback).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameColorInfo {
-    pub primaries:         ColorPrimaries,
+    pub primaries: ColorPrimaries,
     pub transfer_function: TransferFunction,
-    pub matrix:            ColorMatrix,
-    pub range:             ColorRange,
+    pub matrix: ColorMatrix,
+    pub range: ColorRange,
 }
 
 impl Default for FrameColorInfo {
     fn default() -> Self {
         Self {
-            primaries:         ColorPrimaries::Bt709,
+            primaries: ColorPrimaries::Bt709,
             transfer_function: TransferFunction::Bt709,
-            matrix:            ColorMatrix::Bt709,
-            range:             ColorRange::Limited,
+            matrix: ColorMatrix::Bt709,
+            range: ColorRange::Limited,
         }
     }
 }
@@ -109,16 +108,19 @@ impl FrameColorInfo {
     /// Construct HDR10 (BT.2020 / PQ / limited) color info.
     pub fn hdr10() -> Self {
         Self {
-            primaries:         ColorPrimaries::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
             transfer_function: TransferFunction::Pq,
-            matrix:            ColorMatrix::Bt2020NonConstant,
-            range:             ColorRange::Limited,
+            matrix: ColorMatrix::Bt2020NonConstant,
+            range: ColorRange::Limited,
         }
     }
 
     /// Returns true if this frame requires an HDR render path.
     pub fn is_hdr(&self) -> bool {
-        matches!(self.transfer_function, TransferFunction::Pq | TransferFunction::Hlg)
+        matches!(
+            self.transfer_function,
+            TransferFunction::Pq | TransferFunction::Hlg
+        )
     }
 }
 
@@ -172,10 +174,14 @@ impl FrameResource {
     }
 
     /// Width in pixels.
-    pub fn width(&self) -> u32 { self.size.width }
+    pub fn width(&self) -> u32 {
+        self.size.width
+    }
 
     /// Height in pixels.
-    pub fn height(&self) -> u32 { self.size.height }
+    pub fn height(&self) -> u32 {
+        self.size.height
+    }
 
     /// Construct from an already-created wgpu texture.
     ///
@@ -191,7 +197,14 @@ impl FrameResource {
         provenance: FrameSource,
         sequence: u64,
     ) -> Self {
-        Self { texture, format, size, color_info, provenance, sequence }
+        Self {
+            texture,
+            format,
+            size,
+            color_info,
+            provenance,
+            sequence,
+        }
     }
 }
 
@@ -213,13 +226,13 @@ impl std::fmt::Debug for FrameResource {
 
 /// Raw CPU-decoded video frame ready for GPU upload.
 pub struct CpuFrame<'a> {
-    pub y_plane:    &'a [u8],
-    pub uv_plane:   &'a [u8],
-    pub width:      u32,
-    pub height:     u32,
-    pub format:     VideoPixelFormat,
+    pub y_plane: &'a [u8],
+    pub uv_plane: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+    pub format: VideoPixelFormat,
     pub color_info: FrameColorInfo,
-    pub sequence:   u64,
+    pub sequence: u64,
 }
 
 /// Uploads CPU-decoded video frames to GPU textures, producing `FrameResource`.
@@ -236,8 +249,8 @@ impl FrameUploader {
         frame: &CpuFrame<'_>,
     ) -> Result<FrameResource, String> {
         let size = wgpu::Extent3d {
-            width:                 frame.width,
-            height:                frame.height,
+            width: frame.width,
+            height: frame.height,
             depth_or_array_layers: 1,
         };
 
@@ -251,15 +264,14 @@ impl FrameUploader {
         let texture = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
-                label:           Some("FrameUploader NV12"),
+                label: Some("FrameUploader NV12"),
                 size,
                 mip_level_count: 1,
-                sample_count:    1,
-                dimension:       wgpu::TextureDimension::D2,
-                format:          wgpu_format,
-                usage:           wgpu::TextureUsages::TEXTURE_BINDING
-                                 | wgpu::TextureUsages::COPY_DST,
-                view_formats:    &[],
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu_format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
             &data,
@@ -267,11 +279,14 @@ impl FrameUploader {
 
         Ok(FrameResource {
             texture: Arc::new(texture),
-            format:     frame.format,
+            format: frame.format,
             size,
             color_info: frame.color_info.clone(),
-            provenance: FrameSource::CpuNv12 { width: frame.width, height: frame.height },
-            sequence:   frame.sequence,
+            provenance: FrameSource::CpuNv12 {
+                width: frame.width,
+                height: frame.height,
+            },
+            sequence: frame.sequence,
         })
     }
 }
@@ -287,24 +302,27 @@ mod tests {
     #[test]
     fn frame_color_info_default_is_bt709_limited() {
         let info = FrameColorInfo::default();
-        assert_eq!(info.primaries,         ColorPrimaries::Bt709);
+        assert_eq!(info.primaries, ColorPrimaries::Bt709);
         assert_eq!(info.transfer_function, TransferFunction::Bt709);
-        assert_eq!(info.matrix,            ColorMatrix::Bt709);
-        assert_eq!(info.range,             ColorRange::Limited);
+        assert_eq!(info.matrix, ColorMatrix::Bt709);
+        assert_eq!(info.range, ColorRange::Limited);
         assert!(!info.is_hdr());
     }
 
     #[test]
     fn hdr10_color_info_is_hdr() {
         let info = FrameColorInfo::hdr10();
-        assert_eq!(info.primaries,         ColorPrimaries::Bt2020);
+        assert_eq!(info.primaries, ColorPrimaries::Bt2020);
         assert_eq!(info.transfer_function, TransferFunction::Pq);
         assert!(info.is_hdr());
     }
 
     #[test]
     fn hlg_transfer_function_is_hdr() {
-        let info = FrameColorInfo { transfer_function: TransferFunction::Hlg, ..Default::default() };
+        let info = FrameColorInfo {
+            transfer_function: TransferFunction::Hlg,
+            ..Default::default()
+        };
         assert!(info.is_hdr());
     }
 
@@ -316,17 +334,26 @@ mod tests {
 
     #[test]
     fn video_pixel_format_nv12_wgpu_format() {
-        assert_eq!(VideoPixelFormat::Nv12.wgpu_format(),   wgpu::TextureFormat::NV12);
+        assert_eq!(
+            VideoPixelFormat::Nv12.wgpu_format(),
+            wgpu::TextureFormat::NV12
+        );
     }
 
     #[test]
     fn video_pixel_format_rgba8_wgpu_format() {
-        assert_eq!(VideoPixelFormat::Rgba8.wgpu_format(),  wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(
+            VideoPixelFormat::Rgba8.wgpu_format(),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
     }
 
     #[test]
     fn video_pixel_format_rgba16f_wgpu_format() {
-        assert_eq!(VideoPixelFormat::Rgba16F.wgpu_format(), wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(
+            VideoPixelFormat::Rgba16F.wgpu_format(),
+            wgpu::TextureFormat::Rgba16Float
+        );
     }
 
     #[test]
@@ -336,21 +363,27 @@ mod tests {
 
     #[test]
     fn frame_source_dxgi_and_cpu_are_distinct() {
-        let dxgi = FrameSource::DxgiNv12 { width: 1920, height: 1080 };
-        let cpu  = FrameSource::CpuNv12  { width: 1920, height: 1080 };
+        let dxgi = FrameSource::DxgiNv12 {
+            width: 1920,
+            height: 1080,
+        };
+        let cpu = FrameSource::CpuNv12 {
+            width: 1920,
+            height: 1080,
+        };
         assert_ne!(dxgi, cpu);
     }
 
     #[test]
     fn frame_color_info_fields_preserved() {
         let info = FrameColorInfo {
-            primaries:         ColorPrimaries::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
             transfer_function: TransferFunction::Pq,
-            matrix:            ColorMatrix::Bt2020NonConstant,
-            range:             ColorRange::Full,
+            matrix: ColorMatrix::Bt2020NonConstant,
+            range: ColorRange::Full,
         };
-        assert_eq!(info.primaries,         ColorPrimaries::Bt2020);
-        assert_eq!(info.range,             ColorRange::Full);
+        assert_eq!(info.primaries, ColorPrimaries::Bt2020);
+        assert_eq!(info.range, ColorRange::Full);
         assert!(info.is_hdr());
     }
 }
