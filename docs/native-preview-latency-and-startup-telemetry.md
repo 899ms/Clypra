@@ -76,6 +76,42 @@ The worker also re-reads the audio clock before each decode. If its target frame
 
 These invariants preserve strictly forward decoding and avoid competing backward FFmpeg seeks while preventing the queue from becoming a latency buffer.
 
+### Non-blocking playback presentation
+
+Continuous playback treats the audio-clock tick as a deadline. It does not
+wait for an in-flight lookahead task and it does not start a competing
+foreground FFmpeg decode. The prior 75 ms wait made the ready queue a
+foreground dependency: current v1.5.1 evidence showed this wait at roughly
+44 ms p50 / 86 ms p95 on Windows and 77 ms p50 / 78 ms p95 on Apple Silicon.
+
+The presentation path now follows this rule:
+
+```text
+exact ready frame → recent completed frame (within two frames) → measured drop
+```
+
+On a miss, `lookahead-miss` is recorded as a dropped presentation and the
+decoder worker continues with the newest demand. That gives the worker one
+owner of decoder progress and keeps the UI responsive under temporary decode
+pressure. Paused, scrub, and seek requests retain their synchronous recovery
+behavior because they are interactive correctness operations rather than
+continuous playback ticks.
+
+The miss path explicitly invokes the coalesced refill scheduler before it
+returns. This is a liveness invariant: the normal refill invocation is after a
+successful presentation and would otherwise be skipped by an early drop,
+leaving an empty queue to produce a black surface until pause/play re-primes
+the session.
+
+### Capability policy is a session contract
+
+The session-start probe chooses `full`, `reduced`, or `proxy` quality before
+the playback worker is started. The choice is written into the render
+snapshot, so both the initial prime and all later queue refills decode at the
+same policy. It is also repeated on native samples and rollups as
+`capabilityPolicy` and `capabilityProbeUs`; a one-shot metadata field is not
+reliable with adaptive telemetry sampling or a dropped first presentation.
+
 ### Cold-start timing
 
 Visible native surface presentation now measures:
@@ -116,6 +152,8 @@ Three optional microsecond fields are propagated from Rust through the Tauri con
 | `queueResidencyUs` | Time between a lookahead frame becoming ready and being presented | High values indicate excessive decode-ahead or stale queued work, not decoder speed. |
 | `coldStartInitUs` | One-time visible-path session wait plus compositor initialization | High values indicate startup/pipeline/session initialization blocking. |
 | `actorWaitUs` | Time a frame request spent queued waiting for the stream decoder actor | High values indicate decoder backlog or long GOP seeking; mutex wait is eliminated. |
+| `capabilityPolicy` | Startup decode policy (`full`, `reduced`, or `proxy`) | Allows Intel/Apple-Silicon cohorts to be compared by the actual decode scale. |
+| `capabilityProbeUs` | Startup capability probe duration | Separates a policy-selection cost from normal decode time. |
 
 All fields have mean and percentile rollups. They are intentionally optional because steady-state frames should not be classified as startup work, and cold-decoded frames have no ready-queue residence.
 

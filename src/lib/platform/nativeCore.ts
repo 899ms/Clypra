@@ -131,6 +131,10 @@ export interface NativePerformanceSample {
   gpuQueueWaitUs?: number;
   surfaceAcquireUs?: number;
   submitPresentUs?: number;
+  /** Capability policy chosen once at native playback-session startup. */
+  capabilityPolicy?: "full" | "reduced" | "proxy" | string;
+  /** Duration of the startup capability probe, in microseconds. */
+  capabilityProbeUs?: number;
   dropReason?:
     | "stale"
     | "cancelled"

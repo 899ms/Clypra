@@ -150,13 +150,12 @@ pub struct PerformanceSample {
     #[serde(default)]
     pub submit_present_us: Option<u64>,
     /// Hardware decode capability policy selected by the session-start probe.
-    /// Present only on the first native surface frame of a session. One of
-    /// `"full"`, `"reduced"`, or `"proxy"`. Absent for macOS M1 sessions where
-    /// the probe confirms the hardware can sustain full-quality decode.
+    /// Repeated on native samples so adaptive telemetry sampling preserves the
+    /// session decision. One of `"full"`, `"reduced"`, or `"proxy"`.
     #[serde(default)]
     pub capability_policy: Option<String>,
     /// Wall-clock duration of the capability probe keyframe decode, in
-    /// microseconds. Present alongside `capability_policy`; absent when the
+    /// microseconds. Repeated alongside `capability_policy`; absent when the
     /// first video layer has no renderable frames at `time_secs = 0.0`.
     #[serde(default)]
     pub capability_probe_us: Option<u64>,
