@@ -111,7 +111,10 @@ impl NativeRenderSession {
 
     fn mark_ready(&self) {
         self.ready_after_us.store(
-            self.configured_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
+            self.configured_at
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
             Ordering::Release,
         );
     }
@@ -718,7 +721,8 @@ impl NativeRenderSession {
                                     .configured_at
                                     .elapsed()
                                     .as_micros()
-                                    .min(u64::MAX as u128) as u64,
+                                    .min(u64::MAX as u128)
+                                    as u64,
                                 ready_after_us: (ready_after_us > 0).then_some(ready_after_us),
                             },
                         );
@@ -1392,10 +1396,9 @@ mod tests {
         s
     }
 
-    #[test]
-    fn materialize_request_handles_sdf_to_raster_transition() {
-        let session = NativeRenderSession {
-            snapshot: Mutex::new(test_snapshot_with_text()),
+    fn test_session(snapshot: FrameRequest) -> NativeRenderSession {
+        NativeRenderSession {
+            snapshot: Mutex::new(snapshot),
             leases: Mutex::new(Vec::new()),
             actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
@@ -1403,7 +1406,15 @@ mod tests {
             running: AtomicBool::new(false),
             generation: AtomicU64::new(1),
             worker: Mutex::new(None),
-        };
+            configured_at: Instant::now(),
+            ready_after_us: AtomicU64::new(0),
+            first_presented: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn materialize_request_handles_sdf_to_raster_transition() {
+        let session = test_session(test_snapshot_with_text());
 
         let mut d = demand("demand-1", 1);
         d.raster_layers = vec![crate::native_core::NativePlaybackRasterLayerUpdate {
@@ -1436,16 +1447,7 @@ mod tests {
 
     #[test]
     fn materialize_request_retains_last_known_good_state_on_missed_demand_tick() {
-        let session = NativeRenderSession {
-            snapshot: Mutex::new(test_snapshot_with_text()),
-            leases: Mutex::new(Vec::new()),
-            actors: Mutex::new(Vec::new()),
-            pending: Mutex::new(LatestPlaybackDemand::default()),
-            notify: tokio::sync::Notify::new(),
-            running: AtomicBool::new(false),
-            generation: AtomicU64::new(1),
-            worker: Mutex::new(None),
-        };
+        let session = test_session(test_snapshot_with_text());
 
         // Tick 1: dynamic demand arrives with opacity 0.75
         let mut d = demand("demand-1", 1);
@@ -1470,16 +1472,7 @@ mod tests {
     #[test]
     fn materialize_request_dynamically_adds_and_removes_overlay_layers() {
         // Session configured with base video only (zero raster layers, zero text layers)
-        let session = NativeRenderSession {
-            snapshot: Mutex::new(test_snapshot()),
-            leases: Mutex::new(Vec::new()),
-            actors: Mutex::new(Vec::new()),
-            pending: Mutex::new(LatestPlaybackDemand::default()),
-            notify: tokio::sync::Notify::new(),
-            running: AtomicBool::new(false),
-            generation: AtomicU64::new(1),
-            worker: Mutex::new(None),
-        };
+        let session = test_session(test_snapshot());
 
         // Frame 114: text clip enters on the timeline
         let mut d1 = demand("demand-enter", 114);
@@ -1542,16 +1535,7 @@ mod tests {
             color_grade: None,
             body_effect: None,
         }];
-        let session = NativeRenderSession {
-            snapshot: Mutex::new(snapshot),
-            leases: Mutex::new(Vec::new()),
-            actors: Mutex::new(Vec::new()),
-            pending: Mutex::new(LatestPlaybackDemand::default()),
-            notify: tokio::sync::Notify::new(),
-            running: AtomicBool::new(false),
-            generation: AtomicU64::new(1),
-            worker: Mutex::new(None),
-        };
+        let session = test_session(snapshot);
 
         // Frame 50: Behind-subject text clip begins -> cutout synthesized
         let mut d1 = demand("demand-cutout-enter", 50);
@@ -1644,16 +1628,7 @@ mod tests {
             color_grade: None,
             body_effect: None,
         }];
-        let session = NativeRenderSession {
-            snapshot: Mutex::new(snapshot),
-            leases: Mutex::new(Vec::new()),
-            actors: Mutex::new(Vec::new()),
-            pending: Mutex::new(LatestPlaybackDemand::default()),
-            notify: tokio::sync::Notify::new(),
-            running: AtomicBool::new(false),
-            generation: AtomicU64::new(1),
-            worker: Mutex::new(None),
-        };
+        let session = test_session(snapshot);
 
         // Tick 1: Behind-subject cutout enters with active body_effect mask
         let mut d1 = demand("demand-1", 100);
