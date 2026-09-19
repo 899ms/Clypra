@@ -399,17 +399,10 @@ fn configure_surface(
         }
     }
 
-    // Zero-Cold-Start: Pre-warm Metal/wgpu render pipelines in the background
-    // during session opening / surface configuration so Frame #1 has zero compile spike.
-    let app_clone = app.clone();
-    let surface_w = window_size.width;
-    let surface_h = window_size.height;
-    tauri::async_runtime::spawn(async move {
-        if let Some(preview_state) = app_clone.try_state::<Arc<tokio::sync::Mutex<crate::wgpu_compositor::NativePreviewSession>>>() {
-            let mut session = preview_state.lock().await;
-            session.warmup_gpu_pipelines(surface_w, surface_h, format);
-        }
-    });
+    // Pipeline preparation belongs to playback configuration, where it is
+    // awaited before audio/render start. Starting it here used to race the
+    // first visible presentation and could hold the shared GPU session lock
+    // for seconds on older Windows Intel adapters.
 
     Ok(probe)
 }

@@ -25,7 +25,6 @@ use crate::wgpu_compositor::{
 #[cfg(target_os = "windows")]
 #[allow(unused_imports)]
 use crate::wgpu_compositor::DxgiImportState;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -36,11 +35,6 @@ use tauri::{Emitter, Manager};
 
 type DecodedNativeVideoFrame = (Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata);
 static NATIVE_SURFACE_PRESENTATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-static VERBOSE_PREVIEW_LOGS: Lazy<bool> = Lazy::new(|| {
-    std::env::var("CLYPRA_VERBOSE_PREVIEW")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-});
 
 /// Register an editor font before a frame request references it. The native
 /// renderer never substitutes a different family for an unregistered font.
@@ -520,6 +514,35 @@ fn default_clear_color() -> [f32; 4] {
 
 fn default_opacity() -> f32 {
     1.0
+}
+
+/// Prepare the compositor graph before a render session is allowed to start.
+///
+/// This is intentionally awaited by playback configuration, not spawned from
+/// surface configuration. On older Windows Intel drivers pipeline creation can
+/// take seconds; allowing it to race the first visible presentation held the
+/// shared session lock and let audio advance against a blank surface.
+/// `NativePreviewSession` owns the graph cache, so the warm check and creation
+/// are serialized under the same ownership boundary and duplicate callers are
+/// no-ops after the first one completes.
+pub(crate) async fn prepare_native_preview_pipelines(
+    app: &tauri::AppHandle,
+    width: u32,
+    height: u32,
+    target_format: wgpu::TextureFormat,
+) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("Native preview canvas dimensions must be non-zero".to_string());
+    }
+    let preview_state = app
+        .try_state::<Arc<tokio::sync::Mutex<NativePreviewSession>>>()
+        .ok_or_else(|| "Native preview GPU session is unavailable".to_string())?;
+    let preview_session = preview_state.inner().clone();
+    let mut session = preview_session.lock().await;
+    if !session.has_compositor(width, height, target_format) {
+        session.warmup_gpu_pipelines(width, height, target_format);
+    }
+    Ok(())
 }
 
 fn default_blend_mode() -> String {
@@ -1867,7 +1890,6 @@ async fn render_native_video_project_frame_bytes_timed(
     if can_use_dxgi {
         if let Some((frames, max_dec_us, total_wait_us)) = dxgi_frames_result {
             if !session.gpu.capabilities.wgpu_nv12 {
-                log::warn!("DXGI zero-copy import skipped: device does not support TEXTURE_FORMAT_NV12. Latching DXGI to Failed.");
                 session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::UnsupportedFormat);
             } else {
                 use crate::wgpu_compositor::dxgi_import;
@@ -1880,8 +1902,7 @@ async fn render_native_video_project_frame_bytes_timed(
                     };
                     let params = match color_params(&color) {
                         Ok(p) => p,
-                        Err(e) => {
-                            log::warn!("Color param generation failed for layer {}: {}. Latching DXGI to Failed.", layer_key, e);
+                        Err(_) => {
                             session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::ImportFailed);
                             import_all_ok = false;
                             break;
@@ -2251,7 +2272,6 @@ async fn decode_native_video_layers(
     // Layers sharing the exact same video file and timestamp (such as synthesized
     // :subject-cutout foreground layers) share the decoded NV12 planes without leasing
     // a second FFmpeg decoder.
-    let decode_wall_started = Instant::now();
     let mut unique_tasks = Vec::new();
     let mut layer_to_unique_idx = Vec::with_capacity(request.layers.len());
 
@@ -2314,37 +2334,9 @@ async fn decode_native_video_layers(
     }
 
     let mut decoded_frames = Vec::with_capacity(request.layers.len());
-    let mut layer_details = Vec::with_capacity(request.layers.len());
-
-    for (layer_idx, &unique_idx) in layer_to_unique_idx.iter().enumerate() {
-        let (ref frame, decode_us, mutex_wait_us, width, height, ref task_layer_id) = unique_results[unique_idx];
-        let layer_id = &request.layers[layer_idx].layer_id;
-        let is_duplicate = task_layer_id != layer_id;
-
+    for &unique_idx in &layer_to_unique_idx {
+        let (ref frame, ..) = unique_results[unique_idx];
         decoded_frames.push(frame.clone());
-        if is_duplicate {
-            layer_details.push((layer_id.clone(), width, height, 0u32, 0u64));
-        } else {
-            layer_details.push((layer_id.clone(), width, height, decode_us, mutex_wait_us));
-        }
-    }
-
-    let decode_wall_time_ms = decode_wall_started.elapsed().as_secs_f64() * 1000.0;
-    if layer_details.len() > 1 || decode_wall_time_ms > 16.6 {
-        let layer_summaries: Vec<String> = layer_details
-            .iter()
-            .map(|(id, w, h, dec_us, _)| {
-                let id_short = if id.len() > 16 { &id[..16] } else { id.as_str() };
-                format!("{id_short} ({w}x{h}): {:.1}ms", (*dec_us as f64) / 1000.0)
-            })
-            .collect();
-        eprintln!(
-            "[NativeDecode] {} layers decoded in {:.2}ms (max: {:.2}ms) | {}",
-            layer_details.len(),
-            decode_wall_time_ms,
-            (max_decode_us as f64) / 1000.0,
-            layer_summaries.join(" | ")
-        );
     }
 
     Ok((
@@ -2630,27 +2622,9 @@ pub(crate) fn schedule_lookahead_predecode(
                 }
             }
 
-            let predecode_started = Instant::now();
             let res = queue_native_frame(app.clone(), req).await;
-            let predecode_ms = predecode_started.elapsed().as_secs_f64() * 1000.0;
             if res.is_err() {
                 break;
-            }
-            let (cache_len, max_entries) = if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
-                let q = queue.lock().await;
-                (q.len(), q.max_entries())
-            } else {
-                (0, 16)
-            };
-            if *VERBOSE_PREVIEW_LOGS || predecode_ms > 33.33 {
-                eprintln!(
-                    "[NativeLookahead] Frame #{} (ahead: +{}) pre-decoded in {:.2}ms | Cache: {}/{} frames warm",
-                    target_frame_index,
-                    target_frame_index.saturating_sub(current_audio_frame),
-                    predecode_ms,
-                    cache_len,
-                    max_entries
-                );
             }
         }
         worker_finished.store(true, std::sync::atomic::Ordering::Release);
@@ -3160,15 +3134,6 @@ pub(crate) async fn present_native_frame_internal(
     // slightly different from the sRGB path but the preview will be visible.
     // This commonly occurs on Windows with certain WDDM drivers that do not
     // advertise Bgra8UnormSrgb as a supported swapchain format.
-    if !matches!(
-        target_format,
-        wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb
-    ) {
-        log::warn!(
-            "[NativePresent] Surface format {target_format:?} is not sRGB — \
-             colours may differ slightly. Consider updating GPU drivers."
-        );
-    }
     // On Windows/WebView2, an owned native window can reject its first DXGI
     // back-buffer acquisition while it is hidden. Reveal it before acquiring
     // the swapchain texture so the production first frame follows the same
@@ -3470,31 +3435,6 @@ pub(crate) async fn present_native_frame_internal(
         false,
         None,
     );
-
-    let total_ms = (request_started_at.elapsed().as_micros() as f64) / 1000.0;
-    let decode_ms = (decode_timings.decode_time_us as f64) / 1000.0;
-    let upload_ms = (conversion_upload_us as f64) / 1000.0;
-    let compose_ms = (compose_us as f64) / 1000.0;
-    let present_ms = (submit_present_us as f64) / 1000.0;
-    let cold_start_init_ms = cold_start_init_us.unwrap_or(0) as f64 / 1000.0;
-    let hit_tag = if queue_hit { "QUEUE_HIT" } else { "COLD_DECODE" };
-    let layers_count = legacy_request.layers.len();
-
-    if layers_count > 0 && (*VERBOSE_PREVIEW_LOGS || !queue_hit || total_ms > 33.33) {
-        eprintln!(
-            "[NativePresent] Frame #{} [{}] total: {:.2}ms (decode: {:.2}ms, queue: {:.2}ms, cold-init: {:.2}ms, upload: {:.2}ms, compose: {:.2}ms, present: {:.2}ms) | layers: {}",
-            request.frame_time.frame_index,
-            hit_tag,
-            total_ms,
-            decode_ms,
-            queue_residency_us.unwrap_or(0) as f64 / 1000.0,
-            cold_start_init_ms,
-            upload_ms,
-            compose_ms,
-            present_ms,
-            layers_count
-        );
-    }
 
     if request.mode.as_deref() != Some("prefetch") && request.mode.as_deref() != Some("scrub") {
         schedule_lookahead_predecode(app.clone(), request.clone(), 16);

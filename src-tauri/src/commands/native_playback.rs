@@ -78,7 +78,6 @@ impl NativeRenderSession {
         if self.running.swap(true, Ordering::AcqRel) {
             return;
         }
-        eprintln!("[NativePlayback] Persistent background render worker STARTED");
         if let Ok(snapshot_guard) = self.snapshot.lock() {
             let base_request = snapshot_guard.clone();
             drop(snapshot_guard);
@@ -95,7 +94,6 @@ impl NativeRenderSession {
 
     fn stop(&self, app: Option<AppHandle>) {
         self.running.store(false, Ordering::Release);
-        eprintln!("[NativePlayback] Persistent background render worker STOPPED");
         if let Ok(mut pending) = self.pending.lock() {
             pending.value = None;
         }
@@ -481,10 +479,7 @@ impl NativeRenderSession {
 
             let base_request = match self.materialize_request(dynamic_demand.as_ref()) {
                 Ok(req) => req,
-                Err(error) => {
-                    log::debug!("native playback demand materialize failed: {error}");
-                    continue;
-                }
+                Err(_) => continue,
             };
 
             // Reading the lease collection here documents and enforces the
@@ -575,20 +570,6 @@ impl NativeRenderSession {
                             let peak_ms = (max_frame_us as f64) / 1000.0;
                             let stream_count = _active_decoder_lease_count;
 
-                            eprintln!(
-                                "📊 [NativePlayback Summary] {} frames ({:.0}fps) | Lookahead Hit Rate: {:.1}% ({}/{}) | Avg Total: {:.2}ms | Avg Decode: {:.2}ms | Peak: {:.2}ms | Dropped: {} | Stacked Streams: {}",
-                                frames_rendered,
-                                fps,
-                                hit_rate,
-                                queue_hits,
-                                frames_rendered,
-                                avg_total_ms,
-                                avg_decode_ms,
-                                peak_ms,
-                                dropped_frames,
-                                stream_count
-                            );
-
                             #[derive(Clone, Serialize)]
                             #[serde(rename_all = "camelCase")]
                             struct PlaybackStatsPayload {
@@ -646,7 +627,6 @@ impl NativeRenderSession {
             // audio-clock lateness decision in present_native_frame.
             return None;
         }
-        let frame_index = request.frame_time.frame_index;
         match crate::commands::native_preview::present_native_frame_internal(app.clone(), request)
             .await
         {
@@ -660,20 +640,10 @@ impl NativeRenderSession {
                             let _ = surface.show_surface();
                         }
                     }
-                } else if presentation.dropped {
-                    eprintln!(
-                        "[NativePlayback] frame #{} DROPPED (drop_reason: {:?})",
-                        frame_index, presentation.drop_reason
-                    );
                 }
                 Some(presentation)
             }
-            Err(error) => {
-                if !error.contains("stale") {
-                    log::warn!("[NativePlayback] frame #{} presentation failed: {error}", frame_index);
-                }
-                None
-            }
+            Err(_) => None,
         }
     }
 }
@@ -767,11 +737,6 @@ impl NativePlaybackRuntime {
                     audio_track_count: 0,
                 }
             };
-            eprintln!(
-                "[NativePlayback] Self-healed unconfigured playback session (revision: {}, fps: {})",
-                plan.project_revision,
-                plan.frame_rate
-            );
             self.session = Some(PlaybackSession::new(plan)?);
         }
         Ok(self.session.as_mut().unwrap())
@@ -937,11 +902,11 @@ pub async fn configure_native_playback_render(
     // this prevents a project switch from temporarily growing the preview
     // decoder pool beyond its intended capacity.
     let render_session = NativeRenderSession::new(snapshot).await?;
-    let mut runtime = state
-        .lock()
-        .map_err(|_| "Native playback runtime lock is poisoned".to_string())?;
-    runtime.install_render_session(render_session);
     let should_start = {
+        let mut runtime = state
+            .lock()
+            .map_err(|_| "Native playback runtime lock is poisoned".to_string())?;
+        runtime.install_render_session(render_session);
         let audio_running = audio_clock_time(&app, true, false).is_ok();
         let session_running = runtime
             .session
@@ -956,26 +921,32 @@ pub async fn configure_native_playback_render(
             .unwrap_or(false);
         audio_running || session_running
     };
-    if should_start {
-        runtime.start_render(app.clone());
-    } else {
-        // Pre-warm the lookahead queue while paused or settling so when Play is triggered,
-        // the initial frames are already resident in the queue.
-        crate::commands::native_preview::schedule_lookahead_predecode(app.clone(), snapshot_clone, 16);
-    }
-
     let target_format = if let Some(surface_runtime) = app.try_state::<Arc<std::sync::Mutex<crate::commands::native_surface::NativeSurfaceRuntime>>>() {
         surface_runtime.lock().ok().and_then(|s| s.configured_format())
     } else {
         None
     }.unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
 
-    if let Some(preview_state) = app.try_state::<Arc<tokio::sync::Mutex<crate::wgpu_compositor::NativePreviewSession>>>() {
-        let preview_state_arc = preview_state.inner().clone();
-        tokio::spawn(async move {
-            let mut session = preview_state_arc.lock().await;
-            session.warmup_gpu_pipelines(canvas_w, canvas_h, target_format);
-        });
+    // This is a readiness gate, not background best-effort work. It makes
+    // expensive Windows pipeline compilation complete before the render worker
+    // (and therefore audio-driven presentation) starts.
+    crate::commands::native_preview::prepare_native_preview_pipelines(
+        &app,
+        canvas_w,
+        canvas_h,
+        target_format,
+    )
+    .await?;
+
+    if should_start {
+        state
+            .lock()
+            .map_err(|_| "Native playback runtime lock is poisoned".to_string())?
+            .start_render(app.clone());
+    } else {
+        // Prime the bounded decode queue only after the GPU graph is ready so
+        // no first visible frame competes with initialization for the session.
+        crate::commands::native_preview::schedule_lookahead_predecode(app.clone(), snapshot_clone, 16);
     }
     Ok(())
 }
