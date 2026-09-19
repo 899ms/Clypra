@@ -215,6 +215,7 @@ fn record_native_surface_sample(
     decode_timings: NativeDecodeTimings,
     queue_hit: bool,
     scheduler_wait_us: u64,
+    lookahead_wait_us: Option<u64>,
     cold_start_init_us: Option<u64>,
     queue_residency_us: Option<u64>,
     conversion_upload_us: Option<u64>,
@@ -269,6 +270,7 @@ fn record_native_surface_sample(
         readback_us: None,
         present_us: submit_present_us,
         scheduler_wait_us: Some(scheduler_wait_us),
+        lookahead_wait_us,
         cold_start_init_us,
         queue_residency_us,
         ipc_wait_us: None,
@@ -304,6 +306,10 @@ pub struct NativePreviewFrameQueue {
     notify: Arc<tokio::sync::Notify>,
     highest_frame_index: Option<u64>,
     decode_ewma_us: Option<u64>,
+    /// Monotonically changes whenever playback ownership changes. Async
+    /// decodes keep the epoch from their reservation and may only complete
+    /// into the same queue lifetime.
+    lifecycle_epoch: u64,
 }
 
 impl NativePreviewFrameQueue {
@@ -317,6 +323,7 @@ impl NativePreviewFrameQueue {
             notify: Arc::new(tokio::sync::Notify::new()),
             highest_frame_index: None,
             decode_ewma_us: None,
+            lifecycle_epoch: 0,
         }
     }
 
@@ -360,6 +367,26 @@ impl NativePreviewFrameQueue {
         }
     }
 
+    fn discard_expired(&mut self, presentation_started: Instant) {
+        let expired: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|(key, frame)| {
+                (queue_residency_us(frame.ready_at, presentation_started)
+                    > MAX_LOOKAHEAD_RESIDENCY_US)
+                    .then(|| key.clone())
+            })
+            .collect();
+        for key in expired {
+            self.entries.remove(&key);
+            self.order.retain(|entry| entry != &key);
+        }
+    }
+
+    fn lifecycle_epoch(&self) -> u64 {
+        self.lifecycle_epoch
+    }
+
     pub fn observe_frame_index(&mut self, frame_index: u64) {
         self.highest_frame_index =
             Some(self.highest_frame_index.map_or(frame_index, |m| m.max(frame_index)));
@@ -390,7 +417,10 @@ impl NativePreviewFrameQueue {
         true
     }
 
-    fn complete(&mut self, key: String, frame: QueuedNativeFrame) {
+    fn complete(&mut self, key: String, frame: QueuedNativeFrame, lifecycle_epoch: u64) -> bool {
+        if lifecycle_epoch != self.lifecycle_epoch {
+            return false;
+        }
         let frame_idx = frame.frame_index;
         let elapsed_us = frame
             .ready_at
@@ -414,6 +444,7 @@ impl NativePreviewFrameQueue {
             self.entries.remove(&oldest);
         }
         self.notify.notify_waiters();
+        true
     }
 
     fn fail(&mut self, key: &str) {
@@ -460,6 +491,7 @@ impl NativePreviewFrameQueue {
         self.pending.clear();
         self.highest_frame_index = None;
         self.decode_ewma_us = None;
+        self.lifecycle_epoch = self.lifecycle_epoch.wrapping_add(1);
         self.latest_generation.store(0, Ordering::Release);
     }
 }
@@ -2351,6 +2383,7 @@ pub async fn queue_native_frame(
     let is_prefetch = request.mode.as_deref() == Some("prefetch");
     let generation = request.generation.unwrap_or(0);
     let cancellation_generation;
+    let lifecycle_epoch;
     let scheduler_wait_started = Instant::now();
     let scheduler_wait_us;
     {
@@ -2365,6 +2398,7 @@ pub async fn queue_native_frame(
         if !queue_state.begin(&key, Some(request.frame_time.frame_index)) {
             return Ok(());
         }
+        lifecycle_epoch = queue_state.lifecycle_epoch();
         cancellation_generation = queue_state.latest_generation.clone();
     }
 
@@ -2412,7 +2446,7 @@ pub async fn queue_native_frame(
             let mut queue_state = queue.lock().await;
             if is_prefetch || queue_state.is_generation_current(generation) {
                 pending_guard.key = None;
-                queue_state.complete(
+                let _ = queue_state.complete(
                     key,
                     QueuedNativeFrame {
                         frame_index: request.frame_time.frame_index,
@@ -2422,6 +2456,7 @@ pub async fn queue_native_frame(
                         ready_at,
                         scheduler_wait_us,
                     },
+                    lifecycle_epoch,
                 );
             } else {
                 pending_guard.key = None;
@@ -2622,6 +2657,20 @@ pub(crate) fn schedule_lookahead_predecode(
     });
 
     *worker_guard = Some(LookaheadWorkerState { handle, generation, finished });
+}
+
+/// End a playback queue lifetime. Any asynchronous decode reserved before this
+/// call is rejected on completion, so it cannot be presented after a pause or
+/// render-worker replacement.
+pub(crate) async fn reset_native_preview_queue(app: &tauri::AppHandle) {
+    if let Ok(mut worker) = LOOKAHEAD_WORKER.lock() {
+        if let Some(previous) = worker.take() {
+            previous.handle.abort();
+        }
+    }
+    if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
+        queue.inner().clone().lock().await.reset();
+    }
 }
 
 /// Mark all older native preview work stale. Decoder calls that cannot be
@@ -2856,6 +2905,7 @@ pub(crate) async fn present_native_frame_internal(
         .runtime_epoch();
     let queued_key = request.decode_cache_key().map_err(|error| error.to_string())?;
     let is_playback_mode = request.mode.as_deref() == Some("playback");
+    let mut lookahead_wait_us = None;
     let queued_frame =
         if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
             let queue_arc = queue.inner().clone();
@@ -2865,6 +2915,10 @@ pub(crate) async fn present_native_frame_internal(
             // fallback; older entries can never be presented and only turn a
             // full queue into latency.
             q.discard_before(request.frame_time.frame_index.saturating_sub(2));
+            // Frame proximity alone is insufficient after a pause, startup
+            // stall, or worker restart. Never present a frame that missed its
+            // wall-clock presentation deadline.
+            q.discard_expired(presentation_started);
             if let Some(frame) = q.take(&queued_key) {
                 Some(frame)
             } else if is_playback_mode {
@@ -2872,22 +2926,32 @@ pub(crate) async fn present_native_frame_internal(
                 drop(q);
                 // In continuous playback, give in-flight lookahead up to 75ms to finish
                 // rather than launching a competing cold decode that thrashes the decoder GOP.
+                let lookahead_wait_started = Instant::now();
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_millis(75),
                     notify.notified(),
                 )
                 .await;
+                lookahead_wait_us = Some(
+                    lookahead_wait_started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+                );
                 let mut q = queue_arc.lock().await;
+                q.discard_expired(presentation_started);
                 q.take_matching_or_closest(&queued_key, request.frame_time.frame_index)
             } else if q.is_pending(&queued_key) {
                 let notify = q.notify();
                 drop(q);
+                let lookahead_wait_started = Instant::now();
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_millis(75),
                     notify.notified(),
                 )
                 .await;
+                lookahead_wait_us = Some(
+                    lookahead_wait_started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+                );
                 let mut q = queue_arc.lock().await;
+                q.discard_expired(presentation_started);
                 q.take(&queued_key)
             } else {
                 None
@@ -2947,6 +3011,7 @@ pub(crate) async fn present_native_frame_internal(
                     decode_timings,
                     queue_hit,
                     scheduler_wait_us,
+                    lookahead_wait_us,
                     None,
                     queue_residency_us,
                     None,
@@ -3013,6 +3078,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
+            lookahead_wait_us,
             None,
             queue_residency_us,
             None,
@@ -3051,6 +3117,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
+            lookahead_wait_us,
             None,
             queue_residency_us,
             None,
@@ -3392,6 +3459,7 @@ pub(crate) async fn present_native_frame_internal(
         decode_timings,
         queue_hit,
         scheduler_wait_us,
+        lookahead_wait_us,
         cold_start_init_us,
         queue_residency_us,
         Some(conversion_upload_us),
@@ -3454,6 +3522,7 @@ pub(crate) async fn present_native_frame_internal(
             compose_us,
             surface_acquire_us,
             submit_present_us,
+            lookahead_wait_us: lookahead_wait_us.unwrap_or(0),
             cold_start_init_us: cold_start_init_us.unwrap_or(0),
             queue_residency_us: queue_residency_us.unwrap_or(0),
             queue_hit,
@@ -3549,6 +3618,7 @@ pub async fn render_native_frame(
                 readback_us: None,
                 present_us: None,
                 scheduler_wait_us: None,
+                lookahead_wait_us: None,
                 cold_start_init_us: None,
                 queue_residency_us: None,
                 ipc_wait_us: None,
@@ -3622,6 +3692,7 @@ pub async fn render_native_frame(
             readback_us: Some(u64::from(stage_timings.readback_time_us)),
             present_us: None,
             scheduler_wait_us: None,
+            lookahead_wait_us: None,
             cold_start_init_us: None,
             queue_residency_us: None,
             ipc_wait_us: None,
@@ -3742,7 +3813,7 @@ mod tests {
         project_layer_transform, queue_residency_us,
         validate_project_request, validate_video_project_request, NativeDecodeTimings,
         deadline_aware_lookahead_count, NativePreviewFrameQueue, NativeProjectFrameRequest,
-        NativeVideoProjectFrameRequest, QueuedNativeFrame,
+        NativeVideoProjectFrameRequest, QueuedNativeFrame, MAX_LOOKAHEAD_RESIDENCY_US,
     };
     use crate::native_core::TextLayerSnapshot;
     use crate::thumbnail_engine::decoder::VideoColorMetadata;
@@ -3950,17 +4021,17 @@ mod tests {
         };
         assert!(queue.begin("frame-1", None));
         assert!(!queue.begin("frame-1", None));
-        queue.complete("frame-1".to_string(), queued_frame());
+        queue.complete("frame-1".to_string(), queued_frame(), queue.lifecycle_epoch());
         assert!(queue.contains("frame-1"));
         assert!(queue.take("frame-1").is_some());
         assert!(!queue.contains("frame-1"));
 
         assert!(queue.begin("frame-2", None));
-        queue.complete("frame-2".to_string(), queued_frame());
+        queue.complete("frame-2".to_string(), queued_frame(), queue.lifecycle_epoch());
         assert!(queue.begin("frame-3", None));
-        queue.complete("frame-3".to_string(), queued_frame());
+        queue.complete("frame-3".to_string(), queued_frame(), queue.lifecycle_epoch());
         assert!(queue.begin("frame-4", None));
-        queue.complete("frame-4".to_string(), queued_frame());
+        queue.complete("frame-4".to_string(), queued_frame(), queue.lifecycle_epoch());
         assert!(!queue.contains("frame-2"));
         assert!(queue.contains("frame-3"));
         assert!(queue.contains("frame-4"));
@@ -3978,6 +4049,49 @@ mod tests {
     fn queue_residency_is_zero_when_a_ready_frame_is_immediately_presented() {
         let now = Instant::now();
         assert_eq!(queue_residency_us(now, now), 0);
+    }
+
+    #[test]
+    fn queue_rejects_entries_from_an_earlier_playback_lifetime() {
+        let mut queue = NativePreviewFrameQueue::new(2);
+        let stale_epoch = queue.lifecycle_epoch();
+        queue.reset();
+
+        assert!(!queue.complete(
+            "old-frame".to_string(),
+            QueuedNativeFrame {
+                frame_index: 1,
+                decoded_frames: Vec::new(),
+                decode_timings: NativeDecodeTimings::default(),
+                queued_at: Instant::now(),
+                ready_at: Instant::now(),
+                scheduler_wait_us: 0,
+            },
+            stale_epoch,
+        ));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn queue_discards_ready_frames_that_missed_the_latency_deadline() {
+        let mut queue = NativePreviewFrameQueue::new(2);
+        let epoch = queue.lifecycle_epoch();
+        let now = Instant::now();
+        assert!(queue.complete(
+            "expired-frame".to_string(),
+            QueuedNativeFrame {
+                frame_index: 1,
+                decoded_frames: Vec::new(),
+                decode_timings: NativeDecodeTimings::default(),
+                queued_at: now,
+                ready_at: now,
+                scheduler_wait_us: 0,
+            },
+            epoch,
+        ));
+
+        queue.discard_expired(now + std::time::Duration::from_micros(MAX_LOOKAHEAD_RESIDENCY_US + 1));
+        assert!(queue.is_empty());
     }
 
     #[test]
