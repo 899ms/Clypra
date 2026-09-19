@@ -11,7 +11,10 @@ const ASSETS_DIR: &str = "/Users/AIEraDev/Documents/clypra-testing-assets";
 fn get_available_test_assets() -> Vec<PathBuf> {
     let dir = Path::new(ASSETS_DIR);
     if !dir.exists() {
-        eprintln!("[WARN] Testing assets directory not found at: {}", ASSETS_DIR);
+        eprintln!(
+            "[WARN] Testing assets directory not found at: {}",
+            ASSETS_DIR
+        );
         return Vec::new();
     }
 
@@ -54,7 +57,14 @@ async fn test_single_video_sequential_playback_performance_all_assets() {
     println!("==========================================================================================================");
     println!(
         "{:<35} | {:<10} | {:<9} | {:<10} | {:<9} | {:<9} | {:<10} | {:<8}",
-        "Asset", "Resolution", "Open(ms)", "Cold(ms)", "Avg(ms)", "P95(ms)", "Steady FPS", "Realtime"
+        "Asset",
+        "Resolution",
+        "Open(ms)",
+        "Cold(ms)",
+        "Avg(ms)",
+        "P95(ms)",
+        "Steady FPS",
+        "Realtime"
     );
     println!("----------------------------------------------------------------------------------------------------------");
 
@@ -122,13 +132,15 @@ async fn test_single_video_sequential_playback_performance_all_assets() {
             &latencies_ms[..]
         };
 
-        let avg_steady_ms =
-            steady_frames.iter().sum::<f64>() / steady_frames.len().max(1) as f64;
+        let avg_steady_ms = steady_frames.iter().sum::<f64>() / steady_frames.len().max(1) as f64;
 
         let mut sorted = steady_frames.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let p95_idx = ((sorted.len() as f64) * 0.95).floor() as usize;
-        let p95_ms = sorted.get(p95_idx.min(sorted.len() - 1)).copied().unwrap_or(0.0);
+        let p95_ms = sorted
+            .get(p95_idx.min(sorted.len() - 1))
+            .copied()
+            .unwrap_or(0.0);
 
         let steady_time_secs = steady_frames.iter().sum::<f64>() / 1000.0;
         let steady_fps = (steady_frames.len() as f64) / steady_time_secs.max(0.001);
@@ -136,7 +148,14 @@ async fn test_single_video_sequential_playback_performance_all_assets() {
 
         println!(
             "{:<35} | {:<10} | {:<9.1} | {:<10.1} | {:<9.2} | {:<9.2} | {:<10.1} | {:<8}",
-            truncated_name, res_str, open_ms, cold_start_ms, avg_steady_ms, p95_ms, steady_fps, realtime_ratio
+            truncated_name,
+            res_str,
+            open_ms,
+            cold_start_ms,
+            avg_steady_ms,
+            p95_ms,
+            steady_fps,
+            realtime_ratio
         );
 
         // Quality check: steady-state forward decode must comfortably beat real-time frame budget (33.3ms)
@@ -187,8 +206,14 @@ async fn test_multi_stacked_concurrent_playback_performance() {
     run_stacked_benchmark(
         "2-Layer Stack (4K H.264 + HD Video)",
         vec![
-            (four_k.to_str().unwrap().to_string(), "stream-4k".to_string()),
-            (second_video.to_str().unwrap().to_string(), "stream-hd".to_string()),
+            (
+                four_k.to_str().unwrap().to_string(),
+                "stream-4k".to_string(),
+            ),
+            (
+                second_video.to_str().unwrap().to_string(),
+                "stream-hd".to_string(),
+            ),
         ],
         30,
         35.0, // 30 FPS budget for 2 layers
@@ -199,9 +224,18 @@ async fn test_multi_stacked_concurrent_playback_performance() {
     run_stacked_benchmark(
         "3-Layer Stack (4K H.264 + 2x HD Videos)",
         vec![
-            (four_k.to_str().unwrap().to_string(), "stream-4k".to_string()),
-            (second_video.to_str().unwrap().to_string(), "stream-hd-1".to_string()),
-            (third_video.to_str().unwrap().to_string(), "stream-hd-2".to_string()),
+            (
+                four_k.to_str().unwrap().to_string(),
+                "stream-4k".to_string(),
+            ),
+            (
+                second_video.to_str().unwrap().to_string(),
+                "stream-hd-1".to_string(),
+            ),
+            (
+                third_video.to_str().unwrap().to_string(),
+                "stream-hd-2".to_string(),
+            ),
         ],
         30,
         50.0, // Multi-codec 3-stream heavy stack threshold (24 FPS cinema budget: 41.7ms)
@@ -212,8 +246,14 @@ async fn test_multi_stacked_concurrent_playback_performance() {
     run_stacked_benchmark(
         "2-Layer Dual 4K Independent Streams (GOP Isolation)",
         vec![
-            (four_k.to_str().unwrap().to_string(), "stream-4k-a".to_string()),
-            (four_k.to_str().unwrap().to_string(), "stream-4k-b".to_string()),
+            (
+                four_k.to_str().unwrap().to_string(),
+                "stream-4k-a".to_string(),
+            ),
+            (
+                four_k.to_str().unwrap().to_string(),
+                "stream-4k-b".to_string(),
+            ),
         ],
         30,
         35.0,
@@ -230,7 +270,10 @@ async fn run_stacked_benchmark(
     budget_ms: f64,
 ) {
     let layer_count = layers.len();
-    println!("\n--- Scenario: {} ({} concurrent streams) ---", scenario_name, layer_count);
+    println!(
+        "\n--- Scenario: {} ({} concurrent streams) ---",
+        scenario_name, layer_count
+    );
 
     // Pre-open isolated decoders for each stream
     let mut decoders = Vec::with_capacity(layer_count);
@@ -285,7 +328,10 @@ async fn run_stacked_benchmark(
             let details: Vec<String> = layer_results
                 .iter()
                 .map(|(id, ok, dec_ms, mtx_ms, w, h)| {
-                    format!("{}({}x{}, dec:{:.1}ms, mtx:{:.1}ms, ok:{})", id, w, h, dec_ms, mtx_ms, ok)
+                    format!(
+                        "{}({}x{}, dec:{:.1}ms, mtx:{:.1}ms, ok:{})",
+                        id, w, h, dec_ms, mtx_ms, ok
+                    )
                 })
                 .collect();
             println!(
@@ -299,8 +345,7 @@ async fn run_stacked_benchmark(
 
     let cold_start_ms = composite_latencies_ms[0];
     let steady_frames = &composite_latencies_ms[1..];
-    let avg_steady_ms =
-        steady_frames.iter().sum::<f64>() / steady_frames.len().max(1) as f64;
+    let avg_steady_ms = steady_frames.iter().sum::<f64>() / steady_frames.len().max(1) as f64;
 
     let mut sorted = steady_frames.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -335,12 +380,19 @@ async fn test_random_seeking_and_forward_resumption_performance() {
     // Pick 4K asset or first available
     let asset = assets
         .iter()
-        .find(|p| p.to_str().unwrap_or("").contains("Mod - Is Jude Bellingham"))
+        .find(|p| {
+            p.to_str()
+                .unwrap_or("")
+                .contains("Mod - Is Jude Bellingham")
+        })
         .unwrap_or(&assets[0]);
 
     let path_str = asset.to_str().unwrap();
     let file_name = asset.file_name().unwrap().to_str().unwrap();
-    println!("\n--- Benchmark: Random Seeking & Forward Resumption ({}) ---", file_name);
+    println!(
+        "\n--- Benchmark: Random Seeking & Forward Resumption ({}) ---",
+        file_name
+    );
 
     let mut decoder = VideoDecoder::open_hardware(path_str)
         .or_else(|_| VideoDecoder::open_software(path_str))
@@ -392,12 +444,13 @@ async fn test_occlusion_culling_performance_delta() {
 
     let four_k = assets
         .iter()
-        .find(|p| p.to_str().unwrap_or("").contains("Mod - Is Jude Bellingham"))
+        .find(|p| {
+            p.to_str()
+                .unwrap_or("")
+                .contains("Mod - Is Jude Bellingham")
+        })
         .unwrap_or(&assets[0]);
-    let hd = assets
-        .iter()
-        .find(|p| p != &four_k)
-        .unwrap_or(&assets[1]);
+    let hd = assets.iter().find(|p| p != &four_k).unwrap_or(&assets[1]);
 
     println!("\n==========================================================================================================");
     println!("                                OCCLUSION CULLING BENEFIT BENCHMARK");
@@ -406,8 +459,12 @@ async fn test_occlusion_culling_performance_delta() {
     let four_k_path = four_k.to_str().unwrap();
     let hd_path = hd.to_str().unwrap();
 
-    let dec_4k = get_preview_decoder_for_stream(four_k_path, "occlusion-4k").await.unwrap();
-    let dec_hd = get_preview_decoder_for_stream(hd_path, "occlusion-hd").await.unwrap();
+    let dec_4k = get_preview_decoder_for_stream(four_k_path, "occlusion-4k")
+        .await
+        .unwrap();
+    let dec_hd = get_preview_decoder_for_stream(hd_path, "occlusion-hd")
+        .await
+        .unwrap();
 
     let num_frames = 20;
     let frame_interval = 1.0 / 30.0;
@@ -437,9 +494,20 @@ async fn test_occlusion_culling_performance_delta() {
     let savings_percent = ((unculled_avg_ms - culled_avg_ms) / unculled_avg_ms) * 100.0;
     let speedup = unculled_avg_ms / culled_avg_ms.max(0.001);
 
-    println!("  Unculled (2 layers decoded): {:.2}ms avg/frame ({:.1} fps)", unculled_avg_ms, 1000.0 / unculled_avg_ms);
-    println!("  Culled   (1 layer decoded):  {:.2}ms avg/frame ({:.1} fps)", culled_avg_ms, 1000.0 / culled_avg_ms);
-    println!("  -> Occlusion culling saved {:.1}% decode time ({:.2}x speedup)!", savings_percent, speedup);
+    println!(
+        "  Unculled (2 layers decoded): {:.2}ms avg/frame ({:.1} fps)",
+        unculled_avg_ms,
+        1000.0 / unculled_avg_ms
+    );
+    println!(
+        "  Culled   (1 layer decoded):  {:.2}ms avg/frame ({:.1} fps)",
+        culled_avg_ms,
+        1000.0 / culled_avg_ms
+    );
+    println!(
+        "  -> Occlusion culling saved {:.1}% decode time ({:.2}x speedup)!",
+        savings_percent, speedup
+    );
     println!("==========================================================================================================\n");
 
     assert!(
@@ -451,7 +519,9 @@ async fn test_occlusion_culling_performance_delta() {
 #[tokio::test]
 async fn test_long_range_continuous_playback_120_frames() {
     let assets = get_available_test_assets();
-    let jomakaze = assets.iter().find(|p| p.to_string_lossy().contains("jomakaze"));
+    let jomakaze = assets
+        .iter()
+        .find(|p| p.to_string_lossy().contains("jomakaze"));
     let asset = match jomakaze {
         Some(a) => a,
         None => return,
@@ -482,4 +552,3 @@ async fn test_long_range_continuous_playback_120_frames() {
     }
     println!("Total spikes (>30ms): {}", spikes.len());
 }
-

@@ -141,9 +141,21 @@ async fn test_golden_multi_track_alpha_stacking() {
     let g = rendered_bytes[center_idx + 1];
     let b = rendered_bytes[center_idx + 2];
 
-    assert!((r as i32 - 115).abs() <= 2, "Blended Red must be ~115, got {}", r);
-    assert!((g as i32 - 30).abs() <= 2, "Blended Green must be ~30, got {}", g);
-    assert!((b as i32 - 45).abs() <= 2, "Blended Blue must be ~45, got {}", b);
+    assert!(
+        (r as i32 - 115).abs() <= 2,
+        "Blended Red must be ~115, got {}",
+        r
+    );
+    assert!(
+        (g as i32 - 30).abs() <= 2,
+        "Blended Green must be ~30, got {}",
+        g
+    );
+    assert!(
+        (b as i32 - 45).abs() <= 2,
+        "Blended Blue must be ~45, got {}",
+        b
+    );
 
     // Re-render and assert deterministic zero-delta self parity
     let second_render = gpu

@@ -540,8 +540,7 @@ fn snapshot_with(
 pub static SYNC_METRICS: Lazy<SyncMetricsRegistry> = Lazy::new(SyncMetricsRegistry::default);
 /// Retained as a compatibility hook for native callers. Diagnostics are
 /// delivered through the Tauri event bridge instead of blocking stderr.
-pub fn trace_event(_event: &str, _details: impl Display) {
-}
+pub fn trace_event(_event: &str, _details: impl Display) {}
 
 #[cfg(test)]
 mod tests {
@@ -658,7 +657,10 @@ mod tests {
         acc.record_with_freshness(5_000_000, None, None);
         acc.record_with_freshness(5_000_000, None, None);
         let snap = acc.take_and_reset();
-        assert_eq!(snap.p95_abs_micros, 500, "active P95 must not be polluted by suppressed samples");
+        assert_eq!(
+            snap.p95_abs_micros, 500,
+            "active P95 must not be polluted by suppressed samples"
+        );
     }
 
     // ── Existing registry tests ───────────────────────────────────────────────

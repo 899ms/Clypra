@@ -270,7 +270,10 @@ pub(crate) fn validate_compositor_export_config(config: &ExportConfig) -> Result
                 return Err(format!("Invalid audio clip trim_in: {}", clip.trim_in));
             }
             if !clip.start_time.is_finite() || clip.start_time < 0.0 {
-                return Err(format!("Invalid audio clip start_time: {}", clip.start_time));
+                return Err(format!(
+                    "Invalid audio clip start_time: {}",
+                    clip.start_time
+                ));
             }
             if !clip.volume.is_finite() || clip.volume < 0.0 {
                 return Err(format!("Invalid audio clip volume: {}", clip.volume));
@@ -325,10 +328,7 @@ async fn has_audio_stream(path: &str) -> bool {
             }
         }
         Err(e) => {
-            eprintln!(
-                "[has_audio_stream] Could not spawn ffprobe: {}",
-                e
-            );
+            eprintln!("[has_audio_stream] Could not spawn ffprobe: {}", e);
             false
         }
     }
@@ -376,8 +376,10 @@ pub async fn start_video_export(
             let has_audio = has_audio_stream(&path).await;
             (path, has_audio)
         });
-        let probe_results: HashMap<String, bool> =
-            futures_util::future::join_all(probe_futures).await.into_iter().collect();
+        let probe_results: HashMap<String, bool> = futures_util::future::join_all(probe_futures)
+            .await
+            .into_iter()
+            .collect();
 
         for clip in clips {
             if *probe_results.get(&clip.path).unwrap_or(&false) {
@@ -1399,48 +1401,68 @@ mod tests {
     fn test_validate_compositor_export_config_invalid_dimensions() {
         let mut config = base_test_config();
         config.width = 0;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid export dimensions"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid export dimensions"));
 
         config.width = 1920;
         config.height = 0;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid export dimensions"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid export dimensions"));
 
         config.width = 8000;
         config.height = 1080;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Export dimensions too large"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Export dimensions too large"));
     }
 
     #[test]
     fn test_validate_compositor_export_config_invalid_frame_rate() {
         let mut config = base_test_config();
         config.frame_rate = 0.0;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid frame rate"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid frame rate"));
 
         config.frame_rate = -24.0;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid frame rate"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid frame rate"));
 
         config.frame_rate = f64::NAN;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid frame rate"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid frame rate"));
 
         config.frame_rate = f64::INFINITY;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid frame rate"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid frame rate"));
 
         config.frame_rate = 300.0;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid frame rate"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid frame rate"));
     }
 
     #[test]
     fn test_validate_compositor_export_config_zero_frames() {
         let mut config = base_test_config();
         config.total_frames = 0;
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("total_frames must be greater than 0"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("total_frames must be greater than 0"));
     }
 
     #[test]
     fn test_validate_compositor_export_config_empty_output_path() {
         let mut config = base_test_config();
         config.output_path = "   ".to_string();
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("output_path cannot be empty"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("output_path cannot be empty"));
     }
 
     #[test]
@@ -1466,7 +1488,9 @@ mod tests {
             downmix: None,
             channel_map: None,
         }]);
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid audio clip duration"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid audio clip duration"));
 
         let mut config = base_test_config();
         config.audio_clips = Some(vec![ExportAudioClip {
@@ -1489,7 +1513,9 @@ mod tests {
             downmix: None,
             channel_map: None,
         }]);
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid audio clip start_time"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid audio clip start_time"));
 
         let mut config = base_test_config();
         config.audio_clips = Some(vec![ExportAudioClip {
@@ -1512,7 +1538,9 @@ mod tests {
             downmix: None,
             channel_map: None,
         }]);
-        assert!(validate_compositor_export_config(&config).unwrap_err().contains("Invalid audio clip pan"));
+        assert!(validate_compositor_export_config(&config)
+            .unwrap_err()
+            .contains("Invalid audio clip pan"));
     }
 
     #[tokio::test]

@@ -116,31 +116,31 @@ pub async fn process_camera_recording(
 
     let mut cmd = crate::commands::binary_resolver::create_async_command("ffmpeg");
     cmd.args([
-            "-y",
-            "-i",
-            &input_path,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0?",
-            "-vf",
-            &filter_str,
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "20",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-movflags",
-            "+faststart",
-            &output_path,
-        ]);
+        "-y",
+        "-i",
+        &input_path,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-vf",
+        &filter_str,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        &output_path,
+    ]);
 
     let output = cmd
         .output()
@@ -149,7 +149,10 @@ pub async fn process_camera_recording(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("🦀 [process_camera_recording] FFmpeg processing failed: {}", stderr);
+        eprintln!(
+            "🦀 [process_camera_recording] FFmpeg processing failed: {}",
+            stderr
+        );
         return Err(format!("FFmpeg processing failed: {}", stderr));
     }
 

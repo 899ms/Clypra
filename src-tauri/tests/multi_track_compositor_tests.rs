@@ -134,9 +134,11 @@ impl HeadlessGpuContext {
             mapped_at_creation: false,
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Test Readback Copy Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Test Readback Copy Encoder"),
+            });
 
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -169,7 +171,9 @@ impl HeadlessGpuContext {
         });
 
         self.device.poll(wgpu::Maintain::Wait);
-        rx.await.expect("Channel dropped").expect("Buffer map failed");
+        rx.await
+            .expect("Channel dropped")
+            .expect("Buffer map failed");
 
         let mapped = buffer_slice.get_mapped_range();
         let mut unpadded = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
@@ -1336,7 +1340,10 @@ async fn test_burned_in_caption_preview_vs_export_pixel_parity() {
         "Verified {} caption pixels detected in bounding box. Maximum pixel delta between Preview and Export = {}",
         caption_pixels_detected, max_diff
     );
-    assert!(caption_pixels_detected > 1000, "Must detect substantial caption pixels");
+    assert!(
+        caption_pixels_detected > 1000,
+        "Must detect substantial caption pixels"
+    );
 
     assert_eq!(
         max_diff, 0,
@@ -1557,5 +1564,3 @@ async fn test_chromatic_aberration_render() {
         "Edge divergence ({edge_diff}) must significantly exceed center divergence ({center_diff}) under edge_feather = 1.0"
     );
 }
-
-

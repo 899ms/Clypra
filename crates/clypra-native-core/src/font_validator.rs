@@ -183,7 +183,7 @@ pub fn is_valid_font_bytes(bytes: &[u8]) -> Result<FontFormat, FontValidationErr
 
     let mut has_cmap = false;
     let mut has_head = false;
-    let mut has_outlines = false; // glyf or CFF 
+    let mut has_outlines = false; // glyf or CFF
 
     for i in 0..num_tables as usize {
         let entry_start = 12 + i * 16;

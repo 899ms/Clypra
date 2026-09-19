@@ -232,8 +232,14 @@ fn glyph_cache_different_radius_and_padding_are_distinct() {
     );
 
     let stats = cache.stats();
-    assert_eq!(stats.misses, 3, "all three variants should be distinct cache misses");
-    assert_eq!(stats.hits, 0, "no collisions should occur between different radius/padding");
+    assert_eq!(
+        stats.misses, 3,
+        "all three variants should be distinct cache misses"
+    );
+    assert_eq!(
+        stats.hits, 0,
+        "no collisions should occur between different radius/padding"
+    );
 }
 
 #[test]
@@ -446,4 +452,3 @@ fn render_text_sdf_kerning_and_line_metrics() {
         (result.width * result.height) as usize
     );
 }
-

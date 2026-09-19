@@ -309,27 +309,35 @@ mod tests {
     fn contextual_fallback_resolution() {
         let reg = FontRegistry::new();
         // Register mock faces using test font bytes
-        reg.register_font("inter variable", DEFAULT_FONT_BYTES).unwrap();
-        reg.register_font("playfair display", DEFAULT_FONT_BYTES).unwrap();
+        reg.register_font("inter variable", DEFAULT_FONT_BYTES)
+            .unwrap();
+        reg.register_font("playfair display", DEFAULT_FONT_BYTES)
+            .unwrap();
         reg.register_font("bebas neue", DEFAULT_FONT_BYTES).unwrap();
 
         // 1. Unknown sans-serif should fall back to inter variable
         let (_, _, is_fb) = reg.get_font_with_status("arial-custom");
         assert!(is_fb);
         let warnings = reg.get_missing_font_warnings();
-        assert!(warnings.iter().any(|w| w.contains("fell back to 'inter variable'")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("fell back to 'inter variable'")));
 
         // 2. Unknown serif should fall back to playfair display
         let (_, _, is_fb) = reg.get_font_with_status("times-serif");
         assert!(is_fb);
         let warnings = reg.get_missing_font_warnings();
-        assert!(warnings.iter().any(|w| w.contains("fell back to 'playfair display'")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("fell back to 'playfair display'")));
 
         // 3. Unknown display/condensed should fall back to bebas neue
         let (_, _, is_fb) = reg.get_font_with_status("anton-condensed");
         assert!(is_fb);
         let warnings = reg.get_missing_font_warnings();
-        assert!(warnings.iter().any(|w| w.contains("fell back to 'bebas neue'")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("fell back to 'bebas neue'")));
     }
 
     #[test]

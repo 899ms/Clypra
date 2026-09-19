@@ -199,7 +199,10 @@ async fn render_raster_frame(gpu: &GpuContext, request: &FrameRequest) -> Result
             .and_then(|pixels| pixels.checked_mul(4))
             .ok_or("Raster layer dimensions overflow")?;
         let rgba = layer.rgba.as_ref().ok_or_else(|| {
-            format!("Raster layer {} is missing its RGBA payload", layer.asset_id)
+            format!(
+                "Raster layer {} is missing its RGBA payload",
+                layer.asset_id
+            )
         })?;
         if rgba.len() != expected_bytes {
             return Err(format!(
@@ -409,8 +412,7 @@ fn run_render(args: &[String]) -> Result<(), String> {
 
     let png = encode_png(rgba, request.output_width, request.output_height)?;
 
-    fs::write(output_path, &png)
-        .map_err(|e| format!("Failed to write {output_path}: {e}"))?;
+    fs::write(output_path, &png).map_err(|e| format!("Failed to write {output_path}: {e}"))?;
 
     eprintln!(
         "Rendered {}x{} → {}  ({} bytes)",
@@ -482,13 +484,10 @@ fn run_diff(args: &[String]) -> Result<(), String> {
 // ── entry point ──────────────────────────────────────────────────────────────
 
 fn run(args: &[String]) -> Result<(), String> {
-    let command = args
-        .get(1)
-        .map(String::as_str)
-        .ok_or_else(|| {
-            usage();
-            "Missing command".to_string()
-        })?;
+    let command = args.get(1).map(String::as_str).ok_or_else(|| {
+        usage();
+        "Missing command".to_string()
+    })?;
 
     match command {
         "validate" => {

@@ -21,8 +21,8 @@ use std::hash::Hash;
 /// Phase 5 can upgrade to an intrusive linked-hash-map if needed.
 pub struct FrameResourceCache<K, V> {
     capacity: usize,
-    entries:  HashMap<K, V>,
-    order:    VecDeque<K>,
+    entries: HashMap<K, V>,
+    order: VecDeque<K>,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> FrameResourceCache<K, V> {
@@ -31,8 +31,8 @@ impl<K: Hash + Eq + Clone, V: Clone> FrameResourceCache<K, V> {
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
-            entries:  HashMap::new(),
-            order:    VecDeque::new(),
+            entries: HashMap::new(),
+            order: VecDeque::new(),
         }
     }
 
@@ -77,9 +77,15 @@ impl<K: Hash + Eq + Clone, V: Clone> FrameResourceCache<K, V> {
         self.order.clear();
     }
 
-    pub fn len(&self)      -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool  { self.entries.is_empty() }
-    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 
     fn touch(&mut self, key: &K) {
         self.order.retain(|k| k != key);

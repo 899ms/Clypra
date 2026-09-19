@@ -37,7 +37,9 @@
 use crate::wgpu_compositor::frame_deadline::FrameDeadline;
 use crate::wgpu_compositor::frame_request::FramePriority;
 use crate::wgpu_compositor::frame_resource::FrameResource;
-use crate::wgpu_compositor::frame_scheduler::{FrameKey, FrameScheduler, FrameTicket, SchedulerError};
+use crate::wgpu_compositor::frame_scheduler::{
+    FrameKey, FrameScheduler, FrameTicket, SchedulerError,
+};
 use crate::wgpu_compositor::frame_telemetry::{FrameTelemetry, FrameTelemetryRing, ResourceBudget};
 use crate::wgpu_compositor::session_telemetry::{SessionSnapshot, SessionTelemetryCollector};
 use parking_lot::Mutex;
@@ -58,14 +60,13 @@ use std::time::Instant;
 #[derive(Debug, Clone, Default)]
 pub struct PolicyState {
     /// Background work is suspended — realtime pressure too high.
-    pub background_paused:       bool,
+    pub background_paused: bool,
     /// Interactive work is throttled — severe realtime pressure.
-    pub interactive_throttled:   bool,
+    pub interactive_throttled: bool,
     /// Coalescing window: requests within this duration are merged (µs).
     /// 0 = no coalescing (Phase 5 default; active coalescing is Phase 6).
-    pub coalesce_window_us:      u64,
+    pub coalesce_window_us: u64,
 }
-
 
 // ---------------------------------------------------------------------------
 // PerformanceConfig — static thresholds
@@ -78,25 +79,25 @@ pub struct PolicyState {
 #[derive(Debug, Clone)]
 pub struct PerformanceConfig {
     /// Suspend background work when `deadline_misses_1s` reaches this value.
-    pub background_pause_threshold:      u32,   // default: 2
+    pub background_pause_threshold: u32, // default: 2
     /// Throttle interactive work when `deadline_misses_1s` reaches this value.
-    pub interactive_throttle_threshold:  u32,   // default: 5
+    pub interactive_throttle_threshold: u32, // default: 5
     /// Restore normal policy when `deadline_misses_1s` drops to or below this.
-    pub recovery_threshold:              u32,   // default: 0
+    pub recovery_threshold: u32, // default: 0
     /// Ring buffer capacity (samples). 300 ≈ 5 s at 60 FPS.
-    pub telemetry_capacity:              usize, // default: 300
+    pub telemetry_capacity: usize, // default: 300
     /// Minimum interval between policy re-evaluations (µs).
-    pub policy_eval_interval_us:         u64,   // default: 100_000 (100 ms)
+    pub policy_eval_interval_us: u64, // default: 100_000 (100 ms)
 }
 
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            background_pause_threshold:     2,
+            background_pause_threshold: 2,
             interactive_throttle_threshold: 5,
-            recovery_threshold:             0,
-            telemetry_capacity:             300,
-            policy_eval_interval_us:        100_000,
+            recovery_threshold: 0,
+            telemetry_capacity: 300,
+            policy_eval_interval_us: 100_000,
         }
     }
 }
@@ -121,9 +122,12 @@ pub enum BackpressureError {
 impl std::fmt::Display for BackpressureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BackgroundSuspended        => write!(f, "background work suspended (realtime pressure)"),
-            Self::Throttled { retry_after_us } => write!(f, "interactive work throttled — retry after {retry_after_us}µs"),
-            Self::Scheduler(e)               => write!(f, "scheduler error: {e}"),
+            Self::BackgroundSuspended => write!(f, "background work suspended (realtime pressure)"),
+            Self::Throttled { retry_after_us } => write!(
+                f,
+                "interactive work throttled — retry after {retry_after_us}µs"
+            ),
+            Self::Scheduler(e) => write!(f, "scheduler error: {e}"),
         }
     }
 }
@@ -141,9 +145,9 @@ impl std::error::Error for BackpressureError {}
 /// `queue_wait_us` and `deadline_miss` without requiring the caller to
 /// track them separately.
 pub struct PerformanceTicket {
-    pub(crate) ticket:       FrameTicket,
+    pub(crate) ticket: FrameTicket,
     pub(crate) enqueue_time: Instant,
-    pub(crate) deadline:     FrameDeadline,
+    pub(crate) deadline: FrameDeadline,
 }
 
 // ---------------------------------------------------------------------------
@@ -176,14 +180,14 @@ pub struct QueueMetrics {
 /// share the same policy state, telemetry ring, and underlying scheduler.
 #[derive(Clone)]
 pub struct PerformanceManager {
-    scheduler:        FrameScheduler,
-    telemetry:        Arc<Mutex<FrameTelemetryRing>>,
-    policy:           Arc<Mutex<PolicyState>>,
-    config:           PerformanceConfig,
+    scheduler: FrameScheduler,
+    telemetry: Arc<Mutex<FrameTelemetryRing>>,
+    policy: Arc<Mutex<PolicyState>>,
+    config: PerformanceConfig,
     last_policy_eval: Arc<Mutex<Instant>>,
     /// Session-scoped aggregator — NOT cleared by `reset()`.
     /// Use `reset_session()` to start a new per-project accumulation.
-    session:          SessionTelemetryCollector,
+    session: SessionTelemetryCollector,
 }
 
 impl PerformanceManager {
@@ -202,14 +206,14 @@ impl PerformanceManager {
     /// both Tauri state (for `get_session_telemetry`) and this manager.
     pub fn with_session(
         scheduler: FrameScheduler,
-        config:    PerformanceConfig,
-        session:   SessionTelemetryCollector,
+        config: PerformanceConfig,
+        session: SessionTelemetryCollector,
     ) -> Self {
         let capacity = config.telemetry_capacity;
         Self {
             scheduler,
-            telemetry:        Arc::new(Mutex::new(FrameTelemetryRing::new(capacity))),
-            policy:           Arc::new(Mutex::new(PolicyState::default())),
+            telemetry: Arc::new(Mutex::new(FrameTelemetryRing::new(capacity))),
+            policy: Arc::new(Mutex::new(PolicyState::default())),
             config,
             last_policy_eval: Arc::new(Mutex::new(Instant::now())),
             session,
@@ -240,7 +244,7 @@ impl PerformanceManager {
     /// [`await_frame`].
     pub async fn request(
         &self,
-        key:      FrameKey,
+        key: FrameKey,
         deadline: FrameDeadline,
     ) -> Result<PerformanceTicket, BackpressureError> {
         // Read policy (brief sync lock, no await inside).
@@ -256,7 +260,9 @@ impl PerformanceManager {
             FramePriority::Interactive => {
                 if interactive_throttled {
                     // 50 ms retry suggestion — Phase 6 will make this adaptive.
-                    return Err(BackpressureError::Throttled { retry_after_us: 50_000 });
+                    return Err(BackpressureError::Throttled {
+                        retry_after_us: 50_000,
+                    });
                 }
             }
 
@@ -269,7 +275,11 @@ impl PerformanceManager {
 
         let enqueue_time = Instant::now();
         let ticket = self.scheduler.request(key, deadline.clone()).await;
-        Ok(PerformanceTicket { ticket, enqueue_time, deadline })
+        Ok(PerformanceTicket {
+            ticket,
+            enqueue_time,
+            deadline,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -286,14 +296,20 @@ impl PerformanceManager {
         ticket: PerformanceTicket,
     ) -> Result<(Arc<FrameResource>, QueueMetrics), SchedulerError> {
         let enqueue_time = ticket.enqueue_time;
-        let deadline     = ticket.deadline;
+        let deadline = ticket.deadline;
 
         let resource = self.scheduler.await_frame(ticket.ticket).await?;
 
         let queue_wait_us = enqueue_time.elapsed().as_micros() as u64;
         let deadline_miss = deadline.is_expired();
 
-        Ok((resource, QueueMetrics { queue_wait_us, deadline_miss }))
+        Ok((
+            resource,
+            QueueMetrics {
+                queue_wait_us,
+                deadline_miss,
+            },
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -407,13 +423,13 @@ impl PerformanceManager {
         let mut policy = self.policy.lock();
         if misses >= self.config.interactive_throttle_threshold {
             policy.interactive_throttled = true;
-            policy.background_paused     = true;
+            policy.background_paused = true;
         } else if misses >= self.config.background_pause_threshold {
             policy.interactive_throttled = false;
-            policy.background_paused     = true;
+            policy.background_paused = true;
         } else if misses <= self.config.recovery_threshold {
             policy.interactive_throttled = false;
-            policy.background_paused     = false;
+            policy.background_paused = false;
         }
         // Between recovery_threshold and pause_threshold → maintain current state.
 
@@ -424,10 +440,8 @@ impl PerformanceManager {
 
         // Only count state *transitions* into the throttled/paused state.
         if bg_after && !bg_before || it_after && !it_before {
-            self.session.record_policy_event(
-                bg_after && !bg_before,
-                it_after && !it_before,
-            );
+            self.session
+                .record_policy_event(bg_after && !bg_before, it_after && !it_before);
         }
     }
 }
@@ -445,9 +459,9 @@ mod tests {
 
     fn make_key() -> FrameKey {
         FrameKey {
-            sequence_id:     SequenceId(1),
-            timestamp_us:    1_000_000,
-            quality:         PreviewQuality::Full,
+            sequence_id: SequenceId(1),
+            timestamp_us: 1_000_000,
+            quality: PreviewQuality::Full,
             render_revision: 0,
         }
     }
@@ -455,7 +469,7 @@ mod tests {
     fn make_miss(now: Instant) -> FrameTelemetry {
         FrameTelemetry {
             deadline_miss: true,
-            recorded_at:   Some(now),
+            recorded_at: Some(now),
             ..Default::default()
         }
     }
@@ -463,8 +477,8 @@ mod tests {
     #[test]
     fn policy_state_default_allows_all_priorities() {
         let p = PolicyState::default();
-        assert!(!p.background_paused,       "default: background allowed");
-        assert!(!p.interactive_throttled,   "default: interactive allowed");
+        assert!(!p.background_paused, "default: background allowed");
+        assert!(!p.interactive_throttled, "default: interactive allowed");
     }
 
     #[test]
@@ -494,7 +508,11 @@ mod tests {
         };
         ring.push(old_miss);
 
-        assert_eq!(ring.deadline_miss_count_1s(), 2, "Only recent misses must be counted");
+        assert_eq!(
+            ring.deadline_miss_count_1s(),
+            2,
+            "Only recent misses must be counted"
+        );
     }
 
     #[test]
@@ -506,31 +524,48 @@ mod tests {
 
         let misses = ring.deadline_miss_count_1s();
         let config = PerformanceConfig::default();
-        assert!(misses >= config.background_pause_threshold,
-            "2 misses must meet or exceed the pause threshold ({})", config.background_pause_threshold);
+        assert!(
+            misses >= config.background_pause_threshold,
+            "2 misses must meet or exceed the pause threshold ({})",
+            config.background_pause_threshold
+        );
     }
 
     #[test]
     fn zero_misses_triggers_recovery() {
         let config = PerformanceConfig::default();
-        let ring   = FrameTelemetryRing::new(20); // empty
-        assert!(ring.deadline_miss_count_1s() <= config.recovery_threshold,
-            "0 misses must be at or below recovery threshold");
+        let ring = FrameTelemetryRing::new(20); // empty
+        assert!(
+            ring.deadline_miss_count_1s() <= config.recovery_threshold,
+            "0 misses must be at or below recovery threshold"
+        );
     }
 
     #[test]
     fn backpressure_error_display() {
-        assert!(!BackpressureError::BackgroundSuspended.to_string().is_empty());
-        assert!(!BackpressureError::Throttled { retry_after_us: 50_000 }.to_string().is_empty());
-        assert!(!BackpressureError::Scheduler(SchedulerError::Cancelled).to_string().is_empty());
+        assert!(!BackpressureError::BackgroundSuspended
+            .to_string()
+            .is_empty());
+        assert!(!BackpressureError::Throttled {
+            retry_after_us: 50_000
+        }
+        .to_string()
+        .is_empty());
+        assert!(!BackpressureError::Scheduler(SchedulerError::Cancelled)
+            .to_string()
+            .is_empty());
     }
 
     #[test]
     fn performance_config_defaults_are_ordered_correctly() {
         let cfg = PerformanceConfig::default();
-        assert!(cfg.recovery_threshold < cfg.background_pause_threshold,
-            "recovery must be below pause threshold");
-        assert!(cfg.background_pause_threshold < cfg.interactive_throttle_threshold,
-            "pause must be below throttle threshold");
+        assert!(
+            cfg.recovery_threshold < cfg.background_pause_threshold,
+            "recovery must be below pause threshold"
+        );
+        assert!(
+            cfg.background_pause_threshold < cfg.interactive_throttle_threshold,
+            "pause must be below throttle threshold"
+        );
     }
 }

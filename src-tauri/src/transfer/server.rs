@@ -663,7 +663,10 @@ async fn post_register(
                     .unwrap_or_else(|| "unknown".to_string());
 
                 let port = val.get("port").and_then(|v| v.as_u64()).unwrap_or(53317) as u16;
-                let device_type = val.get("deviceType").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let device_type = val
+                    .get("deviceType")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 let now = unix_secs();
                 state.service.discovered_devices.insert(
@@ -727,7 +730,10 @@ async fn download_staged_file(
         file.mime_type.clone()
     };
 
-    let filename_header = format!("attachment; filename=\"{}\"", file.file_name.replace('"', ""));
+    let filename_header = format!(
+        "attachment; filename=\"{}\"",
+        file.file_name.replace('"', "")
+    );
 
     Response::builder()
         .status(StatusCode::OK)
@@ -736,14 +742,17 @@ async fn download_staged_file(
         .header(header::CONTENT_LENGTH, file.size.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .body(body)
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Response construction failed").into_response())
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Response construction failed",
+            )
+                .into_response()
+        })
 }
 
 /// Streams a staged file to the mobile device for inline viewing / playing in browser without download prompt.
-async fn view_staged_file(
-    State(state): State<AppState>,
-    Path(file_id): Path<String>,
-) -> Response {
+async fn view_staged_file(State(state): State<AppState>, Path(file_id): Path<String>) -> Response {
     let file = match state.service.staged_files.get(&file_id) {
         Some(f) => f.clone(),
         None => return (StatusCode::NOT_FOUND, "File not found in staged list").into_response(),
@@ -780,7 +789,13 @@ async fn view_staged_file(
         .header(header::CONTENT_LENGTH, file.size.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .body(body)
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Response construction failed").into_response())
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Response construction failed",
+            )
+                .into_response()
+        })
 }
 
 async fn post_prepare_upload(
@@ -917,8 +932,14 @@ async fn post_upload(
 
     let dest_dir = state.service.get_inbox_dir();
     if let Err(e) = tokio::fs::create_dir_all(&dest_dir).await {
-        log::error!("[Transfer] Failed to create destination dir {:?}: {e}", dest_dir);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Cannot create destination directory")
+        log::error!(
+            "[Transfer] Failed to create destination dir {:?}: {e}",
+            dest_dir
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Cannot create destination directory",
+        )
             .into_response();
     }
     let dest_path = get_non_colliding_path(&dest_dir, &file_name);
@@ -1028,10 +1049,7 @@ async fn post_cancel(
 
 /// Build and start the Axum HTTP server. Tries ports 53317, 53318, 53319
 /// before giving up. Returns the bound port on success.
-pub async fn start(
-    service: Arc<TransferService>,
-    app_handle: AppHandle,
-) -> Result<u16, String> {
+pub async fn start(service: Arc<TransferService>, app_handle: AppHandle) -> Result<u16, String> {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -1049,7 +1067,10 @@ pub async fn start(
         // LocalSend v2 endpoints
         .route("/api/localsend/v2/info", get(get_localsend_info))
         .route("/api/localsend/v2/register", post(post_register))
-        .route("/api/localsend/v2/prepare-upload", post(post_prepare_upload))
+        .route(
+            "/api/localsend/v2/prepare-upload",
+            post(post_prepare_upload),
+        )
         .route("/api/localsend/v2/upload", post(post_upload))
         .route("/api/localsend/v2/cancel", post(post_cancel))
         // Web Hub file download endpoints (Laptop -> Phone)
@@ -1125,7 +1146,10 @@ pub fn list_network_interfaces() -> Vec<NetworkInterfaceInfo> {
 
                         if !ip.is_loopback() && !ip.is_link_local() {
                             let ip_str = ip.to_string();
-                            if !results.iter().any(|r: &NetworkInterfaceInfo| r.name == name && r.ip == ip_str) {
+                            if !results
+                                .iter()
+                                .any(|r: &NetworkInterfaceInfo| r.name == name && r.ip == ip_str)
+                            {
                                 results.push(NetworkInterfaceInfo {
                                     name,
                                     ip: ip_str,

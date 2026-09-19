@@ -17,8 +17,8 @@
 
 #![allow(dead_code)]
 
-use wasm_bindgen::prelude::*;
 use clypra_native_core::FrameRequest;
+use wasm_bindgen::prelude::*;
 
 // ── Inline the shared wgpu compositor — same source as daemon and CLI ────────
 // The include!() paths are relative to this file. Same pattern as the daemon
@@ -48,15 +48,15 @@ mod wgpu_compositor {
 
     pub use adapter_selector::GpuContext;
     pub use chroma_key::ChromaKeyUniforms;
+    #[allow(unused_imports)]
+    pub use effect_interpreter::{
+        resolve_passes, sanitize_parameter_overrides, validate_effect_definition, EffectDefinition,
+        EffectValidationError, ParamSpec, ParamType, PrimitiveKind, PrimitivePass, ResolutionTier,
+        ResolvedPass,
+    };
     pub use multi_track_composer::{
         BlendMode, BodyEffectUniforms, ColorGradeUniforms, CompositeLayer, CropMargins,
         LayerTransform, MultiTrackCompositor, TransitionUniforms,
-    };
-    #[allow(unused_imports)]
-    pub use effect_interpreter::{
-        validate_effect_definition, resolve_passes, sanitize_parameter_overrides,
-        EffectDefinition, EffectValidationError, ParamSpec, ParamType, PrimitiveKind,
-        PrimitivePass, ResolutionTier, ResolvedPass,
     };
 }
 
@@ -75,71 +75,111 @@ fn json_error(msg: &str) -> String {
 
 fn parse_blend_mode(value: &str) -> Result<BlendMode, String> {
     match value.to_ascii_lowercase().as_str() {
-        "normal"             => Ok(BlendMode::Normal),
-        "multiply"           => Ok(BlendMode::Multiply),
-        "screen"             => Ok(BlendMode::Screen),
-        "overlay"            => Ok(BlendMode::Overlay),
-        "additive" | "add"   => Ok(BlendMode::Additive),
-        "difference"         => Ok(BlendMode::Difference),
+        "normal" => Ok(BlendMode::Normal),
+        "multiply" => Ok(BlendMode::Multiply),
+        "screen" => Ok(BlendMode::Screen),
+        "overlay" => Ok(BlendMode::Overlay),
+        "additive" | "add" => Ok(BlendMode::Additive),
+        "difference" => Ok(BlendMode::Difference),
         other => Err(format!("Unsupported blend mode: {other}")),
     }
 }
 
 fn layer_transform(
-    x: f32, y: f32, width: f32, height: f32,
-    rotation: f32, canvas_width: f32, canvas_height: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    rotation: f32,
+    canvas_width: f32,
+    canvas_height: f32,
 ) -> LayerTransform {
     let center_x = x + width * 0.5;
     let center_y = y + height * 0.5;
     LayerTransform {
-        translate_x:  (center_x / canvas_width)  * 2.0 - 1.0,
-        translate_y:  1.0 - (center_y / canvas_height) * 2.0,
-        scale_x:       width  / canvas_width,
-        scale_y:       height / canvas_height,
-        rotation_rad:  rotation.to_radians(),
+        translate_x: (center_x / canvas_width) * 2.0 - 1.0,
+        translate_y: 1.0 - (center_y / canvas_height) * 2.0,
+        scale_x: width / canvas_width,
+        scale_y: height / canvas_height,
+        rotation_rad: rotation.to_radians(),
     }
 }
 
 fn native_color_grade(s: &clypra_native_core::ColorGradeSnapshot) -> ColorGradeUniforms {
     let mut g = ColorGradeUniforms::default();
-    g.exposure          = s.exposure;
-    g.contrast          = s.contrast;
-    g.saturation        = s.saturation;
-    g.temperature       = s.temperature;
-    g.tint              = s.tint;
-    g.brightness        = s.brightness;
-    g.sepia             = s.sepia;
-    g.grayscale         = s.grayscale;
-    g.hue_rotate        = s.hue_rotate;
-    g.vignette          = s.vignette;
-    g.invert            = s.invert;
-    g.blur_strength     = s.blur_strength;
-    g.blur_radius       = s.blur_radius;
-    g.pixelate_size     = s.pixelate_size;
-    g.scanline_count    = s.scanline_count;
-    g.scanline_intensity= s.scanline_intensity;
-    g.rgb_split_x       = s.rgb_split_x;
-    g.rgb_split_y       = s.rgb_split_y;
-    g.vibrance_amount   = s.vibrance_amount;
-    g.lift              = s.lift;
+    g.exposure = s.exposure;
+    g.contrast = s.contrast;
+    g.saturation = s.saturation;
+    g.temperature = s.temperature;
+    g.tint = s.tint;
+    g.brightness = s.brightness;
+    g.sepia = s.sepia;
+    g.grayscale = s.grayscale;
+    g.hue_rotate = s.hue_rotate;
+    g.vignette = s.vignette;
+    g.invert = s.invert;
+    g.blur_strength = s.blur_strength;
+    g.blur_radius = s.blur_radius;
+    g.pixelate_size = s.pixelate_size;
+    g.scanline_count = s.scanline_count;
+    g.scanline_intensity = s.scanline_intensity;
+    g.rgb_split_x = s.rgb_split_x;
+    g.rgb_split_y = s.rgb_split_y;
+    g.vibrance_amount = s.vibrance_amount;
+    g.lift = s.lift;
     g.cross_process_amount = s.cross_process_amount;
-    g.channel_mix       = [s.channel_mix_r, s.channel_mix_g, s.channel_mix_b, s.channel_mix_enabled];
-    g.duotone_dark      = [s.duotone_dark_r, s.duotone_dark_g, s.duotone_dark_b, s.duotone_enabled];
-    g.duotone_light     = [s.duotone_light_r, s.duotone_light_g, s.duotone_light_b, 0.0];
-    g.shadow_tint       = [s.shadow_tint_r, s.shadow_tint_g, s.shadow_tint_b, s.shadow_tint_strength];
-    g.highlight_tint    = [s.highlight_tint_r, s.highlight_tint_g, s.highlight_tint_b, s.highlight_tint_strength];
-    g.split_params      = [s.split_balance, 0.0, 0.0, 0.0];
-    g.glow_color_strength = [s.glow_color_r, s.glow_color_g, s.glow_color_b, s.glow_strength];
-    g.glow_params       = [s.glow_radius, 0.0, 0.0, 0.0];
-    g.glitch_params     = [s.glitch_intensity, s.glitch_time, s.glitch_slice_count, s.glitch_color_shift];
-    g.distortion_params = [s.distortion_type, s.distortion_strength, s.distortion_time, s.distortion_frequency];
-    g.fire_params       = s.fire_params;
-    g.fire_color_1      = s.fire_color_1;
-    g.fire_color_2      = s.fire_color_2;
-    g.fire_color_3      = s.fire_color_3;
-    g.particle_params   = s.particle_params;
-    g.particle_color    = s.particle_color;
-    g.particle_time     = [s.particle_time, 0.0, 0.0, 0.0];
+    g.channel_mix = [
+        s.channel_mix_r,
+        s.channel_mix_g,
+        s.channel_mix_b,
+        s.channel_mix_enabled,
+    ];
+    g.duotone_dark = [
+        s.duotone_dark_r,
+        s.duotone_dark_g,
+        s.duotone_dark_b,
+        s.duotone_enabled,
+    ];
+    g.duotone_light = [s.duotone_light_r, s.duotone_light_g, s.duotone_light_b, 0.0];
+    g.shadow_tint = [
+        s.shadow_tint_r,
+        s.shadow_tint_g,
+        s.shadow_tint_b,
+        s.shadow_tint_strength,
+    ];
+    g.highlight_tint = [
+        s.highlight_tint_r,
+        s.highlight_tint_g,
+        s.highlight_tint_b,
+        s.highlight_tint_strength,
+    ];
+    g.split_params = [s.split_balance, 0.0, 0.0, 0.0];
+    g.glow_color_strength = [
+        s.glow_color_r,
+        s.glow_color_g,
+        s.glow_color_b,
+        s.glow_strength,
+    ];
+    g.glow_params = [s.glow_radius, 0.0, 0.0, 0.0];
+    g.glitch_params = [
+        s.glitch_intensity,
+        s.glitch_time,
+        s.glitch_slice_count,
+        s.glitch_color_shift,
+    ];
+    g.distortion_params = [
+        s.distortion_type,
+        s.distortion_strength,
+        s.distortion_time,
+        s.distortion_frequency,
+    ];
+    g.fire_params = s.fire_params;
+    g.fire_color_1 = s.fire_color_1;
+    g.fire_color_2 = s.fire_color_2;
+    g.fire_color_3 = s.fire_color_3;
+    g.particle_params = s.particle_params;
+    g.particle_color = s.particle_color;
+    g.particle_time = [s.particle_time, 0.0, 0.0, 0.0];
     g
 }
 
@@ -159,55 +199,62 @@ async fn render_raster_frame(
         );
     }
 
-    let scale_x = request.output_width  as f32 / request.project.canvas_width  as f32;
+    let scale_x = request.output_width as f32 / request.project.canvas_width as f32;
     let scale_y = request.output_height as f32 / request.project.canvas_height as f32;
-    let device  = &gpu.device;
-    let queue   = &gpu.queue;
+    let device = &gpu.device;
+    let queue = &gpu.queue;
 
     let mut textures = Vec::with_capacity(request.project.raster_layers.len());
-    let mut views    = Vec::with_capacity(request.project.raster_layers.len());
+    let mut views = Vec::with_capacity(request.project.raster_layers.len());
 
     for (index, layer) in request.project.raster_layers.iter().enumerate() {
         let expected = (layer.width as usize)
             .checked_mul(layer.height as usize)
             .and_then(|p| p.checked_mul(4))
             .ok_or("Raster layer dimensions overflow")?;
-        let rgba = layer.rgba.as_ref().ok_or_else(|| {
-            format!("Raster layer {} missing RGBA payload", layer.asset_id)
-        })?;
+        let rgba = layer
+            .rgba
+            .as_ref()
+            .ok_or_else(|| format!("Raster layer {} missing RGBA payload", layer.asset_id))?;
         if rgba.len() != expected {
             return Err(format!(
                 "Raster layer {} RGBA length {} != expected {}",
-                layer.asset_id, rgba.len(), expected
+                layer.asset_id,
+                rgba.len(),
+                expected
             ));
         }
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("clypra-render-wasm layer {index}")),
             size: wgpu::Extent3d {
-                width: layer.width, height: layer.height, depth_or_array_layers: 1,
+                width: layer.width,
+                height: layer.height,
+                depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Rgba8Unorm,
-            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats:    &[],
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture:   &texture,
+                texture: &texture,
                 mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             rgba,
             wgpu::TexelCopyBufferLayout {
-                offset:          0,
-                bytes_per_row:   Some(layer.width.saturating_mul(4)),
-                rows_per_image:  Some(layer.height),
+                offset: 0,
+                bytes_per_row: Some(layer.width.saturating_mul(4)),
+                rows_per_image: Some(layer.height),
             },
             wgpu::Extent3d {
-                width: layer.width, height: layer.height, depth_or_array_layers: 1,
+                width: layer.width,
+                height: layer.height,
+                depth_or_array_layers: 1,
             },
         );
         views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
@@ -217,71 +264,89 @@ async fn render_raster_frame(
     if let Some(transition) = request.project.transition.as_ref() {
         let transition_type = match transition.transition_type.to_ascii_lowercase().as_str() {
             "cross-dissolve" | "cross_dissolve" | "crossfade" | "fade" => 0,
-            "directional-wipe" | "directional_wipe" | "wipe"           => 1,
-            "zoom-blur"        | "zoom_blur"                            => 2,
+            "directional-wipe" | "directional_wipe" | "wipe" => 1,
+            "zoom-blur" | "zoom_blur" => 2,
             other => return Err(format!("Unsupported transition type: {other}")),
         };
-        let from_index = request.project.raster_layers.iter()
+        let from_index = request
+            .project
+            .raster_layers
+            .iter()
             .position(|l| l.asset_id == transition.outgoing_layer)
             .ok_or_else(|| format!("Outgoing layer not found: {}", transition.outgoing_layer))?;
-        let to_index = request.project.raster_layers.iter()
+        let to_index = request
+            .project
+            .raster_layers
+            .iter()
             .position(|l| l.asset_id == transition.incoming_layer)
             .ok_or_else(|| format!("Incoming layer not found: {}", transition.incoming_layer))?;
         let uniforms = TransitionUniforms {
-            progress:         transition.progress.clamp(0.0, 1.0),
+            progress: transition.progress.clamp(0.0, 1.0),
             transition_type,
-            feather:          transition.feather.clamp(0.0, 1.0),
-            angle_rad:        0.0,
-            blur_strength:    transition.intensity.clamp(0.0, 1.0),
-            _pad0:            16.0 / 9.0,
-            _pad1:            0.0,
-            _pad2:            0.0,
-            fade_color:       transition.fade_color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+            feather: transition.feather.clamp(0.0, 1.0),
+            angle_rad: 0.0,
+            blur_strength: transition.intensity.clamp(0.0, 1.0),
+            _pad0: 16.0 / 9.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+            fade_color: transition.fade_color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
         };
         return compositor
             .render_transition_to_rgba_bytes(
-                device, queue,
-                request.output_width, request.output_height,
-                &views[from_index], &views[to_index],
+                device,
+                queue,
+                request.output_width,
+                request.output_height,
+                &views[from_index],
+                &views[to_index],
                 &uniforms,
-                #[cfg(target_arch = "wasm32")] is_gl,
+                #[cfg(target_arch = "wasm32")]
+                is_gl,
             )
             .await;
     }
 
-    let layers: Result<Vec<CompositeLayer<'_>>, String> = request.project.raster_layers.iter()
+    let layers: Result<Vec<CompositeLayer<'_>>, String> = request
+        .project
+        .raster_layers
+        .iter()
         .zip(views.iter())
         .filter(|(layer, _)| !layer.is_mask)
         .map(|(layer, view)| {
             Ok(CompositeLayer {
                 texture_view: view,
-                lut:          None,
-                z_index:      layer.z_index,
-                opacity:      layer.opacity.clamp(0.0, 1.0),
-                blend_mode:   parse_blend_mode(&layer.blend_mode)?,
-                transform:    layer_transform(
-                    layer.x * scale_x, layer.y * scale_y,
-                    layer.width  as f32 * scale_x,
+                lut: None,
+                z_index: layer.z_index,
+                opacity: layer.opacity.clamp(0.0, 1.0),
+                blend_mode: parse_blend_mode(&layer.blend_mode)?,
+                transform: layer_transform(
+                    layer.x * scale_x,
+                    layer.y * scale_y,
+                    layer.width as f32 * scale_x,
                     layer.height as f32 * scale_y,
                     layer.rotation,
-                    request.output_width  as f32,
+                    request.output_width as f32,
                     request.output_height as f32,
                 ),
-                crop:         CropMargins::default(),
-                color_grade:  layer.color_grade.as_ref()
+                crop: CropMargins::default(),
+                color_grade: layer
+                    .color_grade
+                    .as_ref()
                     .map(native_color_grade)
                     .unwrap_or_default(),
-                chroma_key:   ChromaKeyUniforms::default(),
-                mask_view:    None,
-                body_effect:  BodyEffectUniforms::default(),
+                chroma_key: ChromaKeyUniforms::default(),
+                mask_view: None,
+                body_effect: BodyEffectUniforms::default(),
             })
         })
         .collect();
 
     compositor
         .render_to_rgba_bytes_with_size(
-            device, queue,
-            request.output_width, request.output_height,
+            device,
+            queue,
+            request.output_width,
+            request.output_height,
             &layers?,
             Some(wgpu::Color {
                 r: request.project.clear_color[0].clamp(0.0, 1.0) as f64,
@@ -289,7 +354,8 @@ async fn render_raster_frame(
                 b: request.project.clear_color[2].clamp(0.0, 1.0) as f64,
                 a: request.project.clear_color[3].clamp(0.0, 1.0) as f64,
             }),
-            #[cfg(target_arch = "wasm32")] is_gl,
+            #[cfg(target_arch = "wasm32")]
+            is_gl,
         )
         .await
 }
@@ -322,21 +388,24 @@ async fn init_gpu() -> Result<GpuContext, String> {
     let webgpu_available = js_sys::Reflect::has(
         &js_sys::global(),
         &wasm_bindgen::JsValue::from_str("navigator"),
-    ).unwrap_or(false) && {
-        let nav = js_sys::Reflect::get(
-            &js_sys::global(),
-            &wasm_bindgen::JsValue::from_str("navigator"),
-        ).unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
-        !js_sys::Reflect::get(&nav, &wasm_bindgen::JsValue::from_str("gpu"))
-            .unwrap_or(wasm_bindgen::JsValue::UNDEFINED)
-            .is_undefined()
-    };
+    )
+    .unwrap_or(false)
+        && {
+            let nav = js_sys::Reflect::get(
+                &js_sys::global(),
+                &wasm_bindgen::JsValue::from_str("navigator"),
+            )
+            .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+            !js_sys::Reflect::get(&nav, &wasm_bindgen::JsValue::from_str("gpu"))
+                .unwrap_or(wasm_bindgen::JsValue::UNDEFINED)
+                .is_undefined()
+        };
 
     let maybe_webgpu_adapter = if webgpu_available {
         instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference:       wgpu::PowerPreference::HighPerformance,
-                compatible_surface:     None,
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
                 force_fallback_adapter: false,
             })
             .await
@@ -360,12 +429,14 @@ async fn init_gpu() -> Result<GpuContext, String> {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference:       wgpu::PowerPreference::HighPerformance,
-                compatible_surface:     Some(&surface),
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or("GPU adapter unavailable — WebGPU returned no adapter and WebGL2 fallback failed")?;
+            .ok_or(
+                "GPU adapter unavailable — WebGPU returned no adapter and WebGL2 fallback failed",
+            )?;
 
         // Drop the surface after adapter creation; rendering uses off-screen textures.
         drop(surface);
@@ -376,16 +447,18 @@ async fn init_gpu() -> Result<GpuContext, String> {
     let info = adapter.get_info();
     log::info!(
         "clypra-render-wasm: adapter={} backend={:?} type={:?}",
-        info.name, info.backend, info.device_type
+        info.name,
+        info.backend,
+        info.device_type
     );
 
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
-                label:              Some("clypra-render-wasm device"),
-                required_features:  wgpu::Features::empty(),
-                required_limits:    adapter.limits(),
-                memory_hints:       wgpu::MemoryHints::Performance,
+                label: Some("clypra-render-wasm device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+                memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
         )
@@ -396,11 +469,11 @@ async fn init_gpu() -> Result<GpuContext, String> {
         instance,
         adapter,
         info: SelectedGpuInfo {
-            name:        info.name,
-            backend:     format!("{:?}", info.backend),
+            name: info.name,
+            backend: format!("{:?}", info.backend),
             device_type: format!("{:?}", info.device_type),
-            vendor_id:   info.vendor,
-            device_id:   info.device,
+            vendor_id: info.vendor,
+            device_id: info.device,
             is_discrete: info.device_type == wgpu::DeviceType::DiscreteGpu,
         },
         device,
@@ -546,24 +619,26 @@ impl WasmRenderer {
 
         // Parse and validate the request
         let req: serde_json::Value = match serde_json::from_str(text_effect_request_json) {
-            Ok(v)  => v,
+            Ok(v) => v,
             Err(e) => return json_error(&format!("Invalid JSON: {e}")),
         };
 
         let effect_def_val = match req.get("effectDefinition") {
             Some(v) => v,
-            None    => return json_error("Missing field: effectDefinition"),
+            None => return json_error("Missing field: effectDefinition"),
         };
 
         // Deserialize the EffectDefinition — this is server-fetched pure data
         let effect_def: crate::wgpu_compositor::effect_interpreter::EffectDefinition =
             match serde_json::from_value(effect_def_val.clone()) {
-                Ok(d)  => d,
+                Ok(d) => d,
                 Err(e) => return json_error(&format!("Invalid effectDefinition: {e}")),
             };
 
         // Validate pass-chain structural rules before any GPU work
-        if let Err(e) = crate::wgpu_compositor::effect_interpreter::validate_effect_definition(&effect_def) {
+        if let Err(e) =
+            crate::wgpu_compositor::effect_interpreter::validate_effect_definition(&effect_def)
+        {
             return json_error(&e.0);
         }
 
@@ -573,10 +648,11 @@ impl WasmRenderer {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let safe_overrides = crate::wgpu_compositor::effect_interpreter::sanitize_parameter_overrides(
-            &raw_overrides,
-            &effect_def.param_specs,
-        );
+        let safe_overrides =
+            crate::wgpu_compositor::effect_interpreter::sanitize_parameter_overrides(
+                &raw_overrides,
+                &effect_def.param_specs,
+            );
 
         // Resolve the sanitized pass list
         let resolved = match crate::wgpu_compositor::effect_interpreter::resolve_passes(
@@ -584,7 +660,7 @@ impl WasmRenderer {
             &safe_overrides,
         ) {
             Ok(passes) => passes,
-            Err(e)     => return json_error(&e.0),
+            Err(e) => return json_error(&e.0),
         };
 
         // For Effect Lab preview: return a summary of resolved passes as JSON
@@ -593,11 +669,13 @@ impl WasmRenderer {
         //  the Studio UI to display and for the async render_frame path to consume).
         let pass_summary: Vec<serde_json::Value> = resolved
             .iter()
-            .map(|p| serde_json::json!({
-                "primitive": format!("{:?}", p.primitive),
-                "tier":      format!("{:?}", p.tier),
-                "paramCount": p.params.len(),
-            }))
+            .map(|p| {
+                serde_json::json!({
+                    "primitive": format!("{:?}", p.primitive),
+                    "tier":      format!("{:?}", p.tier),
+                    "paramCount": p.params.len(),
+                })
+            })
             .collect();
 
         serde_json::json!({

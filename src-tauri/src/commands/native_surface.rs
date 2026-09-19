@@ -5,9 +5,7 @@ use crate::native_core::{
 use crate::wgpu_compositor::GpuContext;
 use std::sync::{Arc, Mutex};
 use tauri::window::WindowBuilder;
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, Window,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, Window};
 
 const NATIVE_PREVIEW_SURFACE_LABEL: &str = "native-preview-surface";
 
@@ -114,7 +112,10 @@ impl NativeSurfaceRuntime {
         crate::diagnostics::warning(
             "native_surface",
             "MUTEX_POISON_RECOVERED",
-            format!("Recovered from poisoned NativeSurfaceRuntime mutex in {}", context),
+            format!(
+                "Recovered from poisoned NativeSurfaceRuntime mutex in {}",
+                context
+            ),
         );
         // Increment runtime epoch so that any in-flight presentation requests from before the panic
         // are recognized as stale and discarded safely rather than committing half-finished work.
@@ -169,19 +170,35 @@ fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Textur
 
 fn choose_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
     // 1. Mailbox: Triple-buffering with lowest latency, no tearing, and no cross-adapter DWM stalls
-    if let Some(mode) = modes.iter().copied().find(|m| *m == wgpu::PresentMode::Mailbox) {
+    if let Some(mode) = modes
+        .iter()
+        .copied()
+        .find(|m| *m == wgpu::PresentMode::Mailbox)
+    {
         return Some(mode);
     }
     // 2. FifoRelaxed: Avoids the 60fps -> 30fps stutter cliff on hybrid laptops if late by < 1ms
-    if let Some(mode) = modes.iter().copied().find(|m| *m == wgpu::PresentMode::FifoRelaxed) {
+    if let Some(mode) = modes
+        .iter()
+        .copied()
+        .find(|m| *m == wgpu::PresentMode::FifoRelaxed)
+    {
         return Some(mode);
     }
     // 3. AutoVsync: Modern wgpu adaptive VSync mode
-    if let Some(mode) = modes.iter().copied().find(|m| *m == wgpu::PresentMode::AutoVsync) {
+    if let Some(mode) = modes
+        .iter()
+        .copied()
+        .find(|m| *m == wgpu::PresentMode::AutoVsync)
+    {
         return Some(mode);
     }
     // 4. Fifo: Strict VSync baseline fallback
-    if let Some(mode) = modes.iter().copied().find(|m| *m == wgpu::PresentMode::Fifo) {
+    if let Some(mode) = modes
+        .iter()
+        .copied()
+        .find(|m| *m == wgpu::PresentMode::Fifo)
+    {
         return Some(mode);
     }
     modes.first().copied()
@@ -196,19 +213,15 @@ fn configure_surface(
 ) -> Result<NativeSurfaceProbe, String> {
     geometry.validate()?;
 
-    let mut runtime_state = runtime
-        .lock()
-        .unwrap_or_else(|poisoned| {
-            let mut state = poisoned.into_inner();
-            state.handle_poison_recovery("configure_surface");
-            state
-        });
+    let mut runtime_state = runtime.lock().unwrap_or_else(|poisoned| {
+        let mut state = poisoned.into_inner();
+        state.handle_poison_recovery("configure_surface");
+        state
+    });
     let surface_window = if let Some(surface_window) = runtime_state.surface_window.clone() {
         surface_window
     } else {
-        let parent = app
-            .get_window("main")
-            .unwrap_or(window);
+        let parent = app.get_window("main").unwrap_or(window);
         let dpr = if geometry.device_pixel_ratio > 0.0 {
             geometry.device_pixel_ratio as f64
         } else {
@@ -269,12 +282,12 @@ fn configure_surface(
         #[cfg(target_os = "windows")]
         unsafe {
             const GWL_EXSTYLE: i32 = -20;
-            const WS_EX_LAYERED: isize   = 0x0008_0000;
+            const WS_EX_LAYERED: isize = 0x0008_0000;
             const WS_EX_TRANSPARENT: isize = 0x0000_0020;
-            const WS_EX_NOACTIVATE: isize  = 0x0800_0000;
-            const SWP_NOSIZE: u32     = 0x0001;
-            const SWP_NOMOVE: u32     = 0x0002;
-            const SWP_NOZORDER: u32   = 0x0004;
+            const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+            const SWP_NOSIZE: u32 = 0x0001;
+            const SWP_NOMOVE: u32 = 0x0002;
+            const SWP_NOZORDER: u32 = 0x0004;
             const SWP_NOACTIVATE: u32 = 0x0010;
             const SWP_FRAMECHANGED: u32 = 0x0020;
             // HWND_TOP = 0 as a pseudo-handle — keeps the window at the top of
@@ -283,8 +296,20 @@ fn configure_surface(
 
             extern "system" {
                 fn GetWindowLongPtrW(hwnd: *mut std::ffi::c_void, n_index: i32) -> isize;
-                fn SetWindowLongPtrW(hwnd: *mut std::ffi::c_void, n_index: i32, dw_new_long: isize) -> isize;
-                fn SetWindowPos(hwnd: *mut std::ffi::c_void, hwnd_insert_after: *mut std::ffi::c_void, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
+                fn SetWindowLongPtrW(
+                    hwnd: *mut std::ffi::c_void,
+                    n_index: i32,
+                    dw_new_long: isize,
+                ) -> isize;
+                fn SetWindowPos(
+                    hwnd: *mut std::ffi::c_void,
+                    hwnd_insert_after: *mut std::ffi::c_void,
+                    x: i32,
+                    y: i32,
+                    cx: i32,
+                    cy: i32,
+                    u_flags: u32,
+                ) -> i32;
             }
 
             if let Ok(hwnd) = surface_window.hwnd() {
@@ -299,7 +324,12 @@ fn configure_surface(
                 );
                 // Flush the style change to DWM immediately.
                 SetWindowPos(
-                    raw, HWND_TOP, 0, 0, 0, 0,
+                    raw,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                 );
             }
@@ -541,11 +571,25 @@ mod tests {
 
     #[test]
     fn prefers_mailbox_and_relaxed_over_fifo() {
-        let modes_mailbox = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo, wgpu::PresentMode::Mailbox];
-        assert_eq!(choose_present_mode(&modes_mailbox), Some(wgpu::PresentMode::Mailbox));
+        let modes_mailbox = [
+            wgpu::PresentMode::Immediate,
+            wgpu::PresentMode::Fifo,
+            wgpu::PresentMode::Mailbox,
+        ];
+        assert_eq!(
+            choose_present_mode(&modes_mailbox),
+            Some(wgpu::PresentMode::Mailbox)
+        );
 
-        let modes_relaxed = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo, wgpu::PresentMode::FifoRelaxed];
-        assert_eq!(choose_present_mode(&modes_relaxed), Some(wgpu::PresentMode::FifoRelaxed));
+        let modes_relaxed = [
+            wgpu::PresentMode::Immediate,
+            wgpu::PresentMode::Fifo,
+            wgpu::PresentMode::FifoRelaxed,
+        ];
+        assert_eq!(
+            choose_present_mode(&modes_relaxed),
+            Some(wgpu::PresentMode::FifoRelaxed)
+        );
     }
 
     #[test]

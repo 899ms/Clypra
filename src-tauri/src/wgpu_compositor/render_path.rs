@@ -24,7 +24,10 @@ pub enum FrameSource {
 
 impl Default for FrameSource {
     fn default() -> Self {
-        Self::CpuNv12 { width: 0, height: 0 }
+        Self::CpuNv12 {
+            width: 0,
+            height: 0,
+        }
     }
 }
 
@@ -48,9 +51,9 @@ pub enum DisableReason {
 impl std::fmt::Display for DisableReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EnvVar           => write!(f, "CLYPRA_DISABLE_DXGI env var"),
+            Self::EnvVar => write!(f, "CLYPRA_DISABLE_DXGI env var"),
             Self::UnsupportedFeature => write!(f, "NV12/DX12 not supported on this adapter"),
-            Self::AdminPolicy      => write!(f, "admin policy"),
+            Self::AdminPolicy => write!(f, "admin policy"),
         }
     }
 }
@@ -89,13 +92,13 @@ pub enum DxgiFailureReason {
 impl std::fmt::Display for DxgiFailureReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ImportFailed        => write!(f, "DXGI shared handle import failed"),
-            Self::InvalidTexture      => write!(f, "imported texture is null or invalid"),
-            Self::UnsupportedFormat   => write!(f, "unsupported DXGI format (not NV12/P010)"),
-            Self::WrongArraySlice     => write!(f, "array_index out of bounds for texture array"),
-            Self::DeviceLost          => write!(f, "D3D12 device lost — GPU recovery required"),
+            Self::ImportFailed => write!(f, "DXGI shared handle import failed"),
+            Self::InvalidTexture => write!(f, "imported texture is null or invalid"),
+            Self::UnsupportedFormat => write!(f, "unsupported DXGI format (not NV12/P010)"),
+            Self::WrongArraySlice => write!(f, "array_index out of bounds for texture array"),
+            Self::DeviceLost => write!(f, "D3D12 device lost — GPU recovery required"),
             Self::SurfaceCreationFailed => write!(f, "wgpu surface creation failed"),
-            Self::DimensionMismatch   => write!(f, "imported texture dimensions do not match frame"),
+            Self::DimensionMismatch => write!(f, "imported texture dimensions do not match frame"),
         }
     }
 }
@@ -135,7 +138,6 @@ pub enum DxgiImportState {
     Failed { reason: DxgiFailureReason },
 }
 
-
 impl DxgiImportState {
     /// True when the import pipeline should be attempted this frame.
     /// `Unknown` and `Supported` are usable; `Disabled` and `Failed` are not.
@@ -146,17 +148,22 @@ impl DxgiImportState {
     /// True when the failure reason indicates the GPU device was lost.
     /// Callers should trigger GPU context recreation, not just DXGI fallback.
     pub fn is_device_lost(&self) -> bool {
-        matches!(self, Self::Failed { reason: DxgiFailureReason::DeviceLost })
+        matches!(
+            self,
+            Self::Failed {
+                reason: DxgiFailureReason::DeviceLost
+            }
+        )
     }
 }
 
 impl std::fmt::Display for DxgiImportState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unknown            => write!(f, "Unknown"),
-            Self::Supported          => write!(f, "Supported"),
+            Self::Unknown => write!(f, "Unknown"),
+            Self::Supported => write!(f, "Supported"),
             Self::Disabled { reason } => write!(f, "Disabled ({reason})"),
-            Self::Failed { reason }   => write!(f, "Failed ({reason})"),
+            Self::Failed { reason } => write!(f, "Failed ({reason})"),
         }
     }
 }
@@ -171,7 +178,10 @@ pub enum PreviewRenderError {
     UnsupportedFeature(String),
     ImportFailed(String),
     ShaderFailed(String),
-    DimensionMismatch { expected: (u32, u32), got: (u32, u32) },
+    DimensionMismatch {
+        expected: (u32, u32),
+        got: (u32, u32),
+    },
     RenderFailed(String),
 }
 
@@ -179,8 +189,8 @@ impl std::fmt::Display for PreviewRenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedFeature(msg) => write!(f, "Unsupported GPU feature: {msg}"),
-            Self::ImportFailed(msg)       => write!(f, "DXGI texture import failed: {msg}"),
-            Self::ShaderFailed(msg)       => write!(f, "Preview shader failed: {msg}"),
+            Self::ImportFailed(msg) => write!(f, "DXGI texture import failed: {msg}"),
+            Self::ShaderFailed(msg) => write!(f, "Preview shader failed: {msg}"),
             Self::DimensionMismatch { expected, got } => {
                 write!(f, "Dimension mismatch: expected {expected:?}, got {got:?}")
             }
@@ -207,17 +217,25 @@ mod tests {
         let state = DxgiImportState::Supported;
         assert!(state.is_usable());
 
-        let state = DxgiImportState::Failed { reason: DxgiFailureReason::ImportFailed };
+        let state = DxgiImportState::Failed {
+            reason: DxgiFailureReason::ImportFailed,
+        };
         assert!(!state.is_usable());
 
-        let state = DxgiImportState::Disabled { reason: DisableReason::EnvVar };
+        let state = DxgiImportState::Disabled {
+            reason: DisableReason::EnvVar,
+        };
         assert!(!state.is_usable());
     }
 
     #[test]
     fn device_lost_is_distinguishable_from_import_failed() {
-        let device_lost = DxgiImportState::Failed { reason: DxgiFailureReason::DeviceLost };
-        let import_fail = DxgiImportState::Failed { reason: DxgiFailureReason::ImportFailed };
+        let device_lost = DxgiImportState::Failed {
+            reason: DxgiFailureReason::DeviceLost,
+        };
+        let import_fail = DxgiImportState::Failed {
+            reason: DxgiFailureReason::ImportFailed,
+        };
 
         assert!(device_lost.is_device_lost());
         assert!(!import_fail.is_device_lost());
@@ -228,7 +246,9 @@ mod tests {
 
     #[test]
     fn wrong_array_slice_is_not_device_lost() {
-        let state = DxgiImportState::Failed { reason: DxgiFailureReason::WrongArraySlice };
+        let state = DxgiImportState::Failed {
+            reason: DxgiFailureReason::WrongArraySlice,
+        };
         assert!(!state.is_device_lost());
         assert!(!state.is_usable());
     }
@@ -250,7 +270,10 @@ mod tests {
     fn dxgi_state_display() {
         assert_eq!(DxgiImportState::Unknown.to_string(), "Unknown");
         assert_eq!(DxgiImportState::Supported.to_string(), "Supported");
-        assert!(DxgiImportState::Failed { reason: DxgiFailureReason::DeviceLost }
-            .to_string().contains("device lost"));
+        assert!(DxgiImportState::Failed {
+            reason: DxgiFailureReason::DeviceLost
+        }
+        .to_string()
+        .contains("device lost"));
     }
 }

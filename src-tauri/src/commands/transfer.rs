@@ -5,7 +5,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-use crate::transfer::server::{generate_qr_svg, list_network_interfaces, unix_secs, NetworkInterfaceInfo};
+use crate::transfer::server::{
+    generate_qr_svg, list_network_interfaces, unix_secs, NetworkInterfaceInfo,
+};
 use crate::transfer::{DiscoveredDevice, StagedFile, TransferService, TransferSession};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -21,7 +23,13 @@ fn local_ip() -> String {
 }
 
 fn guess_mime(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
         "webm" => "video/webm",
@@ -62,7 +70,11 @@ pub async fn get_network_interfaces(_app: AppHandle) -> Result<Vec<NetworkInterf
 #[tauri::command]
 pub async fn get_discovered_devices(app: AppHandle) -> Result<Vec<DiscoveredDevice>, String> {
     let service = get_service(&app)?;
-    Ok(service.discovered_devices.iter().map(|e| e.value().clone()).collect())
+    Ok(service
+        .discovered_devices
+        .iter()
+        .map(|e| e.value().clone())
+        .collect())
 }
 
 /// Triggers an active subnet scan to discover LocalSend nodes even if UDP multicast is blocked.
@@ -87,13 +99,17 @@ pub async fn scan_local_network(app: AppHandle) -> Result<Vec<DiscoveredDevice>,
         vec![53317, bound_port]
     };
 
-    let discovered = crate::transfer::discovery::scan_subnet(service.clone(), &subnet_prefix, &ports).await;
+    let discovered =
+        crate::transfer::discovery::scan_subnet(service.clone(), &subnet_prefix, &ports).await;
     Ok(discovered)
 }
 
 /// Returns a real standards-compliant SVG QR code string.
 #[tauri::command]
-pub async fn get_transfer_qr_code(app: AppHandle, custom_url: Option<String>) -> Result<String, String> {
+pub async fn get_transfer_qr_code(
+    app: AppHandle,
+    custom_url: Option<String>,
+) -> Result<String, String> {
     let service = get_service(&app)?;
     let url = match custom_url {
         Some(u) if !u.trim().is_empty() => u,
@@ -108,7 +124,10 @@ pub async fn get_transfer_qr_code(app: AppHandle, custom_url: Option<String>) ->
 
 /// Stages files on desktop so that a phone can download them via the Web Hub.
 #[tauri::command]
-pub async fn stage_files_for_transfer(app: AppHandle, paths: Vec<String>) -> Result<Vec<StagedFile>, String> {
+pub async fn stage_files_for_transfer(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<StagedFile>, String> {
     let service = get_service(&app)?;
     let now = unix_secs();
 
@@ -222,7 +241,13 @@ pub async fn send_files_to_peer(
         let file_id = format!("file-{}", idx);
 
         total_bytes += size;
-        valid_files.push((file_id.clone(), p_str.clone(), name.clone(), size, mime.clone()));
+        valid_files.push((
+            file_id.clone(),
+            p_str.clone(),
+            name.clone(),
+            size,
+            mime.clone(),
+        ));
         files_map.insert(
             file_id.clone(),
             FileItem {
@@ -243,7 +268,10 @@ pub async fn send_files_to_peer(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let prep_url = format!("http://{}:{}/api/localsend/v2/prepare-upload", peer_ip, peer_port);
+    let prep_url = format!(
+        "http://{}:{}/api/localsend/v2/prepare-upload",
+        peer_ip, peer_port
+    );
     let prep_body = PrepareBody {
         info: serde_json::to_value(&service.device_info).unwrap_or_default(),
         files: files_map,
@@ -286,11 +314,7 @@ pub async fn send_files_to_peer(
 
         let upload_url = format!(
             "http://{}:{}/api/localsend/v2/upload?sessionId={}&fileId={}&token={}",
-            peer_ip,
-            peer_port,
-            session_id,
-            file_id,
-            token
+            peer_ip, peer_port, session_id, file_id, token
         );
 
         let file = tokio::fs::File::open(&file_path_str)
@@ -450,11 +474,15 @@ pub async fn open_transfer_save_directory(app: AppHandle) -> Result<(), String> 
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("explorer").arg(&target_dir).spawn();
+        let _ = std::process::Command::new("explorer")
+            .arg(&target_dir)
+            .spawn();
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = std::process::Command::new("xdg-open").arg(&target_dir).spawn();
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&target_dir)
+            .spawn();
     }
     Ok(())
 }
@@ -474,7 +502,9 @@ pub async fn open_file_path(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("cmd").args(["/C", "start", "", &path]).spawn();
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn();
     }
     #[cfg(target_os = "linux")]
     {
@@ -494,11 +524,15 @@ pub async fn show_item_in_folder(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").args(["-R", &path]).spawn();
+        let _ = std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn();
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("explorer").arg(format!("/select,\"{}\"", path)).spawn();
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,\"{}\"", path))
+            .spawn();
     }
     #[cfg(target_os = "linux")]
     {
@@ -511,7 +545,10 @@ pub async fn show_item_in_folder(path: String) -> Result<(), String> {
 
 /// Starts the transfer service if it is not already running.
 #[tauri::command]
-pub async fn start_transfer_service(app: AppHandle, custom_dir: Option<String>) -> Result<(), String> {
+pub async fn start_transfer_service(
+    app: AppHandle,
+    custom_dir: Option<String>,
+) -> Result<(), String> {
     let service = get_service(&app)?;
     let inbox_dir = match custom_dir {
         Some(d) if !d.trim().is_empty() => {

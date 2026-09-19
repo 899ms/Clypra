@@ -6,11 +6,11 @@ pub mod session;
 pub use device::{DeviceInfo, DiscoveredDevice};
 pub use session::{FileToken, IncomingFile, SessionState, TransferSession};
 
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::path::PathBuf;
 
 use dashmap::DashMap;
 use uuid::Uuid;
@@ -72,7 +72,11 @@ impl TransferService {
         default_theme.insert("textMuted".to_string(), "#788991".to_string());
         default_theme.insert("danger".to_string(), "#e26061".to_string());
         default_theme.insert("success".to_string(), "#34d399".to_string());
-        default_theme.insert("fontFamily".to_string(), "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif".to_string());
+        default_theme.insert(
+            "fontFamily".to_string(),
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+                .to_string(),
+        );
         default_theme.insert("fontFamilyName".to_string(), "system".to_string());
 
         Self {
@@ -113,7 +117,11 @@ impl TransferService {
     /// Start the HTTP server and UDP discovery socket.
     ///
     /// This is idempotent — if already running it returns immediately.
-    pub async fn start(self: Arc<Self>, app_handle: AppHandle, inbox_dir: PathBuf) -> Result<(), String> {
+    pub async fn start(
+        self: Arc<Self>,
+        app_handle: AppHandle,
+        inbox_dir: PathBuf,
+    ) -> Result<(), String> {
         self.set_inbox_dir(inbox_dir);
         if self.server_running.load(Ordering::Relaxed) {
             return Ok(());
@@ -142,6 +150,9 @@ impl TransferService {
 
     /// Returns the bound port (may differ from `server_port`).
     pub fn get_bound_port(&self) -> u16 {
-        self.bound_port.lock().map(|p| *p).unwrap_or(self.server_port)
+        self.bound_port
+            .lock()
+            .map(|p| *p)
+            .unwrap_or(self.server_port)
     }
 }

@@ -58,20 +58,24 @@ impl RenderTargetId {
         Self(NEXT_TARGET_ID.fetch_add(1, Ordering::Relaxed))
     }
 
-    pub fn raw(&self) -> u64 { self.0 }
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
 }
 
 impl Default for RenderTargetId {
-    fn default() -> Self { Self::PROGRAM }
+    fn default() -> Self {
+        Self::PROGRAM
+    }
 }
 
 impl std::fmt::Display for RenderTargetId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
-            Self::PROGRAM  => write!(f, "Program"),
-            Self::SOURCE   => write!(f, "Source"),
+            Self::PROGRAM => write!(f, "Program"),
+            Self::SOURCE => write!(f, "Source"),
             Self::EXTERNAL => write!(f, "External"),
-            Self(n)        => write!(f, "Target({n})"),
+            Self(n) => write!(f, "Target({n})"),
         }
     }
 }
@@ -114,19 +118,17 @@ pub enum PresentationTarget {
     /// Native OS window (HWND on Windows, NSView on macOS).
     NativeWindow {
         surface: wgpu::Surface<'static>,
-        window:  Window,
+        window: Window,
     },
     /// Off-screen texture (export, thumbnail, test, scopes).
-    Texture {
-        texture: Arc<wgpu::Texture>,
-    },
+    Texture { texture: Arc<wgpu::Texture> },
 }
 
 impl std::fmt::Debug for PresentationTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NativeWindow { .. } => write!(f, "NativeWindow"),
-            Self::Texture { .. }      => write!(f, "OffscreenTexture"),
+            Self::Texture { .. } => write!(f, "OffscreenTexture"),
         }
     }
 }
@@ -141,19 +143,19 @@ impl std::fmt::Debug for PresentationTarget {
 /// minimisation, and surface loss mid-playback without crashing.
 #[derive(Debug, Default)]
 pub struct RenderTargetState {
-    pub visible:                 bool,
-    pub minimized:               bool,
+    pub visible: bool,
+    pub minimized: bool,
     /// `true` when the window/surface has been resized but `acquire_for_present`
     /// has not yet reconfigured the swapchain.
-    pub needs_resize:            bool,
+    pub needs_resize: bool,
     /// `true` when the wgpu surface is lost (monitor unplugged, device reset).
     /// `acquire_for_present` will attempt recovery; if it fails the frame is
     /// skipped rather than crashing.
-    pub surface_lost:            bool,
+    pub surface_lost: bool,
     /// The sequence number of the last successfully presented frame.
     pub last_presented_sequence: Option<u64>,
     /// Which OS monitor this target is currently on. `None` = unknown / headless.
-    pub monitor_id:              Option<MonitorId>,
+    pub monitor_id: Option<MonitorId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -166,19 +168,19 @@ pub struct RenderTargetState {
 /// into a [`PresentFrame`] acquired from this target, then calls
 /// `PresentFrame::present()`.
 pub struct RenderTarget {
-    pub id:             RenderTargetId,
-    pub kind:           RenderTargetKind,
-    pub size:           PhysicalSize<u32>,
+    pub id: RenderTargetId,
+    pub kind: RenderTargetKind,
+    pub size: PhysicalSize<u32>,
     pub surface_format: wgpu::TextureFormat,
-    pub state:          RenderTargetState,
-    presentation:       PresentationTarget,
-    configuration:      Option<wgpu::SurfaceConfiguration>,
+    pub state: RenderTargetState,
+    presentation: PresentationTarget,
+    configuration: Option<wgpu::SurfaceConfiguration>,
 }
 
 impl std::fmt::Debug for RenderTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderTarget")
-            .field("id",   &self.id)
+            .field("id", &self.id)
             .field("kind", &self.kind)
             .field("size", &(self.size.width, self.size.height))
             .field("presentation", &self.presentation)
@@ -202,12 +204,12 @@ impl std::fmt::Debug for RenderTarget {
 pub struct PresentFrame {
     pub target_id: RenderTargetId,
     /// Texture view to render into.
-    pub view:      wgpu::TextureView,
+    pub view: wgpu::TextureView,
     /// Logical size of the target in pixels.
-    pub size:      PhysicalSize<u32>,
+    pub size: PhysicalSize<u32>,
     /// Surface format (for render pass colour attachment).
-    pub format:    wgpu::TextureFormat,
-    inner:         PresentFrameInner,
+    pub format: wgpu::TextureFormat,
+    inner: PresentFrameInner,
 }
 
 #[allow(dead_code)]
@@ -221,7 +223,7 @@ impl PresentFrame {
     pub fn present(self) {
         match self.inner {
             PresentFrameInner::Surface(st) => st.present(),
-            PresentFrameInner::Offscreen   => { /* off-screen targets need explicit readback */ }
+            PresentFrameInner::Offscreen => { /* off-screen targets need explicit readback */ }
         }
     }
 }
@@ -236,12 +238,15 @@ impl PresentFrame {
 /// presentation handles is its entire remit.
 pub struct RenderTargetManager {
     targets: HashMap<RenderTargetId, RenderTarget>,
-    gpu:     Arc<GpuContext>,
+    gpu: Arc<GpuContext>,
 }
 
 impl RenderTargetManager {
     pub fn new(gpu: Arc<GpuContext>) -> Self {
-        Self { targets: HashMap::new(), gpu }
+        Self {
+            targets: HashMap::new(),
+            gpu,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -254,10 +259,10 @@ impl RenderTargetManager {
     /// transparent, decoration-free, and parented to the app's main window.
     pub fn get_or_create_target(
         &mut self,
-        id:   RenderTargetId,
+        id: RenderTargetId,
         kind: RenderTargetKind,
         size: PhysicalSize<u32>,
-        app:  &AppHandle,
+        app: &AppHandle,
     ) -> Result<&mut RenderTarget, String> {
         if !self.targets.contains_key(&id) {
             let target = Self::create_native_target(id, kind, size, app, &self.gpu)?;
@@ -278,7 +283,7 @@ impl RenderTargetManager {
     /// manager does not block the calling thread waiting for the GPU.
     pub fn resize_target(
         &mut self,
-        id:   &RenderTargetId,
+        id: &RenderTargetId,
         size: PhysicalSize<u32>,
     ) -> Result<(), String> {
         let target = self
@@ -288,7 +293,7 @@ impl RenderTargetManager {
         target.size = size;
         target.state.needs_resize = true;
         if let Some(cfg) = target.configuration.as_mut() {
-            cfg.width  = size.width.max(1);
+            cfg.width = size.width.max(1);
             cfg.height = size.height.max(1);
         }
         Ok(())
@@ -301,7 +306,9 @@ impl RenderTargetManager {
             .get_mut(id)
             .ok_or_else(|| format!("RenderTarget {id} not found"))?;
         if let PresentationTarget::NativeWindow { window, .. } = &target.presentation {
-            window.show().map_err(|e| format!("show_target {id}: {e}"))?;
+            window
+                .show()
+                .map_err(|e| format!("show_target {id}: {e}"))?;
         }
         target.state.visible = true;
         Ok(())
@@ -314,7 +321,9 @@ impl RenderTargetManager {
             .get_mut(id)
             .ok_or_else(|| format!("RenderTarget {id} not found"))?;
         if let PresentationTarget::NativeWindow { window, .. } = &target.presentation {
-            window.hide().map_err(|e| format!("hide_target {id}: {e}"))?;
+            window
+                .hide()
+                .map_err(|e| format!("hide_target {id}: {e}"))?;
         }
         target.state.visible = false;
         Ok(())
@@ -325,8 +334,8 @@ impl RenderTargetManager {
     pub fn reset_target(&mut self, id: &RenderTargetId) {
         if let Some(target) = self.targets.get_mut(id) {
             target.state.last_presented_sequence = None;
-            target.state.needs_resize            = false;
-            target.state.surface_lost            = false;
+            target.state.needs_resize = false;
+            target.state.surface_lost = false;
             let _ = self.hide_target(id);
         }
     }
@@ -334,7 +343,9 @@ impl RenderTargetManager {
     /// Reset all targets (on project close or GPU device reset).
     pub fn reset_all(&mut self) {
         let ids: Vec<_> = self.targets.keys().copied().collect();
-        for id in ids { self.reset_target(&id); }
+        for id in ids {
+            self.reset_target(&id);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -358,10 +369,7 @@ impl RenderTargetManager {
     /// Reconfigures the swapchain if `state.needs_resize` is set.
     /// Returns `Err` if the surface is lost and recovery fails — the caller
     /// should skip this frame and try again next tick.
-    pub fn acquire_for_present(
-        &mut self,
-        id: &RenderTargetId,
-    ) -> Result<PresentFrame, String> {
+    pub fn acquire_for_present(&mut self, id: &RenderTargetId) -> Result<PresentFrame, String> {
         let target = self
             .targets
             .get_mut(id)
@@ -397,22 +405,22 @@ impl RenderTargetManager {
 
                 target.state.surface_lost = false;
 
-                let view = surface_texture.texture.create_view(
-                    &wgpu::TextureViewDescriptor::default(),
-                );
+                let view = surface_texture
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
 
                 Ok(PresentFrame {
                     target_id: *id,
                     view,
-                    size:   target.size,
+                    size: target.size,
                     format: target.surface_format,
-                    inner:  PresentFrameInner::Surface(surface_texture),
+                    inner: PresentFrameInner::Surface(surface_texture),
                 })
             }
 
-            PresentationTarget::Texture { .. } => {
-                Err(format!("Offscreen texture presentation not yet implemented for {id}"))
-            }
+            PresentationTarget::Texture { .. } => Err(format!(
+                "Offscreen texture presentation not yet implemented for {id}"
+            )),
         }
     }
 
@@ -421,11 +429,7 @@ impl RenderTargetManager {
     // -----------------------------------------------------------------------
 
     /// Called by the OS monitor listener when the display a target is on changes.
-    pub fn on_monitor_changed(
-        &mut self,
-        id:      &RenderTargetId,
-        monitor: Option<MonitorId>,
-    ) {
+    pub fn on_monitor_changed(&mut self, id: &RenderTargetId, monitor: Option<MonitorId>) {
         if let Some(target) = self.targets.get_mut(id) {
             target.state.monitor_id = monitor;
         }
@@ -436,19 +440,17 @@ impl RenderTargetManager {
     // -----------------------------------------------------------------------
 
     fn create_native_target(
-        id:   RenderTargetId,
+        id: RenderTargetId,
         kind: RenderTargetKind,
         size: PhysicalSize<u32>,
-        app:  &AppHandle,
-        gpu:  &GpuContext,
+        app: &AppHandle,
+        gpu: &GpuContext,
     ) -> Result<RenderTarget, String> {
         use tauri::window::WindowBuilder;
 
         let label = format!("render-target-{}", id.raw());
 
-        let parent = app
-            .get_window("main")
-            .ok_or("Main window not found")?;
+        let parent = app.get_window("main").ok_or("Main window not found")?;
 
         let window = WindowBuilder::new(app, &label)
             .parent(&parent)
@@ -499,18 +501,18 @@ impl RenderTargetManager {
             .unwrap_or_else(|| capabilities.formats[0]);
 
         let configuration = wgpu::SurfaceConfiguration {
-            usage:                         wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format:                        surface_format,
-            width:                         size.width.max(1),
-            height:                        size.height.max(1),
-            present_mode:                  wgpu::PresentMode::AutoVsync,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode:                    capabilities
+            alpha_mode: capabilities
                 .alpha_modes
                 .first()
                 .copied()
                 .unwrap_or(wgpu::CompositeAlphaMode::Auto),
-            view_formats:                  vec![],
+            view_formats: vec![],
         };
 
         surface.configure(&gpu.device, &configuration);
@@ -520,8 +522,11 @@ impl RenderTargetManager {
             kind,
             size,
             surface_format,
-            state:         RenderTargetState { visible: false, ..Default::default() },
-            presentation:  PresentationTarget::NativeWindow { surface, window },
+            state: RenderTargetState {
+                visible: false,
+                ..Default::default()
+            },
+            presentation: PresentationTarget::NativeWindow { surface, window },
             configuration: Some(configuration),
         })
     }
@@ -544,9 +549,9 @@ mod tests {
 
     #[test]
     fn render_target_id_named_constants_are_distinct() {
-        assert_ne!(RenderTargetId::PROGRAM,  RenderTargetId::SOURCE);
-        assert_ne!(RenderTargetId::SOURCE,   RenderTargetId::EXTERNAL);
-        assert_ne!(RenderTargetId::PROGRAM,  RenderTargetId::EXTERNAL);
+        assert_ne!(RenderTargetId::PROGRAM, RenderTargetId::SOURCE);
+        assert_ne!(RenderTargetId::SOURCE, RenderTargetId::EXTERNAL);
+        assert_ne!(RenderTargetId::PROGRAM, RenderTargetId::EXTERNAL);
     }
 
     #[test]
@@ -566,16 +571,16 @@ mod tests {
 
     #[test]
     fn render_target_id_display() {
-        assert_eq!(format!("{}", RenderTargetId::PROGRAM),  "Program");
-        assert_eq!(format!("{}", RenderTargetId::SOURCE),   "Source");
+        assert_eq!(format!("{}", RenderTargetId::PROGRAM), "Program");
+        assert_eq!(format!("{}", RenderTargetId::SOURCE), "Source");
         assert_eq!(format!("{}", RenderTargetId::EXTERNAL), "External");
-        assert_eq!(format!("{}", RenderTargetId(42)),       "Target(42)");
+        assert_eq!(format!("{}", RenderTargetId(42)), "Target(42)");
     }
 
     #[test]
     fn frame_priority_ordering() {
         use crate::wgpu_compositor::frame_request::FramePriority;
-        assert!(FramePriority::Realtime   > FramePriority::Interactive);
+        assert!(FramePriority::Realtime > FramePriority::Interactive);
         assert!(FramePriority::Interactive > FramePriority::Background);
     }
 

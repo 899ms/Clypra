@@ -270,7 +270,11 @@ mod tests {
 
         // Mid-tones at 0.5 must remain centered around 0.5 for symmetrical S-curve
         let mid = evaluate_monotone_spline(&s_curve, 0.5);
-        assert!((mid - 0.5).abs() < 0.02, "S-curve mid-tone deviation: {}", mid);
+        assert!(
+            (mid - 0.5).abs() < 0.02,
+            "S-curve mid-tone deviation: {}",
+            mid
+        );
     }
 
     #[test]
@@ -294,7 +298,7 @@ mod tests {
 
         // Check red lift at x=0
         assert_eq!(lut.table_bytes[0], 26); // ~0.1 * 255
-        // Check green at x=0
+                                            // Check green at x=0
         assert_eq!(lut.table_bytes[1], 0);
         // Check master at x=128 (approx 0.5)
         assert!(lut.table_floats[128][3] > 0.65);

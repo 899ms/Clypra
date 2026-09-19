@@ -22,19 +22,23 @@ pub fn start(service: Arc<TransferService>) -> Result<(), String> {
     let port = service.server_port;
 
     // Announce socket (sends multicast)
-    let announce_socket = match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("[Transfer/Discovery] Cannot bind announce socket: {e}. Skipping UDP discovery.");
-            return Ok(());
-        }
-    };
+    let announce_socket =
+        match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!(
+                "[Transfer/Discovery] Cannot bind announce socket: {e}. Skipping UDP discovery."
+            );
+                return Ok(());
+            }
+        };
     if let Err(e) = announce_socket.set_broadcast(true) {
         log::warn!("[Transfer/Discovery] set_broadcast failed: {e}");
     }
 
     // Direct response socket (sends unicast back to discovering peers)
-    let direct_socket = match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)) {
+    let direct_socket = match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+    {
         Ok(s) => Arc::new(s),
         Err(e) => {
             log::warn!("[Transfer/Discovery] Cannot bind direct response socket: {e}");
@@ -43,7 +47,10 @@ pub fn start(service: Arc<TransferService>) -> Result<(), String> {
     };
 
     // Listen socket (receives multicast and unicast packets on port)
-    let listen_socket = match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)) {
+    let listen_socket = match UdpSocket::bind(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        port,
+    )) {
         Ok(s) => s,
         Err(e) => {
             log::warn!("[Transfer/Discovery] Cannot bind listen socket on :{port}: {e}. Skipping UDP discovery.");
@@ -83,7 +90,8 @@ pub fn start(service: Arc<TransferService>) -> Result<(), String> {
             match listen_socket.recv_from(&mut buf) {
                 Ok((len, src)) => {
                     if let Ok(text) = std::str::from_utf8(&buf[..len]) {
-                        if let Some(peer_fingerprint) = handle_announcement(&svc_listen, text, src) {
+                        if let Some(peer_fingerprint) = handle_announcement(&svc_listen, text, src)
+                        {
                             // Send direct unicast response back to sender to guarantee visibility
                             let payload = build_announcement(&svc_listen);
                             if let Ok(resp_bytes) = serde_json::to_vec(&payload) {
@@ -125,11 +133,7 @@ fn build_announcement(service: &TransferService) -> serde_json::Value {
     })
 }
 
-fn handle_announcement(
-    service: &TransferService,
-    text: &str,
-    src: SocketAddr,
-) -> Option<String> {
+fn handle_announcement(service: &TransferService, text: &str, src: SocketAddr) -> Option<String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Announcement {
@@ -160,7 +164,11 @@ fn handle_announcement(
     service.discovered_devices.insert(
         ann.fingerprint.clone(),
         DiscoveredDevice {
-            alias: if ann.alias.is_empty() { "Peer Device".to_string() } else { ann.alias },
+            alias: if ann.alias.is_empty() {
+                "Peer Device".to_string()
+            } else {
+                ann.alias
+            },
             device_type: ann.device_type,
             ip,
             port: effective_port,
@@ -232,7 +240,8 @@ pub async fn scan_subnet(
                     last_seen_secs: unix_secs(),
                 };
 
-                svc.discovered_devices.insert(info.fingerprint, device.clone());
+                svc.discovered_devices
+                    .insert(info.fingerprint, device.clone());
                 Some(device)
             });
         }

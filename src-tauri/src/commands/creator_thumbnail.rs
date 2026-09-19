@@ -54,11 +54,7 @@ pub async fn export_creator_thumbnail(
     let target_format_str = payload
         .format
         .as_deref()
-        .or_else(|| {
-            out_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-        })
+        .or_else(|| out_path.extension().and_then(|ext| ext.to_str()))
         .unwrap_or("png")
         .to_lowercase();
 
@@ -90,23 +86,18 @@ pub async fn export_creator_thumbnail(
             ));
         }
 
-        let img_buffer: ImageBuffer<Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(width, height, rgba)
-                .ok_or_else(|| "Failed to construct image buffer from RGBA data".to_string())?;
+        let img_buffer: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, rgba)
+            .ok_or_else(|| "Failed to construct image buffer from RGBA data".to_string())?;
         let dynamic_img = DynamicImage::ImageRgba8(img_buffer);
 
         let mut encoded = Vec::new();
         match image_format {
             ImageFormat::Jpeg => {
                 let rgb_img = dynamic_img.to_rgb8();
-                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality);
+                let mut encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality);
                 encoder
-                    .encode(
-                        rgb_img.as_raw(),
-                        width,
-                        height,
-                        ColorType::Rgb8.into(),
-                    )
+                    .encode(rgb_img.as_raw(), width, height, ColorType::Rgb8.into())
                     .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
             }
             ImageFormat::Png => {
@@ -168,25 +159,16 @@ pub async fn export_creator_thumbnail(
         match image_format {
             ImageFormat::Jpeg => {
                 let rgb_img = img.to_rgb8();
-                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality);
+                let mut encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality);
                 encoder
-                    .encode(
-                        rgb_img.as_raw(),
-                        width,
-                        height,
-                        ColorType::Rgb8.into(),
-                    )
+                    .encode(rgb_img.as_raw(), width, height, ColorType::Rgb8.into())
                     .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
             }
             ImageFormat::Png => {
                 let encoder = image::codecs::png::PngEncoder::new(&mut encoded);
                 encoder
-                    .write_image(
-                        img.as_bytes(),
-                        width,
-                        height,
-                        ColorType::Rgba8.into(),
-                    )
+                    .write_image(img.as_bytes(), width, height, ColorType::Rgba8.into())
                     .map_err(|e| format!("Failed to encode PNG: {}", e))?;
             }
             _ => {

@@ -735,8 +735,14 @@ impl NativeAudioClock {
                 clock_epoch: Instant::now(),
                 last_callback_ns: Arc::new(AtomicU64::new(0)),
                 interval_ring: Arc::new([
-                    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-                    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
                 ]),
                 interval_cursor: Arc::new(AtomicU64::new(0)),
             },
@@ -764,7 +770,9 @@ impl NativeAudioClock {
         self.inner.mixer_lock_misses.store(0, Ordering::Release);
         self.inner.callback_time_us.store(0, Ordering::Release);
         self.inner.callback_max_time_us.store(0, Ordering::Release);
-        self.inner.callback_over_budget_count.store(0, Ordering::Release);
+        self.inner
+            .callback_over_budget_count
+            .store(0, Ordering::Release);
         // Reset the freshness tracker so the new stream starts with a clean slate.
         // Zero is the sentinel for "no callback has fired yet".
         self.inner.last_callback_ns.store(0, Ordering::Release);
@@ -1276,7 +1284,12 @@ impl NativeAudioClock {
             if last_ns == 0 {
                 None
             } else {
-                let now_ns = self.inner.clock_epoch.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                let now_ns = self
+                    .inner
+                    .clock_epoch
+                    .elapsed()
+                    .as_nanos()
+                    .min(u64::MAX as u128) as u64;
                 Some(now_ns.saturating_sub(last_ns) / 1_000)
             }
         };
@@ -1486,10 +1499,8 @@ where
                 }
             }
 
-            let callback_elapsed_us = callback_started
-                .elapsed()
-                .as_micros()
-                .min(u64::MAX as u128) as u64;
+            let callback_elapsed_us =
+                callback_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
             callback_time_us.fetch_add(callback_elapsed_us, Ordering::Relaxed);
             callback_max_time_us.fetch_max(callback_elapsed_us, Ordering::Relaxed);
             let callback_budget_us = (frames as u64)
@@ -1680,7 +1691,9 @@ mod tests {
             false,
             48_000,
             2,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let clip2 = decode_native_audio_clip(
             &path2,
@@ -1701,12 +1714,24 @@ mod tests {
             false,
             48_000,
             2,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
-        eprintln!("Clip 1: duration_ticks={}, sample_count={}, sample_rate={}, channels={}",
-            clip1.duration_ticks, clip1.samples.len(), clip1.sample_rate, clip1.channels);
-        eprintln!("Clip 2: duration_ticks={}, sample_count={}, sample_rate={}, channels={}",
-            clip2.duration_ticks, clip2.samples.len(), clip2.sample_rate, clip2.channels);
+        eprintln!(
+            "Clip 1: duration_ticks={}, sample_count={}, sample_rate={}, channels={}",
+            clip1.duration_ticks,
+            clip1.samples.len(),
+            clip1.sample_rate,
+            clip1.channels
+        );
+        eprintln!(
+            "Clip 2: duration_ticks={}, sample_count={}, sample_rate={}, channels={}",
+            clip2.duration_ticks,
+            clip2.samples.len(),
+            clip2.sample_rate,
+            clip2.channels
+        );
 
         assert!(clip1.duration_ticks >= 40_000_000);
         assert!(clip2.duration_ticks >= 25_000_000);

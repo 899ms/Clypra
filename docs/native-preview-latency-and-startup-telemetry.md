@@ -189,6 +189,24 @@ play intent → native audio command complete → render session ready → first
 This event is emitted through Tauri and persisted in session telemetry; it is
 not Rust terminal logging and does not run in the per-frame hot path.
 
+### Audio control-plane isolation
+
+Native audio timeline replacement can decode and prepare a complete candidate
+graph before its atomic install. That work is intentionally allowed to take
+time, but it must not delay an explicit user transport action. The controller
+therefore uses two lanes:
+
+```text
+transport lane: play / pause / seek       → serial, short, latest intent
+source-sync lane: clips / timeline update → latest-value, atomic replacement
+```
+
+The transport lane does not await source synchronization. During a source
+update it operates on the already-installed graph; the replacement becomes
+visible atomically when ready. This preserves audio continuity and prevents a
+large media update from creating a click-to-play delay such as the observed
+18.819 second FIFO queue wait on macOS.
+
 The Cloudflare API schema and preview comparison analytics also recognize both fields. This permits cohort analysis across Windows Intel and macOS Apple Silicon without relying on untyped raw JSON.
 
 ## Files changed

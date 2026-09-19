@@ -24,6 +24,19 @@ import {
   syncNativeAudioTimeline,
   type NativeAudioTimelineSnapshot,
 } from "./nativeAudioTimeline";
+const NATIVE_PREVIEW_AUDIO_OPTIONS = { preserveTransportPitch: true } as const;
+
+type TransportInteractionName = "play" | "pause" | "seek";
+type TransportInteractionOutcome = "completed" | "superseded" | "failed";
+
+/** Lightweight local record for transport queue-wait diagnostics. */
+interface TimedInteraction {
+  name: TransportInteractionName;
+  startedAt: number;
+  queueWaitUs: number;
+  audioSeekUs: number;
+  audioTransportUs: number;
+  outcome: TransportInteractionOutcome;
 import {
   telemetryCollector,
   type TelemetryInteraction,
@@ -64,7 +77,14 @@ export class NativeAudioPreviewController {
   private readonly onError?: (error: Error) => void;
   private unsubscribe: (() => void) | null = null;
   private pollHandle: ReturnType<typeof setInterval> | null = null;
-  private commandQueue: Promise<void> = Promise.resolve();
+  /**
+   * Transport has a dedicated short-command lane. Play/pause/seek must never
+   * wait behind a media decode or atomic graph replacement initiated by a
+   * timeline edit.
+   */
+  private transportQueue: Promise<void> = Promise.resolve();
+  /** Latest-value lane for expensive timeline/clip graph synchronization. */
+  private sourceSyncQueue: Promise<void> = Promise.resolve();
   private lastState: PlaybackClockState | null = null;
   private active = false;
   private disposed = false;
@@ -90,7 +110,7 @@ export class NativeAudioPreviewController {
 
   setOutput(volume: number, muted: boolean): void {
     if (!this.active || this.disposed) return;
-    this.enqueue(
+    this.enqueueTransport(
       () => setNativeAudioOutput(Math.max(0, Math.min(1, volume / 100)), muted),
       "set-output",
     );
@@ -106,7 +126,7 @@ export class NativeAudioPreviewController {
     this.pendingSource = source;
     if (this.sourceUpdateScheduled) return;
     this.sourceUpdateScheduled = true;
-    this.enqueue(async () => {
+    this.enqueueSourceSync(async () => {
       try {
         while (this.pendingSource && !this.disposed) {
           const nextSource = this.pendingSource;
@@ -170,7 +190,7 @@ export class NativeAudioPreviewController {
       } finally {
         this.sourceUpdateScheduled = false;
       }
-    }, "sync-native-audio");
+    });
   }
 
   async initialize(): Promise<boolean> {
@@ -239,9 +259,11 @@ export class NativeAudioPreviewController {
     this.pollHandle = null;
     this.clock.clearNativeClockPosition();
     this.clock.setNativeClockAuthority(false);
-    const pendingCommands = this.commandQueue;
-    this.commandQueue = Promise.resolve();
-    await pendingCommands;
+    const pendingTransport = this.transportQueue;
+    const pendingSourceSync = this.sourceSyncQueue;
+    this.transportQueue = Promise.resolve();
+    this.sourceSyncQueue = Promise.resolve();
+    await Promise.all([pendingTransport, pendingSourceSync]);
     if (isTauriRuntime()) {
       try {
         await stopNativeAudio();
@@ -273,7 +295,10 @@ export class NativeAudioPreviewController {
     this.lastState = state;
 
     if (state.speed !== previous?.speed) {
-      this.enqueue(() => setNativeAudioSpeed(state.speed), "set-speed");
+      this.enqueueTransport(
+        () => setNativeAudioSpeed(state.speed),
+        "set-speed",
+      );
     }
     const stateChanged = state.state !== previous?.state;
     if (stateChanged) {
@@ -284,6 +309,7 @@ export class NativeAudioPreviewController {
     if (state.state === "playing" && previous?.state !== "playing") {
       this.restartPolling(true);
       const interaction = this.beginInteraction("play");
+      this.enqueueTransport(async () => {
       this.enqueue(async () => {
         const commandStartedAt = performance.now();
         if (
@@ -296,6 +322,7 @@ export class NativeAudioPreviewController {
         try {
           const seekStartedAt = performance.now();
           await seekNativeAudio(secondsToTicks(this.clock.time));
+          interaction.audioSeekUs = elapsedUs(seekStartedAt);
           interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
           if (
             this.transportIntentRevision !== transportIntentRevision ||
@@ -306,6 +333,8 @@ export class NativeAudioPreviewController {
           }
           const transportStartedAt = performance.now();
           const nativeState = await nativePlayFromAudio();
+          interaction.audioTransportUs =
+            elapsedUs(transportStartedAt);
           interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
           this.adoptNativePosition(nativeState.audioPositionTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
@@ -317,6 +346,7 @@ export class NativeAudioPreviewController {
     } else if (state.state !== "playing" && previous?.state === "playing") {
       this.restartPolling(false);
       const interaction = this.beginInteraction("pause");
+      this.enqueueTransport(async () => {
       this.enqueue(async () => {
         const commandStartedAt = performance.now();
         if (
@@ -332,12 +362,15 @@ export class NativeAudioPreviewController {
           const transportStartedAt = performance.now();
           await nativePauseFromAudio().catch(() => undefined);
           await pauseNativeAudio();
+          interaction.audioTransportUs =
+            elapsedUs(transportStartedAt);
           interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
           const seekStartedAt = performance.now();
           await seekNativeAudio(targetTicks);
           await nativeSeekFromAudio(
             Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
           );
+          interaction.audioSeekUs = elapsedUs(seekStartedAt);
           interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
           this.adoptNativePosition(targetTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
@@ -358,6 +391,7 @@ export class NativeAudioPreviewController {
       this.seekIntentRevision += 1;
       const seekIntentRevision = this.seekIntentRevision;
       const interaction = this.beginInteraction("seek");
+      this.enqueueTransport(async () => {
       this.enqueue(async () => {
         const commandStartedAt = performance.now();
         const stateBeforeSeek = this.clock.state;
@@ -378,6 +412,7 @@ export class NativeAudioPreviewController {
             this.seekIntentRevision !== seekIntentRevision ||
             stateAfterSeek === "playing"
           ) {
+            interaction.audioSeekUs = elapsedUs(seekStartedAt);
             interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
             this.finishInteraction(interaction, commandStartedAt, "superseded");
             return;
@@ -385,6 +420,7 @@ export class NativeAudioPreviewController {
           const nativeState = await nativeSeekFromAudio(
             Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
           );
+          interaction.audioSeekUs = elapsedUs(seekStartedAt);
           interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
           this.adoptNativePosition(nativeState.audioPositionTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
@@ -402,6 +438,14 @@ export class NativeAudioPreviewController {
     this.clock.setNativeClockPosition(position, this.clock.speed);
   }
 
+  private beginInteraction(name: TransportInteractionName): TimedInteraction {
+    return {
+      name,
+      startedAt: performance.now(),
+      queueWaitUs: 0,
+      audioSeekUs: 0,
+      audioTransportUs: 0,
+      outcome: "completed",
   private beginInteraction(name: TelemetryInteractionName): TimedInteraction {
     return {
       startedAt: performance.now(),
@@ -416,6 +460,19 @@ export class NativeAudioPreviewController {
   private finishInteraction(
     interaction: TimedInteraction,
     commandStartedAt: number,
+    outcome: TransportInteractionOutcome,
+  ): void {
+    interaction.queueWaitUs = Math.max(
+      0,
+      Math.round((commandStartedAt - interaction.startedAt) * 1_000),
+    );
+    interaction.outcome = outcome;
+    console.debug("[NativeAudioController] transport interaction", {
+      name: interaction.name,
+      outcome,
+      queueWaitUs: interaction.queueWaitUs,
+      audioSeekUs: interaction.audioSeekUs,
+      audioTransportUs: interaction.audioTransportUs,
     outcome: TelemetryInteractionOutcome,
   ): void {
     interaction.telemetry.queueWaitUs = Math.max(
@@ -463,9 +520,23 @@ export class NativeAudioPreviewController {
     }
   }
 
-  private enqueue(operation: () => Promise<void>, label = "unknown"): void {
+  private enqueueTransport(
+    operation: () => Promise<void>,
+    label = "unknown",
+  ): void {
     const commandRevision = ++this.commandRevision;
-    this.commandQueue = this.commandQueue
+    this.transportQueue = this.transportQueue
+      .then(async () => {
+        if (this.disposed || !this.active) return;
+        await operation();
+      })
+      .catch((error) => {
+        this.reportError(error);
+      });
+  }
+
+  private enqueueSourceSync(operation: () => Promise<void>): void {
+    this.sourceSyncQueue = this.sourceSyncQueue
       .then(async () => {
         if (this.disposed || !this.active) return;
         await operation();

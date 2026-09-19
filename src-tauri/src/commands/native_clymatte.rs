@@ -14,9 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::clymatte::{
-    ClymatteReader, ClymatteWriter, MattePrefetcher, CODEC_LZ4,
-};
+use crate::clymatte::{ClymatteReader, ClymatteWriter, MattePrefetcher, CODEC_LZ4};
 use crate::thumbnail_engine::decoder::get_preview_decoder_for_stream;
 use crate::wgpu_compositor::NativePreviewSession;
 
@@ -92,7 +90,11 @@ fn resolve_matte_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(matte_dir)
 }
 
-fn resolve_matte_path(app: &AppHandle, clip_id: &str, clip_hash: Option<&str>) -> Result<PathBuf, String> {
+fn resolve_matte_path(
+    app: &AppHandle,
+    clip_id: &str,
+    clip_hash: Option<&str>,
+) -> Result<PathBuf, String> {
     let dir = resolve_matte_dir(app)?;
     let file_name = if let Some(hash) = clip_hash {
         if !hash.trim().is_empty() {
@@ -152,7 +154,10 @@ pub async fn clymatte_check_status(
             })
         }
         Err(e) => {
-            log::warn!("Found invalid or outdated .clymatte file at {:?}: {e}", path);
+            log::warn!(
+                "Found invalid or outdated .clymatte file at {:?}: {e}",
+                path
+            );
             Ok(ClymatteStatus {
                 exists: false,
                 path: Some(path.to_string_lossy().into_owned()),
@@ -187,8 +192,7 @@ pub async fn clymatte_register_active_matte(
     }
 
     let reader = Arc::new(
-        ClymatteReader::open(&path)
-            .map_err(|e| format!("Failed to open .clymatte file: {e}"))?,
+        ClymatteReader::open(&path).map_err(|e| format!("Failed to open .clymatte file: {e}"))?,
     );
     let status = ClymatteStatus {
         exists: true,
@@ -227,7 +231,10 @@ pub async fn clymatte_unregister_active_matte(
     if let Some(session_state) = app.try_state::<Arc<Mutex<NativePreviewSession>>>() {
         let mut session = session_state.lock().await;
         session.unregister_matte_prefetcher(&clip_id);
-        log::info!("[Clymatte] Unregistered matte prefetcher for clip '{}'", clip_id);
+        log::info!(
+            "[Clymatte] Unregistered matte prefetcher for clip '{}'",
+            clip_id
+        );
     }
     Ok(())
 }
@@ -304,7 +311,8 @@ pub async fn clymatte_bake_clip(
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let started_at = Instant::now();
-        let target_path = resolve_matte_path(&app_handle, &request.clip_id, request.clip_hash.as_deref());
+        let target_path =
+            resolve_matte_path(&app_handle, &request.clip_id, request.clip_hash.as_deref());
         let path = match target_path {
             Ok(p) => p,
             Err(e) => {
@@ -346,12 +354,16 @@ pub async fn clymatte_bake_clip(
         };
 
         // Try to obtain a decoder lease for reading the clip frames
-        let decoder_lease = get_preview_decoder_for_stream(&request.video_path, &request.clip_id).await;
+        let decoder_lease =
+            get_preview_decoder_for_stream(&request.video_path, &request.clip_id).await;
 
         let frame_step_secs = 1.0 / fps;
         for frame_idx in 0..total_frames {
             if cancel_token.is_cancelled() {
-                log::info!("[ClymatteBake] Bake cancelled for clip '{}'", request.clip_id);
+                log::info!(
+                    "[ClymatteBake] Bake cancelled for clip '{}'",
+                    request.clip_id
+                );
                 drop(writer);
                 let _ = std::fs::remove_file(&path);
                 ACTIVE_BAKE_TASKS.remove(&request.clip_id);
@@ -366,7 +378,9 @@ pub async fn clymatte_bake_clip(
 
             if let Ok(decoder) = &decoder_lease {
                 let mut guard = decoder.lock().await;
-                if let Ok(decoded_rgba) = guard.decode_frame(current_time_secs, width as u32, height as u32) {
+                if let Ok(decoded_rgba) =
+                    guard.decode_frame(current_time_secs, width as u32, height as u32)
+                {
                     // Fast center-ellipse human prior heuristic when offline model is not loaded
                     let cx = (width as f32) * 0.5;
                     let cy = (height as f32) * 0.55;
@@ -429,7 +443,8 @@ pub async fn clymatte_bake_clip(
         // Auto-register newly baked file
         if let Ok(reader) = ClymatteReader::open(&path) {
             let prefetcher = Arc::new(MattePrefetcher::new(Arc::new(reader)));
-            if let Some(session_state) = app_handle.try_state::<Arc<Mutex<NativePreviewSession>>>() {
+            if let Some(session_state) = app_handle.try_state::<Arc<Mutex<NativePreviewSession>>>()
+            {
                 let mut session = session_state.lock().await;
                 session.register_matte_prefetcher(request.clip_id.clone(), prefetcher);
             }

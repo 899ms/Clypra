@@ -172,9 +172,8 @@ fn compute_ssim_rgba(img1: &[u8], img2: &[u8], width: usize, height: usize) -> f
             var2 /= n - 1.0;
             cov /= n - 1.0;
 
-            let ssim_block =
-                ((2.0 * mean1 * mean2 + C1) * (2.0 * cov + C2))
-                    / ((mean1 * mean1 + mean2 * mean2 + C1) * (var1 + var2 + C2));
+            let ssim_block = ((2.0 * mean1 * mean2 + C1) * (2.0 * cov + C2))
+                / ((mean1 * mean1 + mean2 * mean2 + C1) * (var1 + var2 + C2));
 
             total_ssim += ssim_block;
             num_blocks += 1;
@@ -251,7 +250,13 @@ mod tests {
         let metrics = compute_image_metrics(&actual, &expected, 64, 64).unwrap();
         assert_eq!(metrics.max_delta, 1);
         assert_eq!(metrics.mean_delta, 0.5);
-        assert!(metrics.psnr > 50.0, "PSNR must remain very high for 1-bit delta");
-        assert!(metrics.ssim > 0.999, "SSIM must remain > 0.999 for 1-bit delta");
+        assert!(
+            metrics.psnr > 50.0,
+            "PSNR must remain very high for 1-bit delta"
+        );
+        assert!(
+            metrics.ssim > 0.999,
+            "SSIM must remain > 0.999 for 1-bit delta"
+        );
     }
 }

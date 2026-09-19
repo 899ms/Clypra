@@ -243,9 +243,7 @@ pub async fn replace_native_audio_clips(
             Err(error) => {
                 eprintln!(
                     "[NativeAudio] Skipping failed audio clip {}: {} (path: {})",
-                    request.clip_id,
-                    error,
-                    request.path
+                    request.clip_id, error, request.path
                 );
             }
         }
@@ -255,7 +253,10 @@ pub async fn replace_native_audio_clips(
     eprintln!(
         "[NativeAudio] Installed {} audio clips: {:?}",
         decoded.len(),
-        statuses.iter().map(|s| (&s.id, s.duration_ticks)).collect::<Vec<_>>()
+        statuses
+            .iter()
+            .map(|s| (&s.id, s.duration_ticks))
+            .collect::<Vec<_>>()
     );
     clock
         .lock()

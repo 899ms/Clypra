@@ -140,8 +140,7 @@ pub async fn open_camera_privacy_settings() -> Result<(), String> {
     {
         // x-apple.systempreferences deep link — works on macOS 13+
         // Falls back to the general Privacy pane on older versions.
-        let url =
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera";
+        let url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera";
         std::process::Command::new("open")
             .arg(url)
             .spawn()
@@ -159,8 +158,7 @@ pub async fn open_camera_privacy_settings() -> Result<(), String> {
 pub async fn open_microphone_privacy_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let url =
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+        let url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
         std::process::Command::new("open")
             .arg(url)
             .spawn()
@@ -247,4 +245,3 @@ pub async fn log_system_media_diagnostics() -> Result<SystemMediaDiagnostics, St
         macos_clamshell_closed: clamshell_closed,
     })
 }
-
