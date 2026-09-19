@@ -128,6 +128,13 @@ struct QueuedNativeFrame {
     scheduler_wait_us: u64,
 }
 
+/// Never make a frame ready so far ahead that lookahead itself becomes a
+/// visible latency buffer. This is intentionally a presentation-latency budget,
+/// not a cache-capacity limit: the cache can retain decoded frames, but the
+/// playback queue must stay close to the audio clock.
+const MAX_LOOKAHEAD_RESIDENCY_US: u64 = 100_000;
+const MIN_LOOKAHEAD_FRAMES: usize = 2;
+
 fn native_presentation_timing(
     app: &tauri::AppHandle,
     frame_ticks: i64,
@@ -208,6 +215,7 @@ fn record_native_surface_sample(
     decode_timings: NativeDecodeTimings,
     queue_hit: bool,
     scheduler_wait_us: u64,
+    cold_start_init_us: Option<u64>,
     queue_residency_us: Option<u64>,
     conversion_upload_us: Option<u64>,
     compose_us: Option<u64>,
@@ -261,6 +269,7 @@ fn record_native_surface_sample(
         readback_us: None,
         present_us: submit_present_us,
         scheduler_wait_us: Some(scheduler_wait_us),
+        cold_start_init_us,
         queue_residency_us,
         ipc_wait_us: None,
         decoder_mutex_wait_us: Some(decode_timings.decoder_mutex_wait_us),
@@ -294,6 +303,7 @@ pub struct NativePreviewFrameQueue {
     latest_generation: Arc<AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
     highest_frame_index: Option<u64>,
+    decode_ewma_us: Option<u64>,
 }
 
 impl NativePreviewFrameQueue {
@@ -306,6 +316,7 @@ impl NativePreviewFrameQueue {
             latest_generation: Arc::new(AtomicU64::new(0)),
             notify: Arc::new(tokio::sync::Notify::new()),
             highest_frame_index: None,
+            decode_ewma_us: None,
         }
     }
 
@@ -331,6 +342,22 @@ impl NativePreviewFrameQueue {
 
     pub fn highest_frame_index(&self) -> Option<u64> {
         self.highest_frame_index
+    }
+
+    fn estimated_decode_us(&self) -> Option<u64> {
+        self.decode_ewma_us
+    }
+
+    fn discard_before(&mut self, frame_index: u64) {
+        let stale: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|(key, frame)| (frame.frame_index < frame_index).then(|| key.clone()))
+            .collect();
+        for key in stale {
+            self.entries.remove(&key);
+            self.order.retain(|entry| entry != &key);
+        }
     }
 
     pub fn observe_frame_index(&mut self, frame_index: u64) {
@@ -365,6 +392,15 @@ impl NativePreviewFrameQueue {
 
     fn complete(&mut self, key: String, frame: QueuedNativeFrame) {
         let frame_idx = frame.frame_index;
+        let elapsed_us = frame
+            .ready_at
+            .saturating_duration_since(frame.queued_at)
+            .as_micros()
+            .min(u64::MAX as u128) as u64;
+        self.decode_ewma_us = Some(match self.decode_ewma_us {
+            Some(previous) => previous.saturating_mul(7).saturating_add(elapsed_us) / 8,
+            None => elapsed_us,
+        });
         self.highest_frame_index =
             Some(self.highest_frame_index.map_or(frame_idx, |m| m.max(frame_idx)));
         self.pending.remove(&key);
@@ -423,8 +459,27 @@ impl NativePreviewFrameQueue {
         self.order.clear();
         self.pending.clear();
         self.highest_frame_index = None;
+        self.decode_ewma_us = None;
         self.latest_generation.store(0, Ordering::Release);
     }
+}
+
+fn deadline_aware_lookahead_count(
+    frame_rate: u32,
+    configured_count: usize,
+    estimated_decode_us: Option<u64>,
+) -> usize {
+    let frame_budget_us = 1_000_000u64 / u64::from(frame_rate.max(1));
+    let latency_cap = (MAX_LOOKAHEAD_RESIDENCY_US / frame_budget_us).max(1) as usize;
+    let decode_coverage = estimated_decode_us
+        .map(|decode_us| decode_us.div_ceil(frame_budget_us) as usize)
+        .unwrap_or(MIN_LOOKAHEAD_FRAMES)
+        .max(MIN_LOOKAHEAD_FRAMES);
+
+    configured_count
+        .min(latency_cap.max(MIN_LOOKAHEAD_FRAMES))
+        .min(decode_coverage)
+        .max(1)
 }
 
 fn default_clear_color() -> [f32; 4] {
@@ -2405,7 +2460,8 @@ pub(crate) fn schedule_lookahead_predecode(
     }
 
     let generation = base_request.generation.unwrap_or(0);
-    let fps = base_request.project.frame_rate.max(1) as f64;
+    let frame_rate = base_request.project.frame_rate.max(1);
+    let fps = frame_rate as f64;
 
     let mut worker_guard = match LOOKAHEAD_WORKER.lock() {
         Ok(guard) => guard,
@@ -2452,13 +2508,24 @@ pub(crate) fn schedule_lookahead_predecode(
         // so the decoder moves strictly FORWARD in 11ms sequential steps.
         let (start_frame_index, target_end_frame_index) = {
             let queue_opt = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>();
-            let highest = if let Some(queue) = &queue_opt {
-                queue.lock().await.highest_frame_index()
+            let (highest, effective_lookahead_count) = if let Some(queue) = &queue_opt {
+                let queue_state = queue.lock().await;
+                (
+                    queue_state.highest_frame_index(),
+                    deadline_aware_lookahead_count(
+                        frame_rate,
+                        lookahead_count,
+                        queue_state.estimated_decode_us(),
+                    ),
+                )
             } else {
-                None
+                (
+                    None,
+                    deadline_aware_lookahead_count(frame_rate, lookahead_count, None),
+                )
             };
 
-            let target_end = current_audio_frame.saturating_add(lookahead_count as u64);
+            let target_end = current_audio_frame.saturating_add(effective_lookahead_count as u64);
             let start = match highest {
                 Some(max_idx) if max_idx >= current_audio_frame => {
                     max_idx.saturating_add(1)
@@ -2479,6 +2546,20 @@ pub(crate) fn schedule_lookahead_predecode(
                 let queue_state = queue.lock().await;
                 if !queue_state.is_generation_current(generation) {
                     break;
+                }
+            }
+
+            // A decode that has fallen behind the advancing audio clock is
+            // guaranteed to increase queue residency rather than help the
+            // visible frame. Skip it and let the next scheduler pass target
+            // the current playhead instead.
+            if let Ok(audio_time) = crate::commands::native_playback::audio_clock_time(&app, true, false) {
+                let live_frame = ((audio_time.ticks as f64
+                    / audio_time.timescale.max(1) as f64)
+                    * fps)
+                    .round() as u64;
+                if target_frame_index < live_frame {
+                    continue;
                 }
             }
 
@@ -2779,6 +2860,11 @@ pub(crate) async fn present_native_frame_internal(
         if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>() {
             let queue_arc = queue.inner().clone();
             let mut q = queue_arc.lock().await;
+            // A visible request establishes the current playback floor. Keep
+            // at most the two-frame tolerance used by the closest-frame
+            // fallback; older entries can never be presented and only turn a
+            // full queue into latency.
+            q.discard_before(request.frame_time.frame_index.saturating_sub(2));
             if let Some(frame) = q.take(&queued_key) {
                 Some(frame)
             } else if is_playback_mode {
@@ -2861,6 +2947,7 @@ pub(crate) async fn present_native_frame_internal(
                     decode_timings,
                     queue_hit,
                     scheduler_wait_us,
+                    None,
                     queue_residency_us,
                     None,
                     None,
@@ -2882,7 +2969,12 @@ pub(crate) async fn present_native_frame_internal(
         .try_state::<Arc<LutCache>>()
         .map(|state| state.inner().clone());
 
+    let session_lock_started = Instant::now();
     let mut session = preview_state.lock().await;
+    let session_lock_wait_us = session_lock_started
+        .elapsed()
+        .as_micros()
+        .min(u64::MAX as u128) as u64;
     let gpu = Arc::clone(&session.gpu);
     let mut surface = surface_state
         .lock()
@@ -2921,6 +3013,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
+            None,
             queue_residency_us,
             None,
             None,
@@ -2958,6 +3051,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_timings,
             queue_hit,
             scheduler_wait_us,
+            None,
             queue_residency_us,
             None,
             None,
@@ -3108,11 +3202,23 @@ pub(crate) async fn present_native_frame_internal(
 
     let conversion_upload_us = conversion_started.elapsed().as_micros() as u64;
     let compose_started = Instant::now();
+    let compositor_was_warm = session.has_compositor(
+        legacy_request.canvas_width,
+        legacy_request.canvas_height,
+        target_format,
+    );
+    let compositor_init_started = Instant::now();
     let compositor = session.get_or_create_compositor(
         legacy_request.canvas_width,
         legacy_request.canvas_height,
         target_format,
     );
+    let compositor_init_us = compositor_init_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+    // This is intentionally reported only when a visible frame paid a
+    // first-use cost. Normal session mutex contention belongs elsewhere and
+    // should not pollute cold-start diagnostics.
+    let cold_start_init_us = (!compositor_was_warm || session_lock_wait_us >= 1_000)
+        .then_some(session_lock_wait_us.saturating_add(compositor_init_us));
     let mut specs = Vec::with_capacity(
         legacy_request.layers.len()
             + legacy_request.raster_layers.len()
@@ -3286,6 +3392,7 @@ pub(crate) async fn present_native_frame_internal(
         decode_timings,
         queue_hit,
         scheduler_wait_us,
+        cold_start_init_us,
         queue_residency_us,
         Some(conversion_upload_us),
         Some(compose_us),
@@ -3301,17 +3408,19 @@ pub(crate) async fn present_native_frame_internal(
     let upload_ms = (conversion_upload_us as f64) / 1000.0;
     let compose_ms = (compose_us as f64) / 1000.0;
     let present_ms = (submit_present_us as f64) / 1000.0;
+    let cold_start_init_ms = cold_start_init_us.unwrap_or(0) as f64 / 1000.0;
     let hit_tag = if queue_hit { "QUEUE_HIT" } else { "COLD_DECODE" };
     let layers_count = legacy_request.layers.len();
 
     if layers_count > 0 && (*VERBOSE_PREVIEW_LOGS || !queue_hit || total_ms > 33.33) {
         eprintln!(
-            "[NativePresent] Frame #{} [{}] total: {:.2}ms (decode: {:.2}ms, queue: {:.2}ms, upload: {:.2}ms, compose: {:.2}ms, present: {:.2}ms) | layers: {}",
+            "[NativePresent] Frame #{} [{}] total: {:.2}ms (decode: {:.2}ms, queue: {:.2}ms, cold-init: {:.2}ms, upload: {:.2}ms, compose: {:.2}ms, present: {:.2}ms) | layers: {}",
             request.frame_time.frame_index,
             hit_tag,
             total_ms,
             decode_ms,
             queue_residency_us.unwrap_or(0) as f64 / 1000.0,
+            cold_start_init_ms,
             upload_ms,
             compose_ms,
             present_ms,
@@ -3345,6 +3454,7 @@ pub(crate) async fn present_native_frame_internal(
             compose_us,
             surface_acquire_us,
             submit_present_us,
+            cold_start_init_us: cold_start_init_us.unwrap_or(0),
             queue_residency_us: queue_residency_us.unwrap_or(0),
             queue_hit,
         }),
@@ -3439,6 +3549,7 @@ pub async fn render_native_frame(
                 readback_us: None,
                 present_us: None,
                 scheduler_wait_us: None,
+                cold_start_init_us: None,
                 queue_residency_us: None,
                 ipc_wait_us: None,
                 decoder_mutex_wait_us: None,
@@ -3511,6 +3622,7 @@ pub async fn render_native_frame(
             readback_us: Some(u64::from(stage_timings.readback_time_us)),
             present_us: None,
             scheduler_wait_us: None,
+            cold_start_init_us: None,
             queue_residency_us: None,
             ipc_wait_us: None,
             decoder_mutex_wait_us: Some(stage_timings.decoder_mutex_wait_us),
@@ -3629,8 +3741,8 @@ mod tests {
         color_params, compute_text_layer_scale, merge_color_metadata, parse_blend_mode,
         project_layer_transform, queue_residency_us,
         validate_project_request, validate_video_project_request, NativeDecodeTimings,
-        NativePreviewFrameQueue, NativeProjectFrameRequest, NativeVideoProjectFrameRequest,
-        QueuedNativeFrame,
+        deadline_aware_lookahead_count, NativePreviewFrameQueue, NativeProjectFrameRequest,
+        NativeVideoProjectFrameRequest, QueuedNativeFrame,
     };
     use crate::native_core::TextLayerSnapshot;
     use crate::thumbnail_engine::decoder::VideoColorMetadata;
@@ -3643,6 +3755,15 @@ mod tests {
         assert_eq!(params.color_space, 0);
         assert_eq!(params.range, 0);
         assert_eq!(params.tonemap_operator, 0);
+    }
+
+    #[test]
+    fn lookahead_is_bounded_by_the_presentation_latency_budget() {
+        // A 16-frame queue at 30 fps creates more than half a second of
+        // avoidable ready-frame delay. Keep only enough work to cover the
+        // measured decoder lead while bounding the display latency to 100ms.
+        assert_eq!(deadline_aware_lookahead_count(30, 16, Some(40_000)), 2);
+        assert_eq!(deadline_aware_lookahead_count(30, 16, Some(500_000)), 3);
     }
 
     #[test]

@@ -342,6 +342,17 @@ impl NativePreviewSession {
         &self.compositors[self.compositors.len().saturating_sub(1)].compositor
     }
 
+    pub fn has_compositor(
+        &self,
+        width: u32,
+        height: u32,
+        target_format: wgpu::TextureFormat,
+    ) -> bool {
+        self.compositors.iter().any(|entry| {
+            entry.width == width && entry.height == height && entry.target_format == target_format
+        })
+    }
+
     /// Pre-compile and prime Metal/wgpu render pipelines for the project canvas
     /// dimensions and surface target format. Calling this during session opening
     /// or surface configuration completely eliminates the ~70ms first-frame

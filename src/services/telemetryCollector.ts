@@ -69,6 +69,7 @@ export interface TelemetryStageTimings {
   readbackUs?: number;
   submitPresentUs?: number;
   schedulerWaitUs?: number;
+  coldStartInitUs?: number;
   queueResidencyUs?: number;
   ipcWaitUs?: number;
   transferUs?: number;
@@ -92,6 +93,7 @@ export interface TelemetryStagePercentiles {
   readbackUs?: TelemetryMetricPercentiles;
   submitPresentUs?: TelemetryMetricPercentiles;
   schedulerWaitUs?: TelemetryMetricPercentiles;
+  coldStartInitUs?: TelemetryMetricPercentiles;
   queueResidencyUs?: TelemetryMetricPercentiles;
   ipcWaitUs?: TelemetryMetricPercentiles;
   transferUs?: TelemetryMetricPercentiles;
@@ -564,6 +566,7 @@ class SessionRollupAccumulator {
   private canvasPaintTimesUs: number[] = [];
   private presentTimesUs: number[] = [];
   private schedulerWaitTimesUs: number[] = [];
+  private coldStartInitTimesUs: number[] = [];
   private queueResidencyTimesUs: number[] = [];
   private ipcWaitTimesUs: number[] = [];
   private driftSamplesMs: number[] = [];
@@ -637,6 +640,8 @@ class SessionRollupAccumulator {
         this.presentTimesUs.push(timings.submitPresentUs);
       if (timings.schedulerWaitUs !== undefined)
         this.schedulerWaitTimesUs.push(timings.schedulerWaitUs);
+      if (timings.coldStartInitUs !== undefined)
+        this.coldStartInitTimesUs.push(timings.coldStartInitUs);
       if (timings.queueResidencyUs !== undefined)
         this.queueResidencyTimesUs.push(timings.queueResidencyUs);
       if (timings.ipcWaitUs !== undefined)
@@ -730,6 +735,7 @@ class SessionRollupAccumulator {
       canvasPaintUs: mean(this.canvasPaintTimesUs) || undefined,
       submitPresentUs: mean(this.presentTimesUs) || undefined,
       schedulerWaitUs: mean(this.schedulerWaitTimesUs) || undefined,
+      coldStartInitUs: mean(this.coldStartInitTimesUs) || undefined,
       queueResidencyUs: mean(this.queueResidencyTimesUs) || undefined,
       ipcWaitUs: mean(this.ipcWaitTimesUs) || undefined,
       totalTimeUs,
@@ -767,6 +773,7 @@ class SessionRollupAccumulator {
         canvasPaintUs: metricPercentiles(this.canvasPaintTimesUs),
         submitPresentUs: metricPercentiles(this.presentTimesUs),
         schedulerWaitUs: metricPercentiles(this.schedulerWaitTimesUs),
+        coldStartInitUs: metricPercentiles(this.coldStartInitTimesUs),
         queueResidencyUs: metricPercentiles(this.queueResidencyTimesUs),
         ipcWaitUs: metricPercentiles(this.ipcWaitTimesUs),
         totalTimeUs: metricPercentiles(this.renderTimesUs),
@@ -795,6 +802,7 @@ class SessionRollupAccumulator {
     this.canvasPaintTimesUs = [];
     this.presentTimesUs = [];
     this.schedulerWaitTimesUs = [];
+    this.coldStartInitTimesUs = [];
     this.queueResidencyTimesUs = [];
     this.ipcWaitTimesUs = [];
     this.driftSamplesMs = [];
@@ -826,6 +834,7 @@ class SessionRollupAccumulator {
     this.canvasPaintTimesUs = [];
     this.presentTimesUs = [];
     this.schedulerWaitTimesUs = [];
+    this.coldStartInitTimesUs = [];
     this.queueResidencyTimesUs = [];
     this.ipcWaitTimesUs = [];
     this.driftSamplesMs = [];
@@ -2075,6 +2084,7 @@ class TelemetryCollector {
         gpuQueueWaitUs?: number;
         surfaceAcquireUs?: number;
         schedulerWaitUs?: number;
+        coldStartInitUs?: number;
         queueResidencyUs?: number;
         ipcWaitUs?: number;
         dropped?: boolean;
@@ -2116,6 +2126,7 @@ class TelemetryCollector {
       gpuQueueWaitUs: last.gpuQueueWaitUs,
       readbackUs: last.readbackTimeUs,
       schedulerWaitUs: last.schedulerWaitUs,
+      coldStartInitUs: last.coldStartInitUs,
       queueResidencyUs: last.queueResidencyUs,
       ipcWaitUs: last.ipcWaitUs,
       submitPresentUs: last.presentTimeUs,

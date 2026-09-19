@@ -16,6 +16,10 @@ Future contributors and AI agents **must review this runbook** prior to modifyin
 - `src-tauri/src/sync_metrics.rs`
 - `src/components/editor/preview/NativeProgramPreview.tsx`
 
+For the v1.5.1 Windows first-playback latency investigation, deadline-aware
+lookahead policy, and cold-start telemetry contract, also read
+[`native-preview-latency-and-startup-telemetry.md`](./native-preview-latency-and-startup-telemetry.md).
+
 ---
 
 ## 2. Forensic Investigation & Bugs Resolved
@@ -173,5 +177,4 @@ npx vitest run src/core/evaluation/__tests__/timelineAssetsPerformance.test.ts
 6. **Always Use `tauri::async_runtime::spawn` on Native Public/Sync APIs**: Never call `tokio::spawn` directly in synchronous functions or handlers that may be called from OS GUI threads.
 7. **Always Pause on Timeline Seek/Scrub**: Seeking is a playhead navigation action that must leave playback paused until the user explicitly requests playback continuation.
 8. **Decouple Dynamic Overlays from Hardware Decoder Graphs**: Text, stickers, and dynamic rasters are compositor overlay demands, never structural decoding graphs. Their appearance, disappearance, or animated transform parameters must never restart the background render worker, clear the lookahead queue, or invalidate `buildNativePlaybackSnapshotKey`.
-
 

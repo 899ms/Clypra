@@ -121,6 +121,7 @@ export interface NativePerformanceSample {
   readbackUs?: number;
   presentUs?: number;
   schedulerWaitUs?: number;
+  coldStartInitUs?: number;
   /** Time a decoded lookahead frame waited ready to be presented. */
   queueResidencyUs?: number;
   ipcWaitUs?: number;
@@ -169,6 +170,7 @@ export interface NativeModeStats {
   readback: NativeStagePercentiles;
   present: NativeStagePercentiles;
   schedulerWait: NativeStagePercentiles;
+  coldStartInit: NativeStagePercentiles;
   queueResidency: NativeStagePercentiles;
   ipcWait: NativeStagePercentiles;
   decoderMutexWait: NativeStagePercentiles;
@@ -259,6 +261,7 @@ export interface NativeSurfacePresentation {
     surfaceAcquireUs: number;
     gpuQueueWaitUs?: number;
     submitPresentUs: number;
+    coldStartInitUs?: number;
     queueResidencyUs?: number;
     queueHit: boolean;
   };
