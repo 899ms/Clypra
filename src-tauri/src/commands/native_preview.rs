@@ -553,18 +553,23 @@ pub(crate) async fn prepare_native_preview_pipelines(
         .ok_or_else(|| "Native preview GPU session is unavailable".to_string())?;
     let preview_session = preview_state.inner().clone();
     let mut session = preview_session.lock().await;
+    // The Windows native surface always presents Bgra8UnormSrgb. Do not warm
+    // an RGBA readback graph as part of this latency-critical path: each graph
+    // eagerly creates five blend/transition pipelines, and Intel D3D12 drivers
+    // can spend seconds compiling every one. Readback creates its RGBA graph on
+    // demand; native-surface startup compiles exactly the graph it presents.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = target_format;
+        let surface_format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        if !session.has_compositor(width, height, surface_format) {
+            session.warmup_native_surface_pipelines(width, height, surface_format);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
     if !session.has_compositor(width, height, target_format) {
         session.warmup_gpu_pipelines(width, height, target_format);
-    }
-    // On Windows the swapchain always negotiates to Bgra8UnormSrgb, but this
-    // function may be called before configured_format() is set (e.g. the
-    // readiness gate in configure_native_playback_render runs while the surface
-    // is still being probed). If the caller passed a different format we still
-    // need Bgra8UnormSrgb compiled now so the first native surface presentation
-    // never pays an inline D3D12 pipeline-compile cost.
-    #[cfg(target_os = "windows")]
-    if !session.has_compositor(width, height, wgpu::TextureFormat::Bgra8UnormSrgb) {
-        session.warmup_gpu_pipelines(width, height, wgpu::TextureFormat::Bgra8UnormSrgb);
     }
     Ok(())
 }

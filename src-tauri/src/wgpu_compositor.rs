@@ -426,6 +426,22 @@ impl NativePreviewSession {
         }
     }
 
+    /// Warm only the graph used by a native presentation surface. This keeps
+    /// the first preview bounded on older Windows D3D12 drivers: the RGBA
+    /// readback graph is not part of a native-surface frame and must not make
+    /// startup wait for a second full set of blend pipelines.
+    pub fn warmup_native_surface_pipelines(
+        &mut self,
+        width: u32,
+        height: u32,
+        target_format: wgpu::TextureFormat,
+    ) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let _ = self.get_or_create_compositor(width, height, target_format);
+    }
+
     /// Convert one decoded NV12 frame into a GPU texture for timeline compositing.
     /// The texture is owned by the caller and remains valid until the compositor
     /// has submitted the project frame that samples it.

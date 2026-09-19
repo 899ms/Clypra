@@ -1056,6 +1056,17 @@ pub async fn configure_native_playback_render(
     // this prevents a project switch from temporarily growing the preview
     // decoder pool beyond its intended capacity.
     let render_session = NativeRenderSession::new(snapshot, startup_started_at).await?;
+    let _ = app.emit(
+        "clypra://native-playback-startup",
+        NativePlaybackStartupMilestone {
+            stage: "render-session-created",
+            elapsed_us: startup_started_at
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+            ready_after_us: None,
+        },
+    );
     let should_start = {
         let mut runtime = state
             .lock()
@@ -1097,6 +1108,17 @@ pub async fn configure_native_playback_render(
         target_format,
     )
     .await?;
+    let _ = app.emit(
+        "clypra://native-playback-startup",
+        NativePlaybackStartupMilestone {
+            stage: "gpu-pipelines-ready",
+            elapsed_us: startup_started_at
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+            ready_after_us: None,
+        },
+    );
 
     // Capability probe: decode one keyframe from the first video layer with a
     // 400 ms timeout. This runs synchronously here — after the GPU readiness
@@ -1109,6 +1131,17 @@ pub async fn configure_native_playback_render(
     // request and the audio-driven refill path on the same quality policy.
     render_session.set_preview_quality(lookahead_quality);
     render_session.mark_ready();
+    let _ = app.emit(
+        "clypra://native-playback-startup",
+        NativePlaybackStartupMilestone {
+            stage: "decode-policy-ready",
+            elapsed_us: startup_started_at
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+            ready_after_us: Some(render_session.ready_after_us.load(Ordering::Acquire)),
+        },
+    );
 
     // Store the probe result in the preview session so every sampled native
     // presentation can be attributed to the capability policy.

@@ -95,6 +95,53 @@ mode to replace the Program monitor when both are visible.
 
 ## Failure modes and permanent fixes
 
+### 0. Interaction traces are the primary performance unit
+
+Frame metrics answer whether rendering is fast; they do not answer whether an
+editor action felt responsive. Performance investigations must start from a
+single interaction trace and then inspect its stages. The supported taxonomy
+is intentionally small:
+
+| Interaction | Completion contract | Primary failure signals |
+| --- | --- | --- |
+| Play | Audio transport has started and the first native frame is visible | command queue delay, startup-ready time, first-frame time, missing audio |
+| Pause | Audio is stopped at the authoritative position and the paused frame is stable | command queue delay, pause/seek time, stale frame |
+| Seek | Requested target is the active authoritative timeline position and an exact frame is visible | superseded request, decode/readback, wrong target |
+| Scrub | Latest pointer target wins; intermediate requests may be superseded | request coalescing, cancellation, latest-frame latency |
+| Timeline edit | Edit is committed and the preview shows its new revision | interaction transaction, source-sync work, revision mismatch |
+
+Each trace carries an opaque interaction ID, intent timestamp, explicit
+outcome (`completed`, `superseded`, or `failed`), and stage durations. A
+superseded scrub is valid behavior and must not be classified as a failure;
+an action that finishes against an obsolete revision is a bug.
+
+The required milestone sequence is:
+
+```text
+user intent
+  → transport command begins
+  → native transport completes
+  → render session ready (when configuration is needed)
+  → target / first visible frame presented
+```
+
+`interaction` telemetry records the command/control-plane portion at 100%
+sampling. Native startup milestones record configuration-to-ready and
+configuration-to-first-visible-frame. Frame samples retain decode, queue,
+GPU, and presentation timings. Do not collapse these populations into a single
+average or add terminal logging to bridge missing visibility.
+
+For every reported interaction regression, classify it in this order:
+
+1. command queue blocked;
+2. native audio transport or seek blocked;
+3. render-session configuration / readiness blocked;
+4. decoder, queue, or GPU presentation blocked;
+5. result was superseded, stale, or incorrect.
+
+This ordering prevents misdiagnosing a slow Play click as an FFmpeg issue when
+the audio command has not even reached the native clock.
+
 ### 1. High-frequency logging was inside the frame path
 
 The decoder printed one `eprintln!` for every preview frame. Console I/O is not

@@ -165,6 +165,20 @@ variable.
 
 ### Transport interaction telemetry
 
+### Startup phase telemetry
+
+`clypra://native-playback-startup` is a phase trace, not only a first-frame
+marker. Every render revision records `render-session-created`,
+`gpu-pipelines-ready`, `decode-policy-ready`, and
+`first-native-frame-presented`. The session archive can therefore distinguish
+decoder-lease acquisition, GPU graph construction, policy probing, and the
+first actual presentation without terminal logging.
+
+Windows native-surface startup warms only `Bgra8UnormSrgb`, the actual DXGI
+swap-chain format. The RGBA readback compositor is intentionally lazy. Warming
+both graphs eagerly creates two complete sets of blend pipelines, which was the
+dominant first-preview cost in the Intel HD 520 telemetry cohort.
+
 Play, pause, and paused seek/scrub commands are recorded as individual,
 always-sampled `interaction` events. They contain no project or media content:
 only an opaque interaction ID, outcome (`completed`, `superseded`, or
