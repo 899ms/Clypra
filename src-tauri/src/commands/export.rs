@@ -45,6 +45,10 @@ pub struct ExportProgress {
 
     /// Current FPS (frames per second)
     pub fps: f64,
+
+    /// Real-time factor (e.g. 2.5 = 2.5x real time speed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtf: Option<f64>,
 }
 
 /// Audio clip configuration for mixing.
@@ -172,6 +176,7 @@ struct ExportSession {
     /// Export configuration (for frame size validation)
     width: u32,
     height: u32,
+    frame_rate: f64,
 
     /// Final output destination path
     final_output_path: std::path::PathBuf,
@@ -332,6 +337,147 @@ async fn has_audio_stream(path: &str) -> bool {
             false
         }
     }
+}
+
+fn calculate_export_bitrate(width: u32, height: u32, codec: &str) -> u64 {
+    let pixels = u64::from(width) * u64::from(height);
+    let base = if codec == "h265" || codec == "hevc" {
+        35_000_000u64
+    } else {
+        50_000_000u64
+    };
+    ((base * pixels) / (3840 * 2160)).max(4_000_000)
+}
+
+fn apply_export_codec_args(
+    cmd: &mut tokio::process::Command,
+    config: &ExportConfig,
+    encoder: &crate::commands::native_export::SelectedEncoder,
+) -> Result<(), String> {
+    use crate::commands::native_export::HwAccelType;
+
+    let gop_size = (config.frame_rate * 2.0).round() as i32;
+    let target_bitrate = calculate_export_bitrate(config.width, config.height, &config.codec);
+
+    // Color space tagging across all encoders to eliminate QuickTime gamma shift
+    cmd.arg("-color_range").arg("tv");
+    cmd.arg("-colorspace").arg("bt709");
+    cmd.arg("-color_primaries").arg("bt709");
+    cmd.arg("-color_trc").arg("bt709");
+
+    if config.codec == "vp9" || config.codec == "webm" {
+        cmd.arg("-c:v").arg("libvpx-vp9");
+        cmd.arg("-crf").arg(config.crf.to_string());
+        cmd.arg("-b:v").arg("0");
+        cmd.arg("-pix_fmt").arg("yuv420p");
+        return Ok(());
+    }
+
+    if config.codec == "gif" {
+        cmd.arg("-c:v").arg("gif");
+        cmd.arg("-loop").arg("0");
+        return Ok(());
+    }
+
+    match encoder.hw_type {
+        HwAccelType::VideoToolbox => {
+            if config.codec == "prores" {
+                cmd.arg("-c:v").arg("prores_videotoolbox");
+                cmd.arg("-allow_sw").arg("1");
+                let (prores_profile, prores_pix_fmt) = match config.pixel_format.as_str() {
+                    "yuva444p10le" | "yuv444p10le" => ("4444", "p410le"),
+                    "yuv422p10le" => ("hq", "p210le"),
+                    "yuv422p" => ("standard", "p210le"),
+                    _ => ("hq", "p210le"),
+                };
+                cmd.arg("-profile:v").arg(prores_profile);
+                cmd.arg("-pix_fmt").arg(prores_pix_fmt);
+            } else if config.codec == "h265" || config.codec == "hevc" {
+                cmd.arg("-c:v").arg(&encoder.codec_name);
+                cmd.arg("-tag:v").arg("hvc1");
+                cmd.arg("-b:v").arg(target_bitrate.to_string());
+                cmd.arg("-maxrate").arg((target_bitrate * 10 / 7).to_string());
+                cmd.arg("-bufsize").arg((target_bitrate * 2).to_string());
+                cmd.arg("-allow_sw").arg("1");
+                cmd.arg("-realtime").arg("1");
+                cmd.arg("-prio_speed").arg("1");
+                cmd.arg("-bf").arg("0");
+                cmd.arg("-g").arg(gop_size.to_string());
+                cmd.arg("-pix_fmt").arg(&config.pixel_format);
+            } else {
+                cmd.arg("-c:v").arg(&encoder.codec_name);
+                cmd.arg("-b:v").arg(target_bitrate.to_string());
+                cmd.arg("-maxrate").arg((target_bitrate * 10 / 7).to_string());
+                cmd.arg("-bufsize").arg((target_bitrate * 2).to_string());
+                cmd.arg("-allow_sw").arg("1");
+                cmd.arg("-realtime").arg("1");
+                cmd.arg("-prio_speed").arg("1");
+                cmd.arg("-bf").arg("0");
+                cmd.arg("-g").arg(gop_size.to_string());
+                cmd.arg("-pix_fmt").arg(&config.pixel_format);
+            }
+        }
+        HwAccelType::Nvenc => {
+            cmd.arg("-c:v").arg(&encoder.codec_name);
+            cmd.arg("-preset").arg("p4");
+            cmd.arg("-b:v").arg(target_bitrate.to_string());
+            cmd.arg("-maxrate").arg((target_bitrate * 10 / 7).to_string());
+            cmd.arg("-bufsize").arg((target_bitrate * 2).to_string());
+            cmd.arg("-bf").arg("0");
+            cmd.arg("-g").arg(gop_size.to_string());
+            cmd.arg("-pix_fmt").arg(&config.pixel_format);
+            if config.codec == "h265" || config.codec == "hevc" {
+                cmd.arg("-tag:v").arg("hvc1");
+            }
+        }
+        HwAccelType::Qsv | HwAccelType::Amf | HwAccelType::Vaapi => {
+            cmd.arg("-c:v").arg(&encoder.codec_name);
+            cmd.arg("-b:v").arg(target_bitrate.to_string());
+            cmd.arg("-bf").arg("0");
+            cmd.arg("-g").arg(gop_size.to_string());
+            cmd.arg("-pix_fmt").arg(&config.pixel_format);
+            if config.codec == "h265" || config.codec == "hevc" {
+                cmd.arg("-tag:v").arg("hvc1");
+            }
+        }
+        HwAccelType::Software => {
+            match config.codec.as_str() {
+                "h264" => {
+                    cmd.arg("-c:v").arg("libx264");
+                    cmd.arg("-preset").arg(&config.preset);
+                    cmd.arg("-crf").arg(config.crf.to_string());
+                    cmd.arg("-pix_fmt").arg(&config.pixel_format);
+                    cmd.arg("-g").arg(gop_size.to_string());
+                    cmd.arg("-keyint_min").arg(gop_size.to_string());
+                    cmd.arg("-x264-params").arg("scenecut=0:open_gop=0");
+                    cmd.arg("-force_key_frames").arg("expr:eq(n,0)");
+                }
+                "h265" | "hevc" => {
+                    cmd.arg("-c:v").arg("libx265");
+                    cmd.arg("-tag:v").arg("hvc1");
+                    cmd.arg("-preset").arg(&config.preset);
+                    cmd.arg("-crf").arg(config.crf.to_string());
+                    cmd.arg("-pix_fmt").arg(&config.pixel_format);
+                    cmd.arg("-g").arg(gop_size.to_string());
+                    cmd.arg("-keyint_min").arg(gop_size.to_string());
+                    cmd.arg("-x265-params").arg("scenecut=0:open-gop=0:force-idr=1");
+                }
+                "prores" => {
+                    cmd.arg("-c:v").arg("prores_ks");
+                    let (prores_profile, prores_pix_fmt) = match config.pixel_format.as_str() {
+                        "yuva444p10le" | "yuv444p10le" => ("4444", "yuva444p10le"),
+                        "yuv422p10le" => ("hq", "yuv422p10le"),
+                        "yuv422p" => ("standard", "yuv422p10le"),
+                        _ => ("hq", "yuv422p10le"),
+                    };
+                    cmd.arg("-profile:v").arg(prores_profile);
+                    cmd.arg("-pix_fmt").arg(prores_pix_fmt);
+                }
+                _ => return Err(format!("Unsupported codec: {}", config.codec)),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Start a video export session.
@@ -544,72 +690,9 @@ pub async fn start_video_export(
         cmd.arg("-map").arg("0:v");
     }
 
-    // Video codec settings
-    match config.codec.as_str() {
-        "h264" => {
-            cmd.arg("-c:v").arg("libx264");
-            cmd.arg("-preset").arg(&config.preset);
-            cmd.arg("-crf").arg(config.crf.to_string());
-            cmd.arg("-pix_fmt").arg(&config.pixel_format);
-            // Set GOP size to 2 seconds worth of frames (minimum for seekability)
-            let gop_size = (config.frame_rate * 2.0).round() as i32;
-            cmd.arg("-g").arg(gop_size.to_string());
-            cmd.arg("-keyint_min").arg(gop_size.to_string());
-            // Force IDR frames at every keyframe for maximum compatibility
-            cmd.arg("-x264-params").arg("scenecut=0:open_gop=0");
-            // Guarantee a clean first keyframe for thumbnail extraction.
-            // Desktop apps (Finder, Explorer) use the first keyframe as the thumbnail.
-            cmd.arg("-force_key_frames").arg("expr:eq(n,0)");
-        }
-        "h265" => {
-            cmd.arg("-c:v").arg("libx265");
-            cmd.arg("-tag:v").arg("hvc1"); // Enable compatibility with Apple (macOS Quick Look, Safari, iOS)
-            cmd.arg("-preset").arg(&config.preset);
-            cmd.arg("-crf").arg(config.crf.to_string());
-            cmd.arg("-pix_fmt").arg(&config.pixel_format);
-            // Set GOP size to 2 seconds worth of frames
-            let gop_size = (config.frame_rate * 2.0).round() as i32;
-            cmd.arg("-g").arg(gop_size.to_string());
-            cmd.arg("-keyint_min").arg(gop_size.to_string());
-            // FIX (BUG-H3): Combine scenecut/open-gop settings with force-idr in a
-            // single -x265-params string. Using -force_key_frames expr:eq(n,0) alongside
-            // -x265-params can conflict on some FFmpeg builds because libavcodec and
-            // libx265 have competing frame-type control. force-idr=1 is the canonical
-            // x265 mechanism and is processed after open-gop/scenecut, guaranteeing
-            // an IDR at frame 0 for thumbnail extraction.
-            cmd.arg("-x265-params")
-                .arg("scenecut=0:open-gop=0:force-idr=1");
-        }
-        "prores" => {
-            cmd.arg("-c:v").arg("prores_ks");
-            // FIX (BUG-H1): Map pixel_format from config to the correct prores_ks profile.
-            // Previously hardcoded to profile 3 / yuv422p10le, making ProRes 4444,
-            // LT, and Proxy unreachable even when requested via config.pixel_format.
-            let (prores_profile, prores_pix_fmt) = match config.pixel_format.as_str() {
-                "yuva444p10le" => ("4444", "yuva444p10le"),
-                "yuv444p10le" => ("4444", "yuv444p10le"),
-                "yuv422p10le" => ("hq", "yuv422p10le"),
-                "yuv422p" => ("standard", "yuv422p10le"),
-                _ => ("hq", "yuv422p10le"),
-            };
-            cmd.arg("-profile:v").arg(prores_profile);
-            cmd.arg("-pix_fmt").arg(prores_pix_fmt);
-            // ProRes is all-intra (every frame is a keyframe), no GOP setting needed
-        }
-        "vp9" | "webm" => {
-            cmd.arg("-c:v").arg("libvpx-vp9");
-            cmd.arg("-crf").arg(config.crf.to_string());
-            cmd.arg("-b:v").arg("0");
-            cmd.arg("-pix_fmt").arg("yuv420p");
-        }
-        "gif" => {
-            cmd.arg("-c:v").arg("gif");
-            cmd.arg("-loop").arg("0");
-        }
-        _ => {
-            return Err(format!("Unsupported codec: {}", config.codec));
-        }
-    }
+    // Video codec settings with hardware acceleration and Rec.709 color tagging
+    let encoder = crate::commands::native_export::detect_best_encoder(&config.codec);
+    apply_export_codec_args(&mut cmd, &config, &encoder)?;
 
     // Calculate atomic temporary output path on the same filesystem volume
     let final_output_path = std::path::PathBuf::from(&config.output_path);
@@ -672,6 +755,7 @@ pub async fn start_video_export(
         on_progress,
         width: config.width,
         height: config.height,
+        frame_rate: config.frame_rate,
         final_output_path,
         temp_output_path,
         frame_write_times: VecDeque::with_capacity(60),
@@ -816,6 +900,11 @@ pub async fn write_export_frame(request: Request<'_>) -> Result<(), String> {
     } else {
         0.0
     };
+    let rtf = if elapsed > 0.0 && session.frame_rate > 0.0 {
+        (session.current_frame as f64 / session.frame_rate) / elapsed
+    } else {
+        0.0
+    };
     let remaining_frames = session.total_frames.saturating_sub(session.current_frame);
     let eta_seconds = if fps > 0.0 {
         remaining_frames as f64 / fps
@@ -833,6 +922,7 @@ pub async fn write_export_frame(request: Request<'_>) -> Result<(), String> {
             progress: progress.min(1.0), // clamp: prevents >100% if frame count overshoots
             eta_seconds,
             fps,
+            rtf: Some(rtf),
         };
         let _ = session.on_progress.send(progress_update);
     }
@@ -991,6 +1081,11 @@ pub async fn write_export_frames_batch(request: Request<'_>) -> Result<(), Strin
     } else {
         0.0
     };
+    let rtf = if elapsed > 0.0 && session.frame_rate > 0.0 {
+        (session.current_frame as f64 / session.frame_rate) / elapsed
+    } else {
+        0.0
+    };
     let remaining_frames = session.total_frames.saturating_sub(session.current_frame); // FIX (BUG-H2): no underflow
     let eta_seconds = if fps > 0.0 {
         remaining_frames as f64 / fps
@@ -1008,6 +1103,7 @@ pub async fn write_export_frames_batch(request: Request<'_>) -> Result<(), Strin
             progress: progress.min(1.0), // FIX (BUG-H2): clamp in case frame count overshoots
             eta_seconds,
             fps,
+            rtf: Some(rtf),
         };
         let _ = session.on_progress.send(progress_update);
     }
@@ -1029,6 +1125,198 @@ pub async fn write_export_frames_batch(request: Request<'_>) -> Result<(), Strin
         fps,
         eta_seconds
     );
+
+    Ok(())
+}
+
+/// Render a frame directly on the GPU compositor and write it into FFmpeg's stdin pipe.
+///
+/// PERFORMANCE ARCHITECTURE:
+/// Eliminates the costly round-trip IPC transfer of uncompressed RGBA pixel buffers
+/// (e.g. 33.17 MB per 4K frame) across the Rust <-> Chromium WebView boundary.
+/// The GPU texture is read back into Rust memory and written immediately to FFmpeg stdin,
+/// eradicating V8 JavaScript heap pressure and garbage collection pauses.
+#[tauri::command]
+pub async fn render_and_write_export_frame(
+    app: tauri::AppHandle,
+    session_id: String,
+    request: clypra_native_core::FrameRequest,
+) -> Result<(), String> {
+    let session_arc = {
+        let sessions = EXPORT_SESSIONS.lock().await;
+        sessions
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| format!("Export session not found: {}", session_id))?
+    };
+
+    let rgba = crate::commands::native_preview::render_frame_request_rgba(&app, &request).await?;
+
+    let mut session = session_arc.lock().await;
+    let expected_size = (session.width * session.height * 4) as usize;
+    if rgba.len() != expected_size {
+        return Err(format!(
+            "Rendered frame size mismatch: expected {} bytes ({}x{}x4), got {} bytes",
+            expected_size, session.width, session.height, rgba.len()
+        ));
+    }
+
+    let write_start = std::time::Instant::now();
+    let stdin = session
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Export session stdin is closed or terminating".to_string())?;
+
+    stdin
+        .write_all(&rgba)
+        .await
+        .map_err(|e| format!("Failed to write rendered frame: {}", e))?;
+
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush frame: {}", e))?;
+
+    let write_duration = write_start.elapsed().as_secs_f64() * 1000.0;
+    session.frame_write_times.push_back(write_duration);
+    if session.frame_write_times.len() > 60 {
+        session.frame_write_times.pop_front();
+    }
+
+    session.current_frame += 1;
+
+    let progress = session.current_frame as f64 / session.total_frames as f64;
+    let elapsed = session.start_time.elapsed().as_secs_f64();
+    let fps = if elapsed > 0.0 {
+        session.current_frame as f64 / elapsed
+    } else {
+        0.0
+    };
+    let rtf = if elapsed > 0.0 && session.frame_rate > 0.0 {
+        (session.current_frame as f64 / session.frame_rate) / elapsed
+    } else {
+        0.0
+    };
+    let remaining_frames = session.total_frames.saturating_sub(session.current_frame);
+    let eta_seconds = if fps > 0.0 {
+        remaining_frames as f64 / fps
+    } else {
+        0.0
+    };
+
+    let is_last_frame = session.current_frame >= session.total_frames;
+    if is_last_frame || session.last_progress_emit.elapsed() >= PROGRESS_THROTTLE_INTERVAL {
+        session.last_progress_emit = std::time::Instant::now();
+        let progress_update = ExportProgress {
+            current_frame: session.current_frame,
+            total_frames: session.total_frames,
+            progress: progress.min(1.0),
+            eta_seconds,
+            fps,
+            rtf: Some(rtf),
+        };
+        let _ = session.on_progress.send(progress_update);
+    }
+
+    Ok(())
+}
+
+/// Render multiple frames directly on the GPU compositor and write them into FFmpeg stdin.
+#[tauri::command]
+pub async fn render_and_write_export_frames_batch(
+    app: tauri::AppHandle,
+    session_id: String,
+    requests: Vec<clypra_native_core::FrameRequest>,
+) -> Result<(), String> {
+    if requests.is_empty() {
+        return Ok(());
+    }
+
+    let session_arc = {
+        let sessions = EXPORT_SESSIONS.lock().await;
+        sessions
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| format!("Export session not found: {}", session_id))?
+    };
+
+    let mut rendered_frames = Vec::with_capacity(requests.len());
+    for req in &requests {
+        let rgba = crate::commands::native_preview::render_frame_request_rgba(&app, req).await?;
+        rendered_frames.push(rgba);
+    }
+
+    let mut session = session_arc.lock().await;
+    let expected_size = (session.width * session.height * 4) as usize;
+
+    let write_start = std::time::Instant::now();
+    let stdin = session
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Export session stdin is closed or terminating".to_string())?;
+
+    for rgba in &rendered_frames {
+        if rgba.len() != expected_size {
+            return Err(format!(
+                "Batch frame size mismatch: expected {} bytes, got {} bytes",
+                expected_size, rgba.len()
+            ));
+        }
+        stdin
+            .write_all(rgba)
+            .await
+            .map_err(|e| format!("Failed to write batch frame: {}", e))?;
+    }
+
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush batch frames: {}", e))?;
+
+    let batch_count = requests.len() as u32;
+    let write_duration = write_start.elapsed().as_secs_f64() * 1000.0;
+    let per_frame_ms = write_duration / batch_count as f64;
+    for _ in 0..batch_count {
+        session.frame_write_times.push_back(per_frame_ms);
+        if session.frame_write_times.len() > 60 {
+            session.frame_write_times.pop_front();
+        }
+    }
+
+    session.current_frame += batch_count;
+
+    let progress = session.current_frame as f64 / session.total_frames as f64;
+    let elapsed = session.start_time.elapsed().as_secs_f64();
+    let fps = if elapsed > 0.0 {
+        session.current_frame as f64 / elapsed
+    } else {
+        0.0
+    };
+    let rtf = if elapsed > 0.0 && session.frame_rate > 0.0 {
+        (session.current_frame as f64 / session.frame_rate) / elapsed
+    } else {
+        0.0
+    };
+    let remaining_frames = session.total_frames.saturating_sub(session.current_frame);
+    let eta_seconds = if fps > 0.0 {
+        remaining_frames as f64 / fps
+    } else {
+        0.0
+    };
+
+    let is_last_frame = session.current_frame >= session.total_frames;
+    if is_last_frame || session.last_progress_emit.elapsed() >= PROGRESS_THROTTLE_INTERVAL {
+        session.last_progress_emit = std::time::Instant::now();
+        let progress_update = ExportProgress {
+            current_frame: session.current_frame,
+            total_frames: session.total_frames,
+            progress: progress.min(1.0),
+            eta_seconds,
+            fps,
+            rtf: Some(rtf),
+        };
+        let _ = session.on_progress.send(progress_update);
+    }
 
     Ok(())
 }

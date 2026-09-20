@@ -80,6 +80,7 @@ interface VideoExportProgress {
   progress: number;
   etaSeconds?: number;
   fps?: number;
+  rtf?: number;
   status?: string;
 }
 
@@ -522,6 +523,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                 totalFrames: p.totalFrames,
                 progress: p.progress,
                 fps: p.fps,
+                rtf: p.rtf,
                 etaSeconds: p.etaSeconds,
               }),
             onSessionReady: (cancel) => {
@@ -576,6 +578,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
         pixelFormat: selectedPreset.pixelFormat as any,
         signal: controller.signal,
         forceExportWithBaseTypography: forceWithBaseTypography,
+        directGpuPipe: platform.isTauri(),
         onProgress: (p) => safeSetProgress(p),
         // FIX (BUG-C2): Receive the live cancel function as soon as FFmpeg starts.
         // Storing it in a ref lets handleCancelExport call it at any time.
@@ -1088,6 +1091,11 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                             </div>
                             <div className="text-right font-medium text-text-primary tabular-nums">
                               {progress.fps.toFixed(1)} fps
+                              {progress.rtf !== undefined ? (
+                                <span className="text-text-muted text-[10px] ml-1.5 font-normal">
+                                  ({progress.rtf.toFixed(2)}x RTF)
+                                </span>
+                              ) : null}
                             </div>
                           </>
                         )}

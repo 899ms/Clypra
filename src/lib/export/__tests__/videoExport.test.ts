@@ -247,6 +247,44 @@ describe("videoExport", () => {
     });
   });
 
+  it("uses direct GPU render pipe without IPC pixel transfer when directGpuPipe is true", async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "start_video_export") return "session-direct-gpu";
+      if (cmd === "render_and_write_export_frame") return;
+      if (cmd === "finalize_video_export") return;
+      return null;
+    });
+
+    const config = createValidConfig({
+      directGpuPipe: true,
+    });
+
+    const result = await exportVideo(config);
+    expect(result.cancelled).toBe(false);
+    expect(result.totalFrames).toBe(3);
+
+    // Verify direct GPU render command was invoked per frame
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "render_and_write_export_frame",
+      expect.objectContaining({
+        sessionId: "session-direct-gpu",
+        request: expect.any(Object),
+      })
+    );
+
+    // Verify batch buffer IPC write was bypassed
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "write_export_frames_batch",
+      expect.anything(),
+      expect.anything()
+    );
+
+    // Verify finalize
+    expect(mockInvoke).toHaveBeenCalledWith("finalize_video_export", {
+      sessionId: "session-direct-gpu",
+    });
+  });
+
   it("handles cancellation via AbortSignal", async () => {
     const abortController = new AbortController();
     abortController.abort(); // Pre-aborted

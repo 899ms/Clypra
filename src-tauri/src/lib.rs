@@ -432,6 +432,8 @@ pub fn run() {
             start_video_export,
             write_export_frame,
             write_export_frames_batch,
+            render_and_write_export_frame,
+            render_and_write_export_frames_batch,
             finalize_video_export,
             cancel_video_export,
             start_native_timeline_export,

@@ -69,6 +69,9 @@ export interface ExportProgress {
   /** Current FPS (frames per second) */
   fps?: number;
 
+  /** Real-time factor speed multiplier (e.g. 2.5 = 2.5x real-time speed) */
+  rtf?: number;
+
   /** Status text (for mobile/cloud custom steps) */
   status?: string;
 }

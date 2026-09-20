@@ -364,7 +364,12 @@ fn build_segment_args(
                     number(plan.frame_rate * 2.0),
                 ]);
             } else if plan.codec == "prores" {
-                args.extend(["-c:v".into(), encoder.codec_name.clone()]);
+                args.extend([
+                    "-c:v".into(),
+                    encoder.codec_name.clone(),
+                    "-allow_sw".into(),
+                    "1".into(),
+                ]);
             }
         }
         HwAccelType::Nvenc => {
@@ -472,9 +477,27 @@ fn build_segment_args(
         }
     }
 
+    let segment_pix_fmt = if encoder.codec_name == "prores_videotoolbox" {
+        if plan.pixel_format.contains("444") {
+            "p410le".to_string()
+        } else {
+            "p210le".to_string()
+        }
+    } else {
+        plan.pixel_format.clone()
+    };
+
     args.extend([
+        "-color_range".into(),
+        "tv".into(),
+        "-colorspace".into(),
+        "bt709".into(),
+        "-color_primaries".into(),
+        "bt709".into(),
+        "-color_trc".into(),
+        "bt709".into(),
         "-pix_fmt".into(),
-        plan.pixel_format.clone(),
+        segment_pix_fmt,
         "-video_track_timescale".into(),
         "90000".into(),
         "-t".into(),
@@ -881,6 +904,11 @@ async fn run_native_export(
             } else {
                 0.0
             };
+            let rtf = if elapsed > 0.0 && plan.frame_rate > 0.0 {
+                (current_frame as f64 / plan.frame_rate) / elapsed
+            } else {
+                0.0
+            };
             let remaining_frames = total_frames.saturating_sub(current_frame);
             let _ = on_progress.send(ExportProgress {
                 current_frame,
@@ -892,6 +920,7 @@ async fn run_native_export(
                     0.0
                 },
                 fps,
+                rtf: Some(rtf),
             });
         }
 
@@ -932,6 +961,11 @@ async fn run_native_export(
             .map_err(|error| format!("Failed to commit native export file: {error}"))?;
 
         let elapsed = started.elapsed().as_secs_f64();
+        let final_rtf = if elapsed > 0.0 && plan.frame_rate > 0.0 {
+            (total_frames as f64 / plan.frame_rate) / elapsed
+        } else {
+            0.0
+        };
         let _ = on_progress.send(ExportProgress {
             current_frame: total_frames,
             total_frames,
@@ -942,6 +976,7 @@ async fn run_native_export(
             } else {
                 0.0
             },
+            rtf: Some(final_rtf),
         });
 
         Ok(NativeExportCompletion {
