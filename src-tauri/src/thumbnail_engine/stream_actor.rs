@@ -49,6 +49,7 @@ pub struct DecodedActorFrame {
     pub actor_wait_us: u64,
     pub from_prime_cache: bool,
     pub quality: QualityTier,
+    pub is_approximate: bool,
 }
 
 impl DecodedActorFrame {
@@ -112,7 +113,9 @@ impl StreamDecoderActorHandle {
         {
             let mut cache = self.prime_cache.lock().await;
             if let Some(pos) = cache.iter().position(|f| {
-                (f.time_secs - time_secs).abs() <= tolerance && f.quality == options.quality
+                (!f.is_approximate || options.allow_keyframe_approx)
+                    && (f.time_secs - time_secs).abs() <= tolerance
+                    && f.quality == options.quality
             }) {
                 let mut hit = cache[pos].clone();
                 if pos != cache.len() - 1 {
@@ -281,7 +284,8 @@ impl StreamDecoderActor {
             {
                 let mut cache = self.prime_cache.lock().await;
                 if let Some(pos) = cache.iter().position(|f| {
-                    (f.time_secs - job.request.time_secs).abs() <= tolerance
+                    (!f.is_approximate || job.request.options.allow_keyframe_approx)
+                        && (f.time_secs - job.request.time_secs).abs() <= tolerance
                         && f.quality == job.request.options.quality
                 }) {
                     let mut hit = cache[pos].clone();
@@ -420,6 +424,7 @@ impl StreamDecoderActor {
 
             let frame_res =
                 guard.decode_frame_raw_nv12_with_options(target_time, options, is_cancelled);
+            let is_approx = guard.is_last_frame_approximate();
 
             let decode_us = decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
 
@@ -437,6 +442,7 @@ impl StreamDecoderActor {
                         color,
                         decode_us,
                         mutex_wait_us,
+                        is_approx,
                     ))
                 }
                 Err(err) => Err(err),
@@ -445,7 +451,7 @@ impl StreamDecoderActor {
         .await
         .map_err(|e| format!("Decode spawn_blocking panicked: {e}"))?;
 
-        let (y_plane, uv_plane, width, height, color, decode_us, mutex_wait_us) = result?;
+        let (y_plane, uv_plane, width, height, color, decode_us, mutex_wait_us, is_approx) = result?;
 
         Ok(DecodedActorFrame {
             time_secs: target_time,
@@ -459,6 +465,7 @@ impl StreamDecoderActor {
             actor_wait_us: 0,
             from_prime_cache: false,
             quality: options.quality,
+            is_approximate: is_approx,
         })
     }
 }
@@ -537,6 +544,7 @@ mod tests {
             actor_wait_us: 0,
             from_prime_cache: false,
             quality: QualityTier::Full,
+            is_approximate: false,
         };
 
         prime_cache.lock().await.push_back(cached_frame);
@@ -547,7 +555,7 @@ mod tests {
             prefetch_tx,
             current_generation,
             cancel_in_flight,
-            prime_cache,
+            prime_cache: prime_cache.clone(),
             frame_duration_secs: 1.0 / 30.0,
         };
 
@@ -571,9 +579,45 @@ mod tests {
             .expect("should hit near match");
         assert!(res_near.from_prime_cache);
 
-        // Quality mismatch should NOT hit cache
+        // Insert an approximate frame into prime cache
+        let approx_frame = DecodedActorFrame {
+            time_secs: 2.0,
+            y_plane: Arc::from(vec![0u8; 16]),
+            uv_plane: Arc::from(vec![0u8; 8]),
+            width: 4,
+            height: 4,
+            color: VideoColorMetadata::default(),
+            decode_us: 10,
+            decoder_mutex_wait_us: 5,
+            actor_wait_us: 0,
+            from_prime_cache: false,
+            quality: QualityTier::Full,
+            is_approximate: true,
+        };
+        prime_cache.lock().await.push_back(approx_frame);
+
+        // Approximate request hits prime cache
+        let opts_approx = DecodeFrameOptions {
+            allow_keyframe_approx: true,
+            quality: QualityTier::Full,
+        };
+        let res_approx = handle
+            .decode_frame(2.0, opts_approx, false, 0)
+            .await
+            .expect("approx request should hit approx cached frame");
+        assert!(res_approx.from_prime_cache);
+
+        // Exact request (allow_keyframe_approx: false) must NOT hit approximate cached frame!
+        // Because channel is empty/closed, this will fail or skip cache rather than returning approx
         drop(_urgent_rx);
         drop(_prefetch_rx);
+        let opts_exact = DecodeFrameOptions {
+            allow_keyframe_approx: false,
+            quality: QualityTier::Full,
+        };
+        let err_exact = handle.decode_frame(2.0, opts_exact, false, 0).await;
+        assert!(err_exact.is_err(), "Exact request must not return approximate cached frame");
+
         let opts_half = DecodeFrameOptions {
             allow_keyframe_approx: false,
             quality: QualityTier::Half,

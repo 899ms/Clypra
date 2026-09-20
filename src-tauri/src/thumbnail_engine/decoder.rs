@@ -26,6 +26,7 @@ pub struct CachedNv12Frame {
     pub width: u32,
     pub height: u32,
     pub color: VideoColorMetadata,
+    pub is_approximate: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -379,11 +380,15 @@ pub struct VideoDecoder {
     /// session is stopped and again when audio playback starts. Retain only
     /// the last raw frame so that boundary does not force a second FFmpeg
     /// seek/decode before playback has even begun.
-    last_raw_nv12: Option<(i64, Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata)>,
+    last_raw_nv12: Option<(i64, Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata, bool)>,
     raw_nv12_cache: VecDeque<CachedNv12Frame>,
 }
 
 impl VideoDecoder {
+    pub fn is_last_frame_approximate(&self) -> bool {
+        self.last_raw_nv12.as_ref().map(|f| f.6).unwrap_or(false)
+    }
+
     fn clamp_timestamp(&self, timestamp_secs: f64) -> f64 {
         let timestamp_secs = timestamp_secs.max(0.0);
         // Still-image demuxers commonly report an unknown/zero container
@@ -1622,7 +1627,10 @@ impl VideoDecoder {
         if let Some(pos) = self
             .raw_nv12_cache
             .iter()
-            .position(|cached| (cached.pts - target_pts).abs() <= pts_tolerance)
+            .position(|cached| {
+                (!cached.is_approximate || options.allow_keyframe_approx)
+                    && (cached.pts - target_pts).abs() <= pts_tolerance
+            })
         {
             let cached = self.raw_nv12_cache.remove(pos).unwrap();
             let y_clone = Arc::clone(&cached.y_plane);
@@ -1634,8 +1642,10 @@ impl VideoDecoder {
             return Ok((y_clone, uv_clone, width, height, color));
         }
 
-        if let Some((cached_pts, y, uv, width, height, color)) = &self.last_raw_nv12 {
-            if (*cached_pts - target_pts).abs() <= pts_tolerance {
+        if let Some((cached_pts, y, uv, width, height, color, is_approx)) = &self.last_raw_nv12 {
+            if (!*is_approx || options.allow_keyframe_approx)
+                && (*cached_pts - target_pts).abs() <= pts_tolerance
+            {
                 return Ok((
                     Arc::clone(y),
                     Arc::clone(uv),
@@ -1706,21 +1716,23 @@ impl VideoDecoder {
         }
 
         // Drain any frame already buffered in the codec DPB before reading new packets from container
-        let mut buffered = ffmpeg::frame::Video::empty();
-        while self.decoder.receive_frame(&mut buffered).is_ok() {
-            if is_cancelled() {
-                return Err("Native preview request cancelled".to_string());
-            }
-            let pts = buffered.pts().unwrap_or(0);
-            self.state.current_pts = pts;
-            let frame_ts = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
-            if frame_ts >= ts - (1.0 / 60.0) {
+        if !found {
+            let mut buffered = ffmpeg::frame::Video::empty();
+            while self.decoder.receive_frame(&mut buffered).is_ok() {
+                if is_cancelled() {
+                    return Err("Native preview request cancelled".to_string());
+                }
+                let pts = buffered.pts().unwrap_or(0);
+                self.state.current_pts = pts;
+                let frame_ts = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
+                if frame_ts >= ts - (1.0 / 60.0) {
+                    best_frame = buffered;
+                    found = true;
+                    break;
+                }
                 best_frame = buffered;
-                found = true;
-                break;
+                buffered = ffmpeg::frame::Video::empty();
             }
-            best_frame = buffered;
-            buffered = ffmpeg::frame::Video::empty();
         }
 
         if !found {
@@ -1864,6 +1876,8 @@ impl VideoDecoder {
         }?;
         let y_arc: Arc<[u8]> = Arc::from(result.0);
         let uv_arc: Arc<[u8]> = Arc::from(result.1);
+        let is_approx = options.allow_keyframe_approx
+            && (self.state.current_pts - target_pts).abs() > pts_tolerance;
         self.last_raw_nv12 = Some((
             target_pts,
             Arc::clone(&y_arc),
@@ -1871,6 +1885,7 @@ impl VideoDecoder {
             result.2,
             result.3,
             result.4.clone(),
+            is_approx,
         ));
         if self.raw_nv12_cache.len() >= MAX_RAW_NV12_CACHE_ENTRIES {
             self.raw_nv12_cache.pop_front();
@@ -1882,6 +1897,7 @@ impl VideoDecoder {
             width: result.2,
             height: result.3,
             color: result.4.clone(),
+            is_approximate: is_approx,
         });
         Ok((y_arc, uv_arc, result.2, result.3, result.4))
     }
@@ -1988,21 +2004,23 @@ impl VideoDecoder {
         }
 
         // Drain DPB
-        let mut buffered = ffmpeg::frame::Video::empty();
-        while self.decoder.receive_frame(&mut buffered).is_ok() {
-            if is_cancelled() {
-                return Err("Native preview request cancelled".to_string());
-            }
-            let pts = buffered.pts().unwrap_or(0);
-            self.state.current_pts = pts;
-            let frame_ts = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
-            if frame_ts >= ts - (1.0 / 60.0) {
+        if !found {
+            let mut buffered = ffmpeg::frame::Video::empty();
+            while self.decoder.receive_frame(&mut buffered).is_ok() {
+                if is_cancelled() {
+                    return Err("Native preview request cancelled".to_string());
+                }
+                let pts = buffered.pts().unwrap_or(0);
+                self.state.current_pts = pts;
+                let frame_ts = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
+                if frame_ts >= ts - (1.0 / 60.0) {
+                    best_frame = buffered;
+                    found = true;
+                    break;
+                }
                 best_frame = buffered;
-                found = true;
-                break;
+                buffered = ffmpeg::frame::Video::empty();
             }
-            best_frame = buffered;
-            buffered = ffmpeg::frame::Video::empty();
         }
 
         if !found {
@@ -2841,10 +2859,44 @@ mod still_image_tests {
                 width: 1920,
                 height: 1080,
                 color: VideoColorMetadata::default(),
+                is_approximate: false,
             });
         }
         assert_eq!(cache.len(), MAX_RAW_NV12_CACHE_ENTRIES);
         assert_eq!(cache.front().unwrap().pts, 9); // 0..9 evicted, 9 is now front
         assert_eq!(cache.back().unwrap().pts, 24);
+    }
+
+    #[test]
+    fn raw_nv12_cache_ignores_approximate_frame_for_exact_request() {
+        use super::{CachedNv12Frame, VideoColorMetadata};
+        use std::collections::VecDeque;
+        use std::sync::Arc;
+
+        let mut cache: VecDeque<CachedNv12Frame> = VecDeque::new();
+        cache.push_back(CachedNv12Frame {
+            pts: 1000,
+            y_plane: Arc::from(vec![1u8]),
+            uv_plane: Arc::from(vec![2u8]),
+            width: 1920,
+            height: 1080,
+            color: VideoColorMetadata::default(),
+            is_approximate: true,
+        });
+
+        let target_pts = 1000;
+        let pts_tolerance = 5;
+
+        // Exact request (allow_keyframe_approx == false): must NOT match
+        let exact_match = cache.iter().position(|cached| {
+            (!cached.is_approximate || false) && (cached.pts - target_pts).abs() <= pts_tolerance
+        });
+        assert_eq!(exact_match, None);
+
+        // Approximate request (allow_keyframe_approx == true): matches
+        let approx_match = cache.iter().position(|cached| {
+            (!cached.is_approximate || true) && (cached.pts - target_pts).abs() <= pts_tolerance
+        });
+        assert_eq!(approx_match, Some(0));
     }
 }
