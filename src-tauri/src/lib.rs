@@ -134,9 +134,7 @@ pub fn run() {
                     .quit()
                     .build()?;
 
-                let file_menu = SubmenuBuilder::new(app, "File")
-                    .close_window()
-                    .build()?;
+                let file_menu = SubmenuBuilder::new(app, "File").close_window().build()?;
 
                 let edit_menu = SubmenuBuilder::new(app, "Edit")
                     .item(&undo_item)
@@ -148,9 +146,7 @@ pub fn run() {
                     .select_all()
                     .build()?;
 
-                let view_menu = SubmenuBuilder::new(app, "View")
-                    .fullscreen()
-                    .build()?;
+                let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
 
                 let window_menu = SubmenuBuilder::new(app, "Window")
                     .minimize()
@@ -172,16 +168,14 @@ pub fn run() {
 
                 app.set_menu(menu)?;
 
-                app.on_menu_event(move |app_handle, event| {
-                    match event.id().as_ref() {
-                        "menu-undo" => {
-                            let _ = app_handle.emit("menu-undo", ());
-                        }
-                        "menu-redo" => {
-                            let _ = app_handle.emit("menu-redo", ());
-                        }
-                        _ => {}
+                app.on_menu_event(move |app_handle, event| match event.id().as_ref() {
+                    "menu-undo" => {
+                        let _ = app_handle.emit("menu-undo", ());
                     }
+                    "menu-redo" => {
+                        let _ = app_handle.emit("menu-redo", ());
+                    }
+                    _ => {}
                 });
             }
 

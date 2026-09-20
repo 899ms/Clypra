@@ -380,7 +380,15 @@ pub struct VideoDecoder {
     /// session is stopped and again when audio playback starts. Retain only
     /// the last raw frame so that boundary does not force a second FFmpeg
     /// seek/decode before playback has even begun.
-    last_raw_nv12: Option<(i64, Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata, bool)>,
+    last_raw_nv12: Option<(
+        i64,
+        Arc<[u8]>,
+        Arc<[u8]>,
+        u32,
+        u32,
+        VideoColorMetadata,
+        bool,
+    )>,
     raw_nv12_cache: VecDeque<CachedNv12Frame>,
 }
 
@@ -710,8 +718,70 @@ impl VideoDecoder {
             .unwrap_or(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE)
     }
 
+    #[cfg(target_os = "windows")]
+    unsafe fn configure_d3d11va_shared_frames(
+        ctx: *mut ffmpeg::ffi::AVCodecContext,
+        chosen: ffmpeg::ffi::AVPixelFormat,
+    ) {
+        #[repr(C)]
+        struct AVD3D11VAFramesContext {
+            texture: *mut std::ffi::c_void,
+            bind_flags: u32,
+            misc_flags: u32,
+        }
+
+        if ctx.is_null() || (*ctx).hw_device_ctx.is_null() {
+            return;
+        }
+
+        if !(*ctx).hw_frames_ctx.is_null() {
+            ffmpeg::ffi::av_buffer_unref(&mut (*ctx).hw_frames_ctx);
+        }
+
+        let mut frames_ref = std::ptr::null_mut();
+        let ret = ffmpeg::ffi::avcodec_get_hw_frames_parameters(
+            ctx,
+            (*ctx).hw_device_ctx,
+            chosen,
+            &mut frames_ref,
+        );
+        if ret < 0 || frames_ref.is_null() {
+            log::debug!(
+                "[VideoDecoder] avcodec_get_hw_frames_parameters returned {ret}; using default hw frames"
+            );
+            return;
+        }
+
+        let frames_ctx = (*frames_ref).data as *mut ffmpeg::ffi::AVHWFramesContext;
+        if frames_ctx.is_null() {
+            ffmpeg::ffi::av_buffer_unref(&mut frames_ref);
+            return;
+        }
+
+        let hwctx = (*frames_ctx).hwctx as *mut AVD3D11VAFramesContext;
+        if !hwctx.is_null() {
+            // D3D11_RESOURCE_MISC_SHARED (0x2) | D3D11_RESOURCE_MISC_SHARED_NTHANDLE (0x800)
+            (*hwctx).misc_flags |= 0x802;
+            // D3D11_BIND_DECODER (0x200) | D3D11_BIND_SHADER_RESOURCE (0x8)
+            (*hwctx).bind_flags |= 0x208;
+        }
+
+        let init_ret = ffmpeg::ffi::av_hwframe_ctx_init(frames_ref);
+        if init_ret >= 0 {
+            (*ctx).hw_frames_ctx = frames_ref;
+            log::info!(
+                "[VideoDecoder] D3D11VA hw_frames_ctx configured with SHARED_NTHANDLE (0x802)"
+            );
+        } else {
+            log::warn!(
+                "[VideoDecoder] av_hwframe_ctx_init failed ({init_ret}); falling back to default FFmpeg frames"
+            );
+            ffmpeg::ffi::av_buffer_unref(&mut frames_ref);
+        }
+    }
+
     unsafe extern "C" fn get_hw_format(
-        _ctx: *mut ffmpeg::ffi::AVCodecContext,
+        #[allow(unused_variables)] ctx: *mut ffmpeg::ffi::AVCodecContext,
         pix_fmts: *const ffmpeg::ffi::AVPixelFormat,
     ) -> ffmpeg::ffi::AVPixelFormat {
         if pix_fmts.is_null() {
@@ -727,7 +797,12 @@ impl VideoDecoder {
             offered.push(*current);
             current = current.add(1);
         }
-        Self::select_decoder_pixel_format(&offered, Self::platform_hw_pixel_format())
+        let chosen = Self::select_decoder_pixel_format(&offered, Self::platform_hw_pixel_format());
+        #[cfg(target_os = "windows")]
+        if chosen == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11 {
+            Self::configure_d3d11va_shared_frames(ctx, chosen);
+        }
+        chosen
     }
 
     /// A hardware device is attached only when the selected codec explicitly
@@ -793,14 +868,45 @@ impl VideoDecoder {
                 continue;
             }
             unsafe {
+                #[cfg(target_os = "windows")]
+                let device_arg = if hw_type == ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
+                {
+                    crate::wgpu_compositor::adapter_selector::get_selected_dxgi_adapter_index()
+                        .and_then(|idx| std::ffi::CString::new(idx.to_string()).ok())
+                } else {
+                    None
+                };
+                #[cfg(not(target_os = "windows"))]
+                let device_arg: Option<std::ffi::CString> = None;
+
+                let device_ptr = device_arg
+                    .as_ref()
+                    .map(|s| s.as_ptr())
+                    .unwrap_or(std::ptr::null());
+
                 let mut hw_ctx = std::ptr::null_mut();
-                let ret = ffmpeg::ffi::av_hwdevice_ctx_create(
+                let mut ret = ffmpeg::ffi::av_hwdevice_ctx_create(
                     &mut hw_ctx,
                     hw_type,
-                    std::ptr::null(),
+                    device_ptr,
                     std::ptr::null_mut(),
                     0,
                 );
+
+                if ret < 0 && !device_ptr.is_null() {
+                    log::warn!(
+                        "[VideoDecoder] av_hwdevice_ctx_create failed with DXGI adapter {:?}; retrying with default device",
+                        device_arg
+                    );
+                    ret = ffmpeg::ffi::av_hwdevice_ctx_create(
+                        &mut hw_ctx,
+                        hw_type,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        0,
+                    );
+                }
+
                 if ret >= 0 && !hw_ctx.is_null() {
                     (*ctx.as_mut_ptr()).hw_device_ctx = ffmpeg::ffi::av_buffer_ref(hw_ctx);
                     ffmpeg::ffi::av_buffer_unref(&mut hw_ctx);
@@ -1624,14 +1730,10 @@ impl VideoDecoder {
             .max(1.0) as i64;
 
         // 1. Check LRU ring-buffer cache for recently decoded frames
-        if let Some(pos) = self
-            .raw_nv12_cache
-            .iter()
-            .position(|cached| {
-                (!cached.is_approximate || options.allow_keyframe_approx)
-                    && (cached.pts - target_pts).abs() <= pts_tolerance
-            })
-        {
+        if let Some(pos) = self.raw_nv12_cache.iter().position(|cached| {
+            (!cached.is_approximate || options.allow_keyframe_approx)
+                && (cached.pts - target_pts).abs() <= pts_tolerance
+        }) {
             let cached = self.raw_nv12_cache.remove(pos).unwrap();
             let y_clone = Arc::clone(&cached.y_plane);
             let uv_clone = Arc::clone(&cached.uv_plane);
