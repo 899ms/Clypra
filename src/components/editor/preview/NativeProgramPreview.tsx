@@ -227,6 +227,9 @@ interface ConnectedProgramTransportProps {
   disabled: boolean;
   onPlayPause: () => void;
   onSeek: (time: number) => void;
+  onScrubStart?: (time: number) => void;
+  onScrubUpdate?: (time: number) => void;
+  onScrubEnd?: (time: number) => void;
   formatTime: (seconds: number) => string;
   onStepBack: (currentTime: number) => void;
   onStepForward: (currentTime: number) => void;
@@ -260,6 +263,9 @@ const ConnectedProgramTransport: React.FC<ConnectedProgramTransportProps> =
         disabled={props.disabled}
         onPlayPause={props.onPlayPause}
         onSeek={props.onSeek}
+        onScrubStart={props.onScrubStart}
+        onScrubUpdate={props.onScrubUpdate}
+        onScrubEnd={props.onScrubEnd}
         formatTime={props.formatTime}
         onStepBack={() => props.onStepBack(clockState.time)}
         onStepForward={() => props.onStepForward(clockState.time)}
@@ -366,6 +372,9 @@ export const NativeProgramPreview: React.FC = () => {
     play: transportPlay,
     pause: transportPause,
     seek: transportSeek,
+    beginScrub: transportBeginScrub,
+    updateScrub: transportUpdateScrub,
+    endScrub: transportEndScrub,
     setSpeed: transportSetSpeed,
     setActiveContext,
   } = useTransportControls();
@@ -1289,6 +1298,7 @@ export const NativeProgramPreview: React.FC = () => {
       seekController?.getCurrent() ?? null;
     let visibleRequestGeneration = seekController?.getGeneration() ?? 0;
     let transportRevision = 0;
+    let activeTimelineEditStartedAt: number | null = null;
     const sessionNativeRasterBridge = capturedSession?.nativeRasterBridge;
     if (!sessionNativeRasterBridge) {
       console.warn(
@@ -2329,9 +2339,12 @@ export const NativeProgramPreview: React.FC = () => {
           nativeSurfaceGeometrySettledRef.current &&
           nativeAudioClockReadyForTarget &&
           nativeContinuousBlockedRevision !== nativeRevisionForTarget;
+        const isScrubbing = Boolean(latestSeekIntent?.isScrubbing);
+        const isSettling = Boolean(latestSeekIntent?.isSettling);
+        const isInteracting = (!isPlaying && clock.isSeeking) || isScrubbing;
         const baseRenderTarget = getNativeRenderTarget(
           state,
-          !isPlaying && clock.isSeeking,
+          isInteracting && !isSettling,
         );
         const webViewTargetRequired =
           !isPlaying ||
@@ -2340,6 +2353,31 @@ export const NativeProgramPreview: React.FC = () => {
         const renderTarget = webViewTargetRequired
           ? capWebViewRenderTarget(baseRenderTarget)
           : baseRenderTarget;
+
+        // Dual-lane preview:
+        // Lane 1: Low-resolution proxy scrub lane (capped <= 480px, proxy/quarter quality)
+        // Lane 2: Full-resolution settled lane (full quality, full dimensions)
+        let effectiveRenderTarget = renderTarget;
+        if (isScrubbing) {
+          const maxScrubDim = 480;
+          const scrubScale = Math.min(
+            1,
+            maxScrubDim / Math.max(renderTarget.width, renderTarget.height),
+          );
+          effectiveRenderTarget = {
+            width: Math.max(1, Math.round(renderTarget.width * scrubScale)),
+            height: Math.max(1, Math.round(renderTarget.height * scrubScale)),
+            quality: (latestSeekIntent?.quality === "proxy"
+              ? "proxy"
+              : "quarter") as NativeFrameRequest["quality"],
+          };
+        } else if (isSettling) {
+          effectiveRenderTarget = {
+            ...renderTarget,
+            quality: "full" as NativeFrameRequest["quality"],
+          };
+        }
+
         const requestIntent = latestSeekIntent
           ? {
               generation: latestSeekIntent.generation,
@@ -2347,14 +2385,19 @@ export const NativeProgramPreview: React.FC = () => {
                 isPlaying && latestSeekIntent.mode !== "scrub"
                   ? ("playback" as const)
                   : latestSeekIntent.mode,
-              quality:
-                latestSeekIntent.mode === "scrub" && latestSeekIntent.quality !== "full"
-                  ? latestSeekIntent.quality
-                  : renderTarget.quality,
+              quality: isScrubbing
+                ? effectiveRenderTarget.quality
+                : isSettling
+                  ? ("full" as const)
+                  : latestSeekIntent.quality !== "full"
+                    ? latestSeekIntent.quality
+                    : effectiveRenderTarget.quality,
               velocityPxPerSecond: latestSeekIntent.velocityPxPerSecond,
               requestedAtMs: latestSeekIntent.issuedAtMs,
               isScrubbing: latestSeekIntent.isScrubbing,
-              allowKeyframeApprox: latestSeekIntent.allowKeyframeApprox,
+              allowKeyframeApprox: isSettling
+                ? false
+                : latestSeekIntent.allowKeyframeApprox,
             }
           : isPlaying
             ? { mode: "playback" as const, quality: renderTarget.quality }
@@ -2375,6 +2418,12 @@ export const NativeProgramPreview: React.FC = () => {
         const transitionsChanged =
           state.transitions !== lastRenderedTransitions;
         const projectChanged = state.project !== lastRenderedProject;
+        if (
+          !isFirstFrame &&
+          (clipsChanged || tracksChanged || transitionsChanged || projectChanged)
+        ) {
+          activeTimelineEditStartedAt = performance.now();
+        }
 
         const mediaReadyRevision =
           capturedSession.getPreviewMediaReadyRevision();
@@ -2510,8 +2559,8 @@ export const NativeProgramPreview: React.FC = () => {
           await nativeRasterBridge.rasterizeSmartOverlays(
             nativeActiveSmartClips,
             frameStartTime,
-            renderTarget.width,
-            renderTarget.height,
+            effectiveRenderTarget.width,
+            effectiveRenderTarget.height,
             { frameKey: frameIndex },
           );
         traceSlowPlaybackStage(
@@ -2536,8 +2585,8 @@ export const NativeProgramPreview: React.FC = () => {
           `${state.project?.id ?? "unknown-project"}:${state.epoch}`,
           frameIndex,
           frameRate,
-          renderTarget.width,
-          renderTarget.height,
+          effectiveRenderTarget.width,
+          effectiveRenderTarget.height,
           nativeRasterLayers,
           requestIntent,
         );
@@ -2838,6 +2887,18 @@ export const NativeProgramPreview: React.FC = () => {
                     ...requestToPresent,
                     generation: targetGeneration,
                   };
+                  if (latestSeekIntent?.scrubSpanId) {
+                    const demandDelayUs = Math.max(
+                      0,
+                      Math.round(
+                        (performance.now() - latestSeekIntent.issuedAtMs) * 1000,
+                      ),
+                    );
+                    telemetryCollector.recordScrubDemandDispatched(
+                      latestSeekIntent.scrubSpanId,
+                      demandDelayUs,
+                    );
+                  }
                   void submitNativePlaybackDemand(
                     createNativePlaybackFrameDemand(playbackDemandRequest),
                   ).catch((error) => {
@@ -2912,6 +2973,18 @@ export const NativeProgramPreview: React.FC = () => {
                   : null;
                 frontendSpan?.markDispatchStarted();
                 frontendSpan?.markIpcStarted();
+                if (latestSeekIntent?.scrubSpanId) {
+                  const demandDelayUs = Math.max(
+                    0,
+                    Math.round(
+                      (performance.now() - latestSeekIntent.issuedAtMs) * 1000,
+                    ),
+                  );
+                  telemetryCollector.recordScrubDemandDispatched(
+                    latestSeekIntent.scrubSpanId,
+                    demandDelayUs,
+                  );
+                }
                 nativePlaybackInFlight = presentNativePlaybackFrame(
                   requestToPresent,
                 )
@@ -3034,6 +3107,69 @@ export const NativeProgramPreview: React.FC = () => {
                             }
                           : undefined,
                       });
+                      if (latestSeekIntent?.scrubSpanId) {
+                        const elapsedSinceInputUs = Math.max(
+                          0,
+                          Math.round(
+                            (performance.now() - latestSeekIntent.issuedAtMs) *
+                              1000,
+                          ),
+                        );
+                        if (latestSeekIntent.isScrubbing) {
+                          telemetryCollector.recordScrubProxyFramePresented(
+                            latestSeekIntent.scrubSpanId,
+                            elapsedSinceInputUs,
+                          );
+                        }
+                        if (latestSeekIntent.isSettling) {
+                          let avErrorUs: number | undefined;
+                          if (
+                            typeof presentation.audioPositionTicks ===
+                              "number" &&
+                            presentation.audioPositionTicks > 0
+                          ) {
+                            const audioSecs =
+                              presentation.audioPositionTicks / 1_000_000;
+                            const frameSecs =
+                              requestToPresent.frameTime.ticks /
+                              requestToPresent.frameTime.timescale;
+                            avErrorUs = Math.round(
+                              Math.abs(frameSecs - audioSecs) * 1_000_000,
+                            );
+                          }
+                          telemetryCollector.finishScrubSpan(
+                            latestSeekIntent.scrubSpanId,
+                            {
+                              settledFrameUs: elapsedSinceInputUs,
+                              correct: true,
+                              avErrorUs,
+                            },
+                          );
+                          latestSeekIntent.isSettling = false;
+                        }
+                        if (timings?.actorWaitUs) {
+                          telemetryCollector.recordScrubActorWait(
+                            latestSeekIntent.scrubSpanId,
+                            timings.actorWaitUs,
+                          );
+                        }
+                      }
+                      if (activeTimelineEditStartedAt !== null) {
+                        const editTotalUs = Math.round(
+                          (performance.now() - activeTimelineEditStartedAt) *
+                            1000,
+                        );
+                        telemetryCollector.recordPreviewInteraction({
+                          interaction: {
+                            id: `timeline-edit-${Date.now()}`,
+                            name: "timeline-edit",
+                            outcome: "completed",
+                          },
+                          totalTimeUs: editTotalUs,
+                          previewContext: previewTelemetryContextRef.current,
+                        });
+                        activeTimelineEditStartedAt = null;
+                      }
                       const current = renderStateRef.current;
                       const currentRequestIsStillAuthoritative =
                         requestKey === nativeRequestKey || isPlaying;
@@ -3108,6 +3244,18 @@ export const NativeProgramPreview: React.FC = () => {
               } else {
                 // Non-authoritative readback path used by native-surface
                 // recovery and by paused/seeking editor interaction.
+                if (latestSeekIntent?.scrubSpanId) {
+                  const demandDelayUs = Math.max(
+                    0,
+                    Math.round(
+                      (performance.now() - latestSeekIntent.issuedAtMs) * 1000,
+                    ),
+                  );
+                  telemetryCollector.recordScrubDemandDispatched(
+                    latestSeekIntent.scrubSpanId,
+                    demandDelayUs,
+                  );
+                }
                 nativePlaybackInFlight = nativePreviewScheduler
                   .requestVisible(requestSource)
                   .then((frame) => {
@@ -3238,6 +3386,18 @@ export const NativeProgramPreview: React.FC = () => {
                   request: requestForRender,
                   generation: targetGeneration,
                 };
+                if (latestSeekIntent?.scrubSpanId) {
+                  const demandDelayUs = Math.max(
+                    0,
+                    Math.round(
+                      (performance.now() - latestSeekIntent.issuedAtMs) * 1000,
+                    ),
+                  );
+                  telemetryCollector.recordScrubDemandDispatched(
+                    latestSeekIntent.scrubSpanId,
+                    demandDelayUs,
+                  );
+                }
                 const loadedFrame =
                   await nativePreviewScheduler.requestVisible(visibleSource);
                 // A seek or play action may have happened while native decode
@@ -3327,6 +3487,18 @@ export const NativeProgramPreview: React.FC = () => {
                 );
               }
               canvasPaintMs = performance.now() - canvasPaintStarted;
+              if (latestSeekIntent?.scrubSpanId && latestSeekIntent.isScrubbing) {
+                const elapsedSinceInputUs = Math.max(
+                  0,
+                  Math.round(
+                    (performance.now() - latestSeekIntent.issuedAtMs) * 1000,
+                  ),
+                );
+                telemetryCollector.recordScrubProxyFramePresented(
+                  latestSeekIntent.scrubSpanId,
+                  elapsedSinceInputUs,
+                );
+              }
             }
             // Browser/local development has no retained native surface. Paint
             // evaluated text layers through the same package-backed raster
@@ -3353,6 +3525,45 @@ export const NativeProgramPreview: React.FC = () => {
                   canvasPaintMs,
                 });
                 nativeFrontendPerfSpans.delete(nativeRequestKey);
+              }
+              if (latestSeekIntent?.scrubSpanId) {
+                const elapsedSinceInputUs = Math.max(
+                  0,
+                  Math.round(
+                    (performance.now() - latestSeekIntent.issuedAtMs) * 1000,
+                  ),
+                );
+                if (latestSeekIntent.isScrubbing) {
+                  telemetryCollector.recordScrubProxyFramePresented(
+                    latestSeekIntent.scrubSpanId,
+                    elapsedSinceInputUs,
+                  );
+                }
+                if (latestSeekIntent.isSettling) {
+                  telemetryCollector.finishScrubSpan(
+                    latestSeekIntent.scrubSpanId,
+                    {
+                      settledFrameUs: elapsedSinceInputUs,
+                      correct: true,
+                    },
+                  );
+                  latestSeekIntent.isSettling = false;
+                }
+              }
+              if (activeTimelineEditStartedAt !== null) {
+                const editTotalUs = Math.round(
+                  (performance.now() - activeTimelineEditStartedAt) * 1000,
+                );
+                telemetryCollector.recordPreviewInteraction({
+                  interaction: {
+                    id: `timeline-edit-${Date.now()}`,
+                    name: "timeline-edit",
+                    outcome: "completed",
+                  },
+                  totalTimeUs: editTotalUs,
+                  previewContext: previewTelemetryContextRef.current,
+                });
+                activeTimelineEditStartedAt = null;
               }
             }
 
@@ -3772,6 +3983,25 @@ export const NativeProgramPreview: React.FC = () => {
         onSeek={(time) => {
           if (clips.length === 0) return;
           transportSeek(clampAndSnapProgramTime(time, duration, frameRate));
+        }}
+        onScrubStart={(time) => {
+          if (clips.length === 0) return;
+          transportBeginScrub(
+            clampAndSnapProgramTime(time, duration, frameRate),
+            "preview-transport",
+          );
+        }}
+        onScrubUpdate={(time) => {
+          if (clips.length === 0) return;
+          transportUpdateScrub(
+            clampAndSnapProgramTime(time, duration, frameRate),
+          );
+        }}
+        onScrubEnd={(time) => {
+          if (clips.length === 0) return;
+          transportEndScrub(
+            clampAndSnapProgramTime(time, duration, frameRate),
+          );
         }}
         formatTime={formatTime}
         onStepBack={(currentTime) => {

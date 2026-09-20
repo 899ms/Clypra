@@ -140,10 +140,14 @@ export function useTransportControls() {
 
   return useMemo(
     () => {
+      const getActiveAuthority = () =>
+        authority ?? getActiveSessionOrNull()?.transportAuthority ?? null;
+
       const prepareProgramPreviewAudio = () => {
         // Source Preview owns its visible HTMLMediaElement. Never unlock or
         // resume the program-preview pool/engine while source media is active.
-        if (authority?.getActiveType() !== "program") return;
+        const auth = getActiveAuthority();
+        if (auth?.getActiveType() !== "program") return;
         if (isTauriRuntime()) return;
         resumeGlobalAudioEngine();
         getActiveSessionOrNull()?.unlockProgramPreviewAudio();
@@ -153,20 +157,20 @@ export function useTransportControls() {
         play: () => {
           previewCoordinator.notifyTransportBoundary();
           prepareProgramPreviewAudio();
-          authority?.play();
+          getActiveAuthority()?.play();
         },
         togglePlayback: () => {
           previewCoordinator.notifyTransportBoundary();
           prepareProgramPreviewAudio();
-          authority?.togglePlayback();
+          getActiveAuthority()?.togglePlayback();
         },
         pause: () => {
           previewCoordinator.notifyTransportBoundary();
-          authority?.pause();
+          getActiveAuthority()?.pause();
         },
         stop: () => {
           previewCoordinator.notifyTransportBoundary();
-          authority?.stop();
+          getActiveAuthority()?.stop();
         },
         seek: (time: number, intent?: Omit<SeekIntentInput, "time">) => {
           // A scrub owns the pause boundary until pointer-up. Individual
@@ -178,13 +182,30 @@ export function useTransportControls() {
           ) {
             previewCoordinator.notifyTransportBoundary();
           }
-          authority?.seek(time, intent ?? { mode: "seek" });
+          const auth = getActiveAuthority();
+          if (auth) {
+            auth.seek(time, intent ?? { mode: "seek" });
+          } else {
+            getPlaybackClock().seek(time);
+          }
+        },
+        beginScrub: (time: number, source: string = "playhead") => {
+          previewCoordinator.notifyTransportBoundary();
+          getActiveAuthority()?.beginScrub(time, source);
+        },
+        updateScrub: (time: number, velocityPxPerSecond?: number) => {
+          getActiveAuthority()?.updateScrub(time, velocityPxPerSecond);
+        },
+        endScrub: (time: number) => {
+          previewCoordinator.notifyTransportBoundary();
+          getActiveAuthority()?.endScrub(time);
         },
         setSpeed: (speed: number) => {
           previewCoordinator.notifyTransportBoundary();
-          authority?.setSpeed(speed);
+          getActiveAuthority()?.setSpeed(speed);
         },
-        setActiveContext: (type: "program" | "source") => authority?.setActiveContext(type),
+        setActiveContext: (type: "program" | "source") =>
+          getActiveAuthority()?.setActiveContext(type),
       };
     },
     [authority, previewCoordinator],

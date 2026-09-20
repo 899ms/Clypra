@@ -695,6 +695,8 @@ pub struct NativeVideoProjectFrameRequest {
     pub is_scrubbing: Option<bool>,
     #[serde(default)]
     pub allow_keyframe_approx: Option<bool>,
+    #[serde(default)]
+    pub generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1041,6 +1043,7 @@ fn to_video_project_request(
         mode: request.mode.clone(),
         is_scrubbing: request.is_scrubbing,
         allow_keyframe_approx: request.allow_keyframe_approx,
+        generation: request.generation,
     })
 }
 
@@ -2260,7 +2263,11 @@ async fn decode_native_video_layers(
     };
 
     let is_prefetch = request.mode.as_deref() == Some("prefetch");
-    let generation = cancellation.as_ref().map(|(_, g)| *g).unwrap_or(0);
+    let generation = cancellation
+        .as_ref()
+        .map(|(_, g)| *g)
+        .or(request.generation)
+        .unwrap_or(0);
 
     if request.layers.len() == 1 {
         let layer = &request.layers[0];

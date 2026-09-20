@@ -64,13 +64,13 @@ describe("PlaybackClock: RAF Generation Counter", () => {
     rafCallbacks.clear();
   });
 
-  it("should pause playback and cancel RAF on seek", () => {
+  it("should seamlessly continue playback on seek while playing", () => {
     clock.play();
     expect(clock.state).toBe("playing");
 
-    // Seek pauses playback so user manually resumes
+    // Seek during playback preserves playing state
     clock.seek(5.0);
-    expect(clock.state).toBe("paused");
+    expect(clock.state).toBe("playing");
     expect(clock.time).toBe(5.0);
 
     // Old RAF callbacks from before the seek should not advance time
@@ -81,9 +81,9 @@ describe("PlaybackClock: RAF Generation Counter", () => {
     expect(clock.time).toBe(5.0);
   });
 
-  it("should allow manual play to resume after seek", () => {
+  it("should pause playback and cancel RAF when seek explicitly requests keepPlaying: false", () => {
     clock.play();
-    clock.seek(5.0);
+    clock.seek(5.0, { keepPlaying: false });
     expect(clock.state).toBe("paused");
     expect(clock.time).toBe(5.0);
 
@@ -111,13 +111,21 @@ describe("PlaybackClock: RAF Generation Counter", () => {
     expect(gen4).toBe(gen3 + 1);
   });
 
-  it("should handle rapid seek during playback by staying paused at final seek position", () => {
+  it("should handle rapid seek during playback by seamlessly continuing playback from final seek position", () => {
     clock.play();
 
     // Rapid seeks
     clock.seek(1.0);
     clock.seek(2.0);
     clock.seek(3.0);
+
+    expect(clock.state).toBe("playing");
+    expect(clock.time).toBe(3.0);
+  });
+
+  it("should pause when seek explicitly requests keepPlaying: false", () => {
+    clock.play();
+    clock.seek(3.0, { keepPlaying: false });
 
     expect(clock.state).toBe("paused");
     expect(clock.time).toBe(3.0);

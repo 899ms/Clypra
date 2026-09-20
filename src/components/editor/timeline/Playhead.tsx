@@ -41,7 +41,12 @@ export const Playhead: React.FC<PlayheadProps> = ({
   rulerHeight = 5,
 }) => {
   const clockState = usePlaybackClock();
-  const { seek: transportSeek } = useTransportControls();
+  const {
+    seek: transportSeek,
+    beginScrub,
+    updateScrub,
+    endScrub,
+  } = useTransportControls();
   const previewInteractionCoordinator = getPreviewInteractionCoordinator();
   const { setScrollLeft } = useTimelineStore();
   const [isDragging, setIsDragging] = useState(false);
@@ -143,23 +148,16 @@ export const Playhead: React.FC<PlayheadProps> = ({
         pixelsPerFrame > 3 ? snapToFrameBoundary(rawTime, frameRate) : rawTime;
       const newTime = clampAndSnapProgramTime(snappedTime, duration, frameRate);
 
-      // Throttled seek calls (reduce clock update frequency)
+      // Throttled scrub calls (reduce clock update frequency)
       if (now - lastSeekUpdateRef.current >= SEEK_THROTTLE) {
-        transportSeek(newTime, {
-          mode: "scrub",
-          velocityPxPerSecond: pointerVelocityRef.current,
-        });
+        updateScrub(newTime, pointerVelocityRef.current);
         lastSeekUpdateRef.current = now;
 
         if (stationaryTimerRef.current) {
           clearTimeout(stationaryTimerRef.current);
         }
         stationaryTimerRef.current = setTimeout(() => {
-          transportSeek(newTime, {
-            mode: "scrub",
-            quality: "full",
-            allowKeyframeApprox: false,
-          });
+          updateScrub(newTime, 0);
         }, 150);
       }
 
@@ -245,13 +243,9 @@ export const Playhead: React.FC<PlayheadProps> = ({
           stationaryTimerRef.current = null;
         }
         // The scrub stream may have been rendered at reduced quality. Re-issue
-        // the final exact target so the released playhead always settles on a
-        // full-quality frame.
-        transportSeek(getPlaybackClock().time, {
-          mode: "seek",
-          quality: "full",
-          allowKeyframeApprox: false,
-        });
+        // the final exact target via endScrub so the released playhead always settles on a
+        // full-quality frame and finishes the scrub span.
+        endScrub(getPlaybackClock().time);
         if (scrubInteractionRef.current) {
           previewInteractionCoordinator.commit(
             scrubInteractionRef.current,
@@ -281,6 +275,7 @@ export const Playhead: React.FC<PlayheadProps> = ({
         stationaryTimerRef.current = null;
       }
       // Stop drag if window loses focus
+      endScrub(getPlaybackClock().time);
       setIsDragging(false);
       scrollVelocityRef.current = 0;
       pointerIdRef.current = null;
@@ -300,6 +295,7 @@ export const Playhead: React.FC<PlayheadProps> = ({
         clearTimeout(stationaryTimerRef.current);
         stationaryTimerRef.current = null;
       }
+      endScrub(getPlaybackClock().time);
       setIsDragging(false);
       scrollVelocityRef.current = 0;
       pointerIdRef.current = null;
@@ -314,6 +310,7 @@ export const Playhead: React.FC<PlayheadProps> = ({
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
+        endScrub(getPlaybackClock().time);
         setIsDragging(false);
         scrollVelocityRef.current = 0;
         pointerIdRef.current = null;
@@ -397,7 +394,7 @@ export const Playhead: React.FC<PlayheadProps> = ({
     const snappedTime =
       pixelsPerFrame > 3 ? snapToFrameBoundary(rawTime, frameRate) : rawTime;
     const newTime = clampAndSnapProgramTime(snappedTime, duration, frameRate);
-    transportSeek(newTime, { mode: "scrub", quality: "full" });
+    beginScrub(newTime, "playhead");
 
     setIsDragging(true);
   };

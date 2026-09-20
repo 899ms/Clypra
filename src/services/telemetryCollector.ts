@@ -416,7 +416,14 @@ export type TelemetrySampleKind =
   | "qualification-summary"
   | "interaction";
 
-export type TelemetryInteractionName = "play" | "pause" | "seek";
+export type TelemetryInteractionName =
+  | "play"
+  | "pause"
+  | "seek"
+  | "scrub"
+  | "timeline-click-seek"
+  | "keyboard-seek"
+  | "timeline-edit";
 export type TelemetryInteractionOutcome = "completed" | "superseded" | "failed";
 
 /** Bounded, content-free timing for one editor transport action. */
@@ -427,6 +434,15 @@ export interface TelemetryInteraction {
   queueWaitUs?: number;
   audioSeekUs?: number;
   audioTransportUs?: number;
+  inputToAudioUs?: number;
+  inputToDemandUs?: number;
+  decodeQueueWaitUs?: number;
+  firstProxyFrameUs?: number;
+  settledFrameUs?: number;
+  coalescedUpdates?: number;
+  supersededCount?: number;
+  avErrorUs?: number;
+  correct?: boolean;
 }
 
 export interface TelemetryPreviewContext {
@@ -1451,6 +1467,121 @@ class TelemetryCollector {
     this.enqueueEvent(event);
   }
 
+  private activeScrubSpan: {
+    id: string;
+    startedAtMs: number;
+    initialTime: number;
+    source: string;
+    coalescedUpdates: number;
+    supersededCount: number;
+    firstAudioSeekUs?: number;
+    firstDemandUs?: number;
+    firstProxyFrameUs?: number;
+    decodeQueueWaitUs?: number;
+    latestAudioSeekUs?: number;
+    previewContext?: TelemetryPreviewContext;
+  } | null = null;
+
+  public beginScrubSpan(
+    initialTime: number,
+    source: string = "playhead",
+    previewContext?: TelemetryPreviewContext,
+  ): string {
+    const id = `scrub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.activeScrubSpan = {
+      id,
+      startedAtMs: performance.now(),
+      initialTime,
+      source,
+      coalescedUpdates: 0,
+      supersededCount: 0,
+      previewContext,
+    };
+    return id;
+  }
+
+  public recordScrubAudioSeek(scrubId: string, durationUs: number): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    if (this.activeScrubSpan.firstAudioSeekUs === undefined) {
+      this.activeScrubSpan.firstAudioSeekUs = durationUs;
+    }
+    this.activeScrubSpan.latestAudioSeekUs = durationUs;
+  }
+
+  public recordScrubDemandDispatched(scrubId: string, durationUs: number): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    if (this.activeScrubSpan.firstDemandUs === undefined) {
+      this.activeScrubSpan.firstDemandUs = durationUs;
+    }
+  }
+
+  public recordScrubProxyFramePresented(scrubId: string, durationUs: number): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    if (this.activeScrubSpan.firstProxyFrameUs === undefined) {
+      this.activeScrubSpan.firstProxyFrameUs = durationUs;
+    }
+  }
+
+  public recordScrubActorWait(scrubId: string, waitUs: number): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    this.activeScrubSpan.decodeQueueWaitUs = Math.max(
+      this.activeScrubSpan.decodeQueueWaitUs ?? 0,
+      waitUs,
+    );
+  }
+
+  public recordScrubUpdate(scrubId: string): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    this.activeScrubSpan.coalescedUpdates += 1;
+  }
+
+  public recordScrubSuperseded(scrubId: string): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    this.activeScrubSpan.supersededCount += 1;
+  }
+
+  public getActiveScrubSpanId(): string | null {
+    return this.activeScrubSpan?.id ?? null;
+  }
+
+  public finishScrubSpan(
+    scrubId: string,
+    details: {
+      settledFrameUs?: number;
+      correct?: boolean;
+      avErrorUs?: number;
+      outcome?: TelemetryInteractionOutcome;
+    } = {},
+  ): void {
+    if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
+    const span = this.activeScrubSpan;
+    this.activeScrubSpan = null;
+    const totalTimeUs = Math.max(
+      0,
+      Math.round((performance.now() - span.startedAtMs) * 1_000),
+    );
+    const interaction: TelemetryInteraction = {
+      id: span.id,
+      name: "scrub",
+      outcome: details.outcome ?? "completed",
+      audioSeekUs: span.latestAudioSeekUs ?? span.firstAudioSeekUs,
+      inputToAudioUs: span.firstAudioSeekUs,
+      inputToDemandUs: span.firstDemandUs,
+      decodeQueueWaitUs: span.decodeQueueWaitUs,
+      firstProxyFrameUs: span.firstProxyFrameUs,
+      settledFrameUs: details.settledFrameUs,
+      coalescedUpdates: span.coalescedUpdates,
+      supersededCount: span.supersededCount,
+      avErrorUs: details.avErrorUs,
+      correct: details.correct,
+    };
+    this.recordPreviewInteraction({
+      interaction,
+      totalTimeUs,
+      previewContext: span.previewContext,
+    });
+  }
+
   /** Records a play, pause, or seek interaction at 100% sampling. */
   public recordPreviewInteraction(input: {
     interaction: TelemetryInteraction;
@@ -1458,13 +1589,20 @@ class TelemetryCollector {
     previewContext?: TelemetryPreviewContext;
   }): void {
     const mode: TelemetryOperationMode =
-      input.interaction.name === "seek" ? "seek-warm" : "playback";
+      input.interaction.name === "scrub"
+        ? "scrub"
+        : input.interaction.name === "seek" ||
+          input.interaction.name === "timeline-click-seek" ||
+          input.interaction.name === "keyboard-seek"
+          ? "seek-warm"
+          : "playback";
     this.recordRenderSpan(
       {
         schedulerWaitUs: input.interaction.queueWaitUs,
         ipcWaitUs:
           (input.interaction.audioSeekUs ?? 0) +
             (input.interaction.audioTransportUs ?? 0) || undefined,
+        actorWaitUs: input.interaction.decodeQueueWaitUs,
         totalTimeUs: Math.max(0, Math.round(input.totalTimeUs)),
       },
       input.interaction.outcome === "failed" ? 1 : 0,

@@ -654,7 +654,12 @@ export const Timeline: React.FC = () => {
       );
 
       const frameRate = getPlaybackClock().frameRate;
-      transportSeek(clampAndSnapProgramTime(time, duration, frameRate));
+      transportSeek(clampAndSnapProgramTime(time, duration, frameRate), {
+        source: "timeline-click-seek",
+        mode: "seek",
+        quality: "full",
+        allowKeyframeApprox: false,
+      });
     },
     [
       duration,

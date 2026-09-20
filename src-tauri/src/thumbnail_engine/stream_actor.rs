@@ -230,7 +230,7 @@ impl StreamDecoderActor {
 
         loop {
             // 1. Fetch next job with priority: urgent jobs always take precedence.
-            let job = if let Some(j) = pending_job.take() {
+            let mut job = if let Some(j) = pending_job.take() {
                 j
             } else {
                 tokio::select! {
@@ -246,18 +246,28 @@ impl StreamDecoderActor {
                 }
             };
 
+            // DRAIN OBSOLETE URGENT JOBS:
+            // In a seek-first architecture, if multiple urgent seek/scrub requests
+            // arrived in rapid succession, older ones are superseded. Keep only the newest intent.
+            if !job.request.is_prefetch {
+                while let Ok(newer_job) = self.urgent_rx.try_recv() {
+                    let _ = job
+                        .response_tx
+                        .send(Err("Request superseded by newer urgent intent".to_string()));
+                    job = newer_job;
+                }
+            }
+
             // Reset cancel flag before starting decode for this job
             self.cancel_in_flight.store(false, Ordering::Release);
 
-            // Check generation currency: skip obsolete prefetch requests
-            if job.request.is_prefetch {
-                let current_gen = self.current_generation.load(Ordering::Acquire);
-                if job.request.generation < current_gen {
-                    let _ = job
-                        .response_tx
-                        .send(Err("Request superseded by newer generation".to_string()));
-                    continue;
-                }
+            // Check generation currency: skip obsolete requests
+            let current_gen = self.current_generation.load(Ordering::Acquire);
+            if job.request.generation > 0 && job.request.generation < current_gen {
+                let _ = job
+                    .response_tx
+                    .send(Err("Request superseded by newer generation".to_string()));
+                continue;
             }
 
             // If caller abandoned waiting, skip
@@ -398,7 +408,7 @@ impl StreamDecoderActor {
 
         let is_cancelled = move || {
             cancel_token.load(Ordering::Acquire)
-                || cancel_gen.load(Ordering::Acquire) > job_generation
+                || (job_generation > 0 && cancel_gen.load(Ordering::Acquire) > job_generation)
         };
 
         let result = tokio::task::spawn_blocking(move || {

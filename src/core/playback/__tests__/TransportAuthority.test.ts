@@ -166,4 +166,51 @@ describe("TransportAuthority", () => {
       expect(authority.getActiveContext()).toBeNull();
     });
   });
+
+  describe("scrub and seek subsystem integration", () => {
+    it("does not pause when seeking during active playback", () => {
+      authority.registerContext(mockProgramContext);
+      mockProgramContext.getState = vi.fn(() => "playing" as any);
+
+      authority.seek(12);
+
+      expect(mockProgramContext.pause).not.toHaveBeenCalled();
+      expect(mockProgramContext.seek).toHaveBeenCalledWith(12);
+      expect(authority.getSeekController().getCurrent()?.mode).toBe("playback");
+    });
+
+    it("pauses during active drag scrub and resumes playback on endScrub if playing before scrub", () => {
+      authority.registerContext(mockProgramContext);
+      mockProgramContext.getState = vi.fn(() => "playing" as any);
+
+      authority.beginScrub(10, "playhead");
+      expect(mockProgramContext.pause).toHaveBeenCalled();
+      expect(mockProgramContext.seek).toHaveBeenCalledWith(10);
+      expect(authority.getSeekController().getCurrent()?.isScrubbing).toBe(true);
+
+      authority.updateScrub(15, 3000);
+      expect(mockProgramContext.seek).toHaveBeenCalledWith(15);
+      expect(authority.getSeekController().getCurrent()?.quality).toBe("quarter");
+
+      authority.endScrub(20);
+      expect(mockProgramContext.seek).toHaveBeenCalledWith(20);
+      expect(mockProgramContext.play).toHaveBeenCalled();
+      expect(authority.getSeekController().getCurrent()?.mode).toBe("playback");
+    });
+
+    it("settles on endScrub without resuming playback if paused before scrub", () => {
+      authority.registerContext(mockProgramContext);
+      mockProgramContext.getState = vi.fn(() => "paused" as any);
+      (mockProgramContext.play as any).mockClear();
+
+      authority.beginScrub(10, "playhead");
+      expect(authority.getSeekController().getCurrent()?.isScrubbing).toBe(true);
+
+      authority.endScrub(20);
+      expect(mockProgramContext.seek).toHaveBeenCalledWith(20);
+      expect(authority.getSeekController().getCurrent()?.isSettling).toBe(true);
+      expect(authority.getSeekController().getCurrent()?.quality).toBe("full");
+      expect(mockProgramContext.play).not.toHaveBeenCalled();
+    });
+  });
 });
