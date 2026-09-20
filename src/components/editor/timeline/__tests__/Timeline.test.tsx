@@ -162,8 +162,10 @@ describe("Timeline click behavior", () => {
       }) as DOMRect;
 
     fireEvent.click(scroller, { clientX: 210, clientY: 20 });
-    expect(seekMock).toHaveBeenCalledTimes(1);
-    expect(seekMock).toHaveBeenCalledWith(2.3);
+    expect(seekMock).toHaveBeenCalledWith(
+      2.3,
+      expect.objectContaining({ source: "timeline-click-seek" })
+    );
   });
 
   it("does not seek when clicking interactive timeline elements", () => {

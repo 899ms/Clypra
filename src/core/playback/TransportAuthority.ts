@@ -18,6 +18,7 @@ export class TransportAuthority {
   private _switchListeners = new Set<AuthorityContextSwitchListener>();
   private _stateListeners = new Set<AuthorityStateListener>();
   private _ctxUnsubscribe: (() => void) | null = null;
+  private _wasPlayingBeforeScrub: boolean = false;
 
   registerContext(context: PlaybackContext): void {
     if (this.contexts.has(context.type)) {
@@ -99,11 +100,36 @@ export class TransportAuthority {
 
   seek(time: number, intent: Omit<SeekIntentInput, "time"> = { mode: "seek" }): void {
     recordSeekRequested();
-    if (this.getState() === "playing") {
+    const isPlaying = this.getState() === "playing";
+    this.seekController.request({
+      time,
+      ...intent,
+      mode: isPlaying ? "playback" : (intent.mode ?? "seek"),
+    });
+    this.activeContext?.seek(time);
+  }
+
+  beginScrub(time: number, source: string = "playhead"): void {
+    this._wasPlayingBeforeScrub = this.getState() === "playing";
+    if (this._wasPlayingBeforeScrub) {
       this.pause();
     }
-    this.seekController.request({ time, ...intent });
+    this.seekController.beginScrub({ time, source });
     this.activeContext?.seek(time);
+  }
+
+  updateScrub(time: number, velocityPxPerSecond?: number): void {
+    this.seekController.updateScrub({ time, velocityPxPerSecond });
+    this.activeContext?.seek(time);
+  }
+
+  endScrub(time: number): void {
+    this.seekController.endScrub({ time });
+    this.activeContext?.seek(time);
+    if (this._wasPlayingBeforeScrub) {
+      this._wasPlayingBeforeScrub = false;
+      this.play();
+    }
   }
 
   getSeekController(): SeekController {

@@ -1,29 +1,39 @@
-/**
- * Metadata for a transport request. The clock remains the authoritative time
- * signal; this controller gives asynchronous preview work a stable identity so
- * obsolete decode results can never win a race with a newer seek.
- */
+import { telemetryCollector } from "@/services/telemetryCollector";
+
 export type SeekMode = "playback" | "scrub" | "seek" | "frameStep";
 export type SeekQuality = "full" | "half" | "quarter" | "proxy";
+export type SeekSource =
+  | "timeline-click-seek"
+  | "keyboard-seek"
+  | "playhead"
+  | "preview-transport"
+  | "scrub"
+  | string;
 
 export interface SeekIntentInput {
   time: number;
   mode: SeekMode;
+  source?: SeekSource;
   velocityPxPerSecond?: number;
   quality?: SeekQuality;
   targetFrame?: number;
   isScrubbing?: boolean;
+  isSettling?: boolean;
   allowKeyframeApprox?: boolean;
+  scrubSpanId?: string;
 }
 
 export interface SeekIntent extends SeekIntentInput {
   generation: number;
   requestId: string;
   issuedAtMs: number;
+  source: SeekSource;
   velocityPxPerSecond: number;
   quality: SeekQuality;
   isScrubbing: boolean;
+  isSettling: boolean;
   allowKeyframeApprox: boolean;
+  scrubSpanId?: string;
 }
 
 export type SeekIntentListener = (intent: SeekIntent) => void;
@@ -44,39 +54,105 @@ export class SeekController {
   private currentIntent: SeekIntent | null = null;
   private listeners = new Set<SeekIntentListener>();
   private disposed = false;
+  private activeScrubSpanId: string | null = null;
 
   request(input: SeekIntentInput): SeekIntent {
     if (this.disposed) {
       throw new Error("SeekController is disposed");
     }
 
+    if (this.currentIntent && this.activeScrubSpanId) {
+      telemetryCollector.recordScrubSuperseded(this.activeScrubSpanId);
+    }
+
     const velocity = Number.isFinite(input.velocityPxPerSecond)
       ? input.velocityPxPerSecond ?? 0
       : 0;
     const isScrubbing = input.isScrubbing ?? (input.mode === "scrub");
+    const isSettling = input.isSettling ?? false;
     const quality = input.quality ?? (
       input.mode === "scrub" ? qualityForScrubVelocity(velocity) : "full"
     );
     const allowKeyframeApprox = input.allowKeyframeApprox ?? (input.mode === "scrub");
+    const source = input.source ?? (input.mode === "scrub" ? "scrub" : "seek");
+
     const intent: SeekIntent = {
       ...input,
       generation: ++this.generation,
       requestId: `seek-${this.generation}`,
       issuedAtMs: performance.now(),
+      source,
       velocityPxPerSecond: velocity,
       quality,
       isScrubbing,
+      isSettling,
       allowKeyframeApprox,
+      scrubSpanId: input.scrubSpanId ?? (this.activeScrubSpanId || undefined),
     };
     this.currentIntent = intent;
     this.listeners.forEach((listener) => listener(intent));
     return intent;
   }
 
+  beginScrub(input: { time: number; source?: SeekSource }): SeekIntent {
+    this.activeScrubSpanId = telemetryCollector.beginScrubSpan(
+      input.time,
+      input.source ?? "playhead",
+    );
+    return this.request({
+      time: input.time,
+      mode: "scrub",
+      source: input.source ?? "scrub",
+      isScrubbing: true,
+      isSettling: false,
+      allowKeyframeApprox: true,
+      quality: "proxy",
+      scrubSpanId: this.activeScrubSpanId,
+    });
+  }
+
+  updateScrub(input: { time: number; velocityPxPerSecond?: number }): SeekIntent {
+    if (this.activeScrubSpanId) {
+      telemetryCollector.recordScrubUpdate(this.activeScrubSpanId);
+    }
+    const velocity = input.velocityPxPerSecond ?? 0;
+    return this.request({
+      time: input.time,
+      mode: "scrub",
+      source: "scrub",
+      velocityPxPerSecond: velocity,
+      isScrubbing: true,
+      isSettling: false,
+      allowKeyframeApprox: true,
+      quality: qualityForScrubVelocity(velocity),
+      scrubSpanId: this.activeScrubSpanId ?? undefined,
+    });
+  }
+
+  endScrub(input: { time: number }): SeekIntent {
+    const scrubSpanId = this.activeScrubSpanId;
+    this.activeScrubSpanId = null;
+    return this.request({
+      time: input.time,
+      mode: "seek",
+      source: "scrub",
+      isScrubbing: false,
+      isSettling: true,
+      allowKeyframeApprox: false,
+      quality: "full",
+      scrubSpanId: scrubSpanId ?? undefined,
+    });
+  }
+
+  getActiveScrubSpanId(): string | null {
+    return this.activeScrubSpanId;
+  }
+
   invalidate(): number {
     if (this.disposed) return this.generation;
     this.generation += 1;
     this.currentIntent = null;
+    this.activeScrubSpanId = null;
     return this.generation;
   }
 
@@ -102,6 +178,7 @@ export class SeekController {
     this.disposed = true;
     this.generation += 1;
     this.currentIntent = null;
+    this.activeScrubSpanId = null;
     this.listeners.clear();
   }
 }

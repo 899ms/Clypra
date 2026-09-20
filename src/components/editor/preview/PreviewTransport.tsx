@@ -9,6 +9,11 @@ interface PreviewTransportProps {
   onSeek: (time: number) => void;
   formatTime: (seconds: number) => string;
 
+  // Scrub callbacks
+  onScrubStart?: (time: number) => void;
+  onScrubUpdate?: (time: number) => void;
+  onScrubEnd?: (time: number) => void;
+
   // Source-specific: in/out range overlay on scrub bar
   inPoint?: number | null;
   outPoint?: number | null;
@@ -33,6 +38,9 @@ export const PreviewTransport: React.FC<PreviewTransportProps> = ({
   isPlaying,
   onPlayPause,
   onSeek,
+  onScrubStart,
+  onScrubUpdate,
+  onScrubEnd,
   formatTime,
   inPoint,
   outPoint,
@@ -48,19 +56,32 @@ export const PreviewTransport: React.FC<PreviewTransportProps> = ({
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   const seekToPosition = useCallback(
-    (clientX: number) => {
+    (clientX: number, phase: "start" | "update" | "end" = "update") => {
       if (!scrubRef.current || duration <= 0 || disabled) return;
       const rect = scrubRef.current.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      onSeek(ratio * duration);
+      const targetTime = ratio * duration;
+      if (phase === "start") {
+        if (onScrubStart) onScrubStart(targetTime);
+        else onSeek(targetTime);
+      } else if (phase === "update") {
+        if (onScrubUpdate) onScrubUpdate(targetTime);
+        else onSeek(targetTime);
+      } else if (phase === "end") {
+        if (onScrubEnd) onScrubEnd(targetTime);
+        else onSeek(targetTime);
+      }
     },
-    [duration, onSeek, disabled],
+    [duration, onSeek, onScrubStart, onScrubUpdate, onScrubEnd, disabled],
   );
 
   useEffect(() => {
     if (!isScrubbing) return;
-    const handleMove = (e: MouseEvent) => seekToPosition(e.clientX);
-    const handleUp = () => setIsScrubbing(false);
+    const handleMove = (e: MouseEvent) => seekToPosition(e.clientX, "update");
+    const handleUp = (e: MouseEvent) => {
+      setIsScrubbing(false);
+      seekToPosition(e.clientX, "end");
+    };
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
     return () => {
@@ -78,7 +99,7 @@ export const PreviewTransport: React.FC<PreviewTransportProps> = ({
         onMouseDown={(e) => {
           if (disabled) return;
           setIsScrubbing(true);
-          seekToPosition(e.clientX);
+          seekToPosition(e.clientX, "start");
         }}
       >
         {/* Track bg */}

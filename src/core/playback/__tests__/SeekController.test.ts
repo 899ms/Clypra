@@ -62,4 +62,30 @@ describe("SeekController", () => {
     expect(() => controller.request({ time: 0, mode: "seek" })).toThrow(/disposed/i);
     expect(controller.isCurrent(1)).toBe(false);
   });
+
+  it("manages dedicated scrub lifecycle with span tracking and proxy-to-full settle transition", () => {
+    const controller = new SeekController();
+
+    const startIntent = controller.beginScrub({ time: 1.5, source: "playhead" });
+    expect(startIntent.isScrubbing).toBe(true);
+    expect(startIntent.isSettling).toBe(false);
+    expect(startIntent.allowKeyframeApprox).toBe(true);
+    expect(startIntent.quality).toBe("proxy");
+    expect(startIntent.scrubSpanId).toBeDefined();
+    expect(controller.getActiveScrubSpanId()).toBe(startIntent.scrubSpanId);
+
+    const updateIntent = controller.updateScrub({ time: 2.0, velocityPxPerSecond: 1500 });
+    expect(updateIntent.isScrubbing).toBe(true);
+    expect(updateIntent.isSettling).toBe(false);
+    expect(updateIntent.quality).toBe("half");
+    expect(updateIntent.scrubSpanId).toBe(startIntent.scrubSpanId);
+
+    const endIntent = controller.endScrub({ time: 2.5 });
+    expect(endIntent.isScrubbing).toBe(false);
+    expect(endIntent.isSettling).toBe(true);
+    expect(endIntent.allowKeyframeApprox).toBe(false);
+    expect(endIntent.quality).toBe("full");
+    expect(endIntent.scrubSpanId).toBe(startIntent.scrubSpanId);
+    expect(controller.getActiveScrubSpanId()).toBeNull();
+  });
 });

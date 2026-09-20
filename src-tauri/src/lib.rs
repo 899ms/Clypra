@@ -104,6 +104,87 @@ pub fn run() {
                     .map_err(|error| format!("failed to enable custom title bar: {error}"))?;
             }
 
+            // Build desktop application menu with event-driven Undo/Redo.
+            // On macOS, predefined Undo/Redo menu items swallow Cmd+Z / Shift+Cmd+Z
+            // without forwarding to WKWebView unless an HTML input is active.
+            // Using custom menu items with accelerators ensures Cmd+Z and Shift+Cmd+Z
+            // are emitted to the webview and handle both editor timeline and text inputs.
+            {
+                use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+                let undo_item = MenuItemBuilder::new("Undo")
+                    .id("menu-undo")
+                    .accelerator("CmdOrCtrl+Z")
+                    .build(app)?;
+
+                let redo_item = MenuItemBuilder::new("Redo")
+                    .id("menu-redo")
+                    .accelerator("CmdOrCtrl+Shift+Z")
+                    .build(app)?;
+
+                let app_menu = SubmenuBuilder::new(app, "Clypra")
+                    .about(None)
+                    .separator()
+                    .services()
+                    .separator()
+                    .hide()
+                    .hide_others()
+                    .show_all()
+                    .separator()
+                    .quit()
+                    .build()?;
+
+                let file_menu = SubmenuBuilder::new(app, "File")
+                    .close_window()
+                    .build()?;
+
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .item(&undo_item)
+                    .item(&redo_item)
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+
+                let view_menu = SubmenuBuilder::new(app, "View")
+                    .fullscreen()
+                    .build()?;
+
+                let window_menu = SubmenuBuilder::new(app, "Window")
+                    .minimize()
+                    .separator()
+                    .build()?;
+
+                let help_menu = SubmenuBuilder::new(app, "Help").build()?;
+
+                let menu = MenuBuilder::new(app)
+                    .items(&[
+                        &app_menu,
+                        &file_menu,
+                        &edit_menu,
+                        &view_menu,
+                        &window_menu,
+                        &help_menu,
+                    ])
+                    .build()?;
+
+                app.set_menu(menu)?;
+
+                app.on_menu_event(move |app_handle, event| {
+                    match event.id().as_ref() {
+                        "menu-undo" => {
+                            let _ = app_handle.emit("menu-undo", ());
+                        }
+                        "menu-redo" => {
+                            let _ = app_handle.emit("menu-redo", ());
+                        }
+                        _ => {}
+                    }
+                });
+            }
+
             // Initialize thumbnail engine
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

@@ -601,7 +601,7 @@ export const LaunchScreen: React.FC<LaunchScreenProps> = ({
               <h2 className="text-2xl md:text-3xl font-bold text-text-primary mb-2 tracking-tight">
                 Start a new project
               </h2>
-              <p className="text-sm text-text-muted mb-6 max-w-md">
+              <p className="text-sm text-center mx-auto text-text-muted my-6 max-w-md">
                 Begin with a 16:9 landscape canvas, or capture your screen and
                 face simultaneously.
               </p>

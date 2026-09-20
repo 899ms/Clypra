@@ -425,13 +425,17 @@ export class PlaybackClock {
 
   /**
    * Seek to specific time.
+   * If playback was active (or keepPlaying is true), continues playing seamlessly
+   * from the new timestamp without forcing a pause.
    */
-  seek(time: number): void {
+  seek(time: number, options?: { keepPlaying?: boolean } | boolean): void {
     const seekRevision = ++this._seekRevision;
     const wasPlaying = this._state === "playing";
+    const shouldKeepPlaying =
+      typeof options === "boolean" ? options : (options?.keepPlaying ?? wasPlaying);
 
-    if (wasPlaying) {
-      this.pause();
+    if (!shouldKeepPlaying && wasPlaying) {
+      this.pause(true);
     }
 
     const validTime =
@@ -442,11 +446,35 @@ export class PlaybackClock {
     const frameRate = this._frameRate;
     this._time = Math.round(rawTime * frameRate) / frameRate;
 
-    this._isSeeking = true;
+    if (!shouldKeepPlaying) {
+      this._isSeeking = true;
+      this._notifyListeners();
+      return;
+    }
 
+    // Seamless seek-while-playing: Keep playing forward from target time
+    this._isSeeking = true;
+    if (this._nativeClockAuthority) {
+      this._nativeClockPosition = {
+        time: this._time,
+        receivedAtMs: performance.now(),
+        speed: this._speed,
+      };
+    } else if (this._audioContext && this._audioContext.state === "running") {
+      this._playStartAudioTime = this._audioContext.currentTime;
+      this._playStartClockTime = this._time;
+    }
+
+    this._generation++;
+    const currentGeneration = this._generation;
     this._notifyListeners();
 
-    // Seeking pauses playback; user manually presses play to continue.
+    if (this._rafId !== null) {
+      cancelAnimationFrame(this._rafId);
+    }
+    this._rafId = requestAnimationFrame(() =>
+      this._tickWithGeneration(currentGeneration),
+    );
   }
 
   /**
