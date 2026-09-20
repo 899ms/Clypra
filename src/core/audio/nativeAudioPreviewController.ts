@@ -6,6 +6,7 @@ import {
 import {
   configureNativePlayback,
   getNativeAudioStatus,
+  getNativeAudioDiagnostics,
   nativePauseFromAudio,
   nativePlayFromAudio,
   nativeSeekFromAudio,
@@ -85,6 +86,17 @@ export class NativeAudioPreviewController {
   private pendingSource: NativeAudioPreviewSource | null = null;
   private sourceUpdateScheduled = false;
   private installedSnapshot: NativeAudioTimelineSnapshot | null = null;
+  private outputVolume = 1;
+  private outputMuted = false;
+  private initializationUs = 0;
+  /** A single bounded probe for the first audible callback after Play. */
+  private startupProbe: {
+    startedAt: number;
+    callbackCount: number;
+    nonSilentFrames: number;
+    installedClipCount: number;
+    playCommandUs?: number;
+  } | null = null;
 
   constructor(options: NativeAudioPreviewControllerOptions) {
     this.clock = options.clock;
@@ -97,9 +109,11 @@ export class NativeAudioPreviewController {
   }
 
   setOutput(volume: number, muted: boolean): void {
+    this.outputVolume = Math.max(0, Math.min(1, volume / 100));
+    this.outputMuted = muted;
     if (!this.active || this.disposed) return;
     this.enqueueTransport(
-      () => setNativeAudioOutput(Math.max(0, Math.min(1, volume / 100)), muted),
+      () => setNativeAudioOutput(this.outputVolume, this.outputMuted),
       "set-output",
     );
   }
@@ -186,6 +200,7 @@ export class NativeAudioPreviewController {
     // Claim the clock before the first awaited native load so an early Play
     // action cannot create a temporary Web Audio clock during initialization.
     this.clock.setNativeClockAuthority(true);
+    const initializationStartedAt = performance.now();
 
     try {
       const timeline = await syncNativeAudioTimeline(
@@ -211,6 +226,7 @@ export class NativeAudioPreviewController {
       if (this.disposed) return false;
 
       await getNativeAudioStatus();
+      this.initializationUs = elapsedUs(initializationStartedAt);
 
       this.active = true;
       this.lastState = this.clock.getState();
@@ -221,9 +237,15 @@ export class NativeAudioPreviewController {
 
       await seekNativeAudio(secondsToTicks(this.clock.time));
       await setNativeAudioSpeed(this.clock.speed);
-      await setNativeAudioOutput(1, false);
+      // Output may have been selected before asynchronous graph installation
+      // completed; applying the retained value prevents first-play from
+      // momentarily using stale mute/volume state.
+      await setNativeAudioOutput(this.outputVolume, this.outputMuted);
       if (this.clock.state === "playing") {
+        await this.beginStartupProbe();
+        const playStartedAt = performance.now();
         const nativeState = await nativePlayFromAudio();
+        if (this.startupProbe) this.startupProbe.playCommandUs = elapsedUs(playStartedAt);
         this.adoptNativePosition(nativeState.audioPositionTicks);
       } else {
         await pauseNativeAudio();
@@ -307,6 +329,7 @@ export class NativeAudioPreviewController {
           return;
         }
         try {
+          await this.beginStartupProbe();
           const seekStartedAt = performance.now();
           await seekNativeAudio(secondsToTicks(this.clock.time));
           interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
@@ -320,6 +343,9 @@ export class NativeAudioPreviewController {
           const transportStartedAt = performance.now();
           const nativeState = await nativePlayFromAudio();
           interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
+          if (this.startupProbe) {
+            this.startupProbe.playCommandUs = interaction.telemetry.audioTransportUs;
+          }
           this.adoptNativePosition(nativeState.audioPositionTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
         } catch (error) {
@@ -500,6 +526,7 @@ export class NativeAudioPreviewController {
           : 0;
       const position = positionTicks / 1_000_000;
       this.clock.setNativeClockPosition(position, this.clock.speed);
+      await this.resolveStartupProbe();
 
       // A native graph can report position 0 while it is warming up. Never
       // treat a missing/stale zero duration as an end signal; the timeline
@@ -519,6 +546,89 @@ export class NativeAudioPreviewController {
     } catch (error) {
       this.reportError(error);
     }
+  }
+
+  private async beginStartupProbe(): Promise<void> {
+    // A second Play before the first resolves replaces the old probe: only
+    // the current transport intent should be judged for first-use reliability.
+    if (this.startupProbe) this.finishStartupProbe("superseded");
+    try {
+      const diagnostics = await getNativeAudioDiagnostics();
+      this.startupProbe = {
+        startedAt: performance.now(),
+        callbackCount: diagnostics.status.callbackCount,
+        nonSilentFrames: diagnostics.status.nonSilentFrames,
+        installedClipCount: diagnostics.installedClips.length,
+      };
+      // Silence is expected when a project has no installed audio. A timeline
+      // that declared audio tracks but installed none is a first-play failure.
+      if (diagnostics.installedClips.length === 0) {
+        const expectedAudio = this.source.audioTrackCount > 0;
+        if (expectedAudio) {
+          this.finishStartupProbe(
+            "failed",
+            diagnostics,
+            0,
+            0,
+            "no-native-audio-clips-installed",
+          );
+        } else {
+          this.startupProbe = null;
+        }
+      }
+    } catch {
+      // Diagnostics must never prevent transport from starting on an older
+      // native build; normal status polling still detects runtime failures.
+    }
+  }
+
+  private async resolveStartupProbe(): Promise<void> {
+    const probe = this.startupProbe;
+    if (!probe) return;
+    try {
+      const diagnostics = await getNativeAudioDiagnostics();
+      const callbackCountDelta = Math.max(0, diagnostics.status.callbackCount - probe.callbackCount);
+      const nonSilentFramesDelta = Math.max(0, diagnostics.status.nonSilentFrames - probe.nonSilentFrames);
+      if (nonSilentFramesDelta > 0) {
+        this.finishStartupProbe("audible", diagnostics, callbackCountDelta, nonSilentFramesDelta);
+      } else if (elapsedUs(probe.startedAt) >= 1_500_000) {
+        this.finishStartupProbe(
+          diagnostics.status.lastError ? "failed" : "silent-timeout",
+          diagnostics,
+          callbackCountDelta,
+          nonSilentFramesDelta,
+          diagnostics.status.lastError ?? "no-non-silent-native-callback-within-1500ms",
+        );
+      }
+    } catch (error) {
+      this.finishStartupProbe("failed", undefined, 0, 0, String(error));
+    }
+  }
+
+  private finishStartupProbe(
+    outcome: "audible" | "silent-timeout" | "failed" | "superseded",
+    diagnostics?: Awaited<ReturnType<typeof getNativeAudioDiagnostics>>,
+    callbackCountDelta = 0,
+    nonSilentFramesDelta = 0,
+    failureReason?: string,
+  ): void {
+    const probe = this.startupProbe;
+    if (!probe) return;
+    this.startupProbe = null;
+    telemetryCollector.recordAudioStartup({
+      sessionId: getActiveSessionOrNull()?.sessionId ?? "audio-runtime",
+      metrics: {
+        outcome,
+        initializationUs: this.initializationUs,
+        playCommandUs: probe.playCommandUs,
+        firstAudibleUs: outcome === "audible" ? elapsedUs(probe.startedAt) : undefined,
+        installedClipCount: probe.installedClipCount,
+        activeClipCount: diagnostics?.activeClipIds.length ?? 0,
+        callbackCountDelta,
+        nonSilentFramesDelta,
+        failureReason,
+      },
+    });
   }
 
   private enqueueTransport(

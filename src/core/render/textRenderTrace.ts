@@ -200,3 +200,15 @@ export function traceTextRenderCacheHit(input: {
   const activeSession = (globalThis as { __activeProjectSession?: { sessionId?: string } }).__activeProjectSession;
   telemetryCollector.recordTextCacheHit({ ...input, sessionId: activeSession?.sessionId });
 }
+
+/**
+ * A renderer-path failure is durable evidence, unlike a console warning. No
+ * text, asset id, or source error is included to preserve the zero-PII log.
+ */
+export function traceTextRenderFallback(reasonCode: string): void {
+  telemetryCollector.recordFallbackEvent(
+    "text-worker-offscreen",
+    "text-main-thread-raster",
+    reasonCode,
+  );
+}
