@@ -136,6 +136,7 @@ fn native_presentation_timing(
     app: &tauri::AppHandle,
     frame_ticks: i64,
     frame_timescale: u32,
+    record_drift: bool,
 ) -> (u64, i64, bool) {
     let Some(clock_state) = app.try_state::<Arc<std::sync::Mutex<NativeAudioClock>>>() else {
         return (0, 0, false);
@@ -156,14 +157,20 @@ fn native_presentation_timing(
         .unwrap_or(0);
     let frame_position_ticks = frame_position_ticks.min(i64::MAX as u128) as i64;
 
-    // Pass the median inter-callback spacing from the lock-free ring buffer.
-    // This is the correct interval measure for the freshness threshold — the
-    // actual hardware cadence, not a processing-duration proxy.
-    SYNC_METRICS.av_drift.record_with_freshness(
-        frame_position_ticks.saturating_sub(status.audio_position_ticks as i64),
-        status.clock_freshness_us,
-        status.median_callback_interval_us,
-    );
+    // Only record drift during active steady-state playback.
+    // Manual scrub/seek requests and seek jumps across the timeline (> 1.5s gap)
+    // reflect deliberate user playhead navigation where audio is re-anchoring,
+    // not actual playback drift.
+    if record_drift {
+        let drift = frame_position_ticks.saturating_sub(status.audio_position_ticks as i64);
+        if drift.abs() <= 1_500_000 {
+            SYNC_METRICS.av_drift.record_with_freshness(
+                drift,
+                status.clock_freshness_us,
+                status.median_callback_interval_us,
+            );
+        }
+    }
     let age = status.audio_position_ticks as i128 - frame_position_ticks as i128;
     let frame_age_ticks = age.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
     let decision = decide_native_presentation_timing(
@@ -188,7 +195,13 @@ fn record_successful_readback_metrics(app: &tauri::AppHandle, request: &FrameReq
     if request.mode.as_deref() == Some("prefetch") {
         return;
     }
-    let _ = native_presentation_timing(app, request.frame_time.ticks, request.frame_time.timescale);
+    let is_playback = request.mode.as_deref() == Some("playback");
+    let _ = native_presentation_timing(
+        app,
+        request.frame_time.ticks,
+        request.frame_time.timescale,
+        is_playback,
+    );
     let presented_ticks = (request.frame_time.ticks.max(0) as i128 * 1_000_000i128
         / request.frame_time.timescale.max(1) as i128)
         .min(i64::MAX as i128) as i64;
@@ -2981,10 +2994,12 @@ pub(crate) async fn present_native_frame_internal(
             })
             .probe()
             .ok_or_else(|| "Native surface lost its readiness probe".to_string())?;
+        let is_playback = request.mode.as_deref() == Some("playback");
         let (audio_position_ticks, frame_age_ticks, _) = native_presentation_timing(
             &app,
             request.frame_time.ticks,
             request.frame_time.timescale,
+            is_playback,
         );
         SYNC_METRICS.record_dropped_frame();
         record_native_surface_sample(
@@ -3129,15 +3144,20 @@ pub(crate) async fn present_native_frame_internal(
     let probe = surface
         .probe()
         .ok_or_else(|| "Native surface lost its readiness probe".to_string())?;
+    let is_playback = request.mode.as_deref() == Some("playback");
     let (audio_position_ticks, frame_age_ticks, late_for_audio) =
-        native_presentation_timing(&app, request.frame_time.ticks, request.frame_time.timescale);
+        native_presentation_timing(
+            &app,
+            request.frame_time.ticks,
+            request.frame_time.timescale,
+            is_playback,
+        );
     // Non-video frames (still images, text, stickers, canvas backgrounds) have 0
     // video decoder streams and compose on the GPU in ~0.05ms. Dropping them
     // for being "late for audio" causes multi-second freezes of the previous frame.
     // In continuous playback, already-decoded frames must never be thrown away:
     // the heavy CPU decode cost has already been paid and GPU presentation takes <0.5ms.
     // Frame skipping occurs naturally at the scheduler boundary on the next tick.
-    let is_playback = request.mode.as_deref() == Some("playback");
     let late_for_audio = late_for_audio && !legacy_request.layers.is_empty() && !is_playback;
     if !surface.accept_presentation(presentation_sequence) {
         SYNC_METRICS.record_dropped_frame();

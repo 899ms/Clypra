@@ -105,6 +105,7 @@ export class TransportAuthority {
       time,
       ...intent,
       mode: isPlaying ? "playback" : (intent.mode ?? "seek"),
+      ...(isPlaying && intent.allowKeyframeApprox === undefined ? { allowKeyframeApprox: true } : {}),
     });
     this.activeContext?.seek(time);
   }
