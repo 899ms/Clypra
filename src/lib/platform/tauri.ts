@@ -441,6 +441,26 @@ export async function configureNativePlaybackRender(
   await invoke("configure_native_playback_render", { snapshot: nativeRequest });
 }
 
+/** Dynamically update the persistent Rust-owned Native playback render graph without tearing down the worker or purging lookahead. */
+export async function updateNativePlaybackRender(
+  request: NativeFrameRequest,
+): Promise<void> {
+  if (!isTauriRuntime()) {
+    throw new Error("updateNativePlaybackRender requires the Tauri runtime");
+  }
+  const nativeRequest: NativeFrameRequest = {
+    ...request,
+    project: {
+      ...request.project,
+      videoLayers: request.project.videoLayers.map((layer) => ({
+        ...layer,
+        videoPath: toNativePath(layer.videoPath),
+      })),
+    },
+  };
+  await invoke("update_native_playback_render", { snapshot: nativeRequest });
+}
+
 /** Submit a compact latest-value Native playback demand without awaiting render. */
 export async function submitNativePlaybackDemand(
   demand: NativePlaybackFrameDemand,

@@ -375,6 +375,9 @@ mod tests {
             submit_present_us: Some(0),
             capability_policy: None,
             capability_probe_us: None,
+            demux_wait_us: None,
+            container_format: None,
+            is_hardware_accelerated: None,
         }
     }
 

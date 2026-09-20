@@ -68,6 +68,7 @@ import {
   onNativePreviewWindowMoved,
   presentNativeFrame,
   configureNativePlaybackRender,
+  updateNativePlaybackRender,
   submitNativePlaybackDemand,
   getNativeFrameServiceStats,
   getNativeFrameServiceSamples,
@@ -2025,14 +2026,31 @@ export const NativeProgramPreview: React.FC = () => {
       }
       nativePlaybackRenderSnapshotInFlightKey = key;
       nativePlaybackRenderFailed = false;
-      nativePlaybackRenderSnapshotInFlight = configureNativePlaybackRender(
-        request,
-      )
+
+      // Option 4: Zero-stutter timeline mutations under active playback.
+      // If a persistent playback session is already established and playback is running,
+      // update the existing session dynamically instead of tearing down the worker and wiping lookahead.
+      const isLiveUpdate =
+        renderStateRef.current.clock.state === "playing" &&
+        nativePlaybackRenderSnapshotKey !== "";
+      const updatePromise = isLiveUpdate
+        ? updateNativePlaybackRender(request)
+        : configureNativePlaybackRender(request);
+
+      nativePlaybackRenderSnapshotInFlight = updatePromise
         .then(() => {
           nativePlaybackRenderSnapshotKey = key;
           nativePlaybackRenderFailed = false;
         })
         .catch((error) => {
+          if (isLiveUpdate) {
+            // If dynamic update encountered an unrecoverable mismatch, gracefully fall back to configure
+            return configureNativePlaybackRender(request)
+              .then(() => {
+                nativePlaybackRenderSnapshotKey = key;
+                nativePlaybackRenderFailed = false;
+              });
+          }
           nativePlaybackRenderFailed = true;
           console.warn("[native-preview] persistent-render-session-failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -2869,8 +2887,9 @@ export const NativeProgramPreview: React.FC = () => {
                 const snapshotKey =
                   nativePlaybackSnapshotKeyFor(requestToPresent);
                 if (
-                  nativePlaybackRenderSnapshotKey === snapshotKey &&
-                  nativePlaybackRenderSnapshotInFlight === null
+                  (nativePlaybackRenderSnapshotKey === snapshotKey &&
+                    nativePlaybackRenderSnapshotInFlight === null) ||
+                  (nativePlaybackRenderSnapshotKey !== "" && isPlaying)
                 ) {
                   if (!playbackPipelineLogged) {
                     playbackPipelineLogged = true;
@@ -2904,11 +2923,15 @@ export const NativeProgramPreview: React.FC = () => {
                   ).catch((error) => {
                     const msg =
                       error instanceof Error ? error.message : String(error);
-                    if (!msg.includes("not configured")) {
+                    // Do not trip failure lockout if a live snapshot update is actively in flight
+                    if (
+                      !msg.includes("not configured") &&
+                      nativePlaybackRenderSnapshotInFlight === null
+                    ) {
                       nativePlaybackRenderFailed = true;
                       nativePlaybackRenderRetryAt = performance.now() + 1000;
+                      nativePlaybackRenderSnapshotKey = "";
                     }
-                    nativePlaybackRenderSnapshotKey = "";
                     lastNativePlaybackRequestKey = "";
                     forceRenderNeeded = true;
                     console.warn("[native-preview] demand-submit-failed", {

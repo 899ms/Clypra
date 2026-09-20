@@ -8,6 +8,7 @@ use crate::native_core::{
 use crate::thumbnail_engine::decoder::{
     acquire_preview_decoder_lease_for_stream, get_preview_decoder_for_stream, PreviewDecoderLease,
 };
+use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,7 +21,9 @@ use tauri::{AppHandle, Emitter, Manager};
 /// dependencies so its timing/state transitions remain deterministic and
 /// independently testable.
 struct NativeRenderSession {
-    snapshot: Mutex<FrameRequest>,
+    snapshot: RwLock<Arc<FrameRequest>>,
+    last_materialized: RwLock<Option<FrameRequest>>,
+    active_streams: Mutex<HashSet<(String, String)>>,
     leases: Mutex<Vec<PreviewDecoderLease>>,
     actors: Mutex<Vec<Arc<crate::thumbnail_engine::stream_actor::StreamDecoderActorHandle>>>,
     pending: Mutex<LatestPlaybackDemand>,
@@ -85,7 +88,9 @@ impl NativeRenderSession {
             }
         }
         Ok(Arc::new(Self {
-            snapshot: Mutex::new(snapshot),
+            snapshot: RwLock::new(Arc::new(snapshot)),
+            last_materialized: RwLock::new(None),
+            active_streams: Mutex::new(streams),
             leases: Mutex::new(leases),
             actors: Mutex::new(actors),
             pending: Mutex::new(LatestPlaybackDemand::default()),
@@ -104,9 +109,73 @@ impl NativeRenderSession {
     /// the worker's initial prime and every subsequent refill use the same
     /// decode scale, rather than only the paused configuration path.
     fn set_preview_quality(&self, quality: QualityTier) {
-        if let Ok(mut snapshot) = self.snapshot.lock() {
-            snapshot.quality = quality;
+        let mut snapshot = (**self.snapshot.read()).clone();
+        snapshot.quality = quality;
+        *self.snapshot.write() = Arc::new(snapshot);
+    }
+
+    /// Dynamically update the render snapshot during active playback without
+    /// destroying the session, resetting queues, or interrupting presentation.
+    async fn update_snapshot(&self, new_snapshot: FrameRequest) -> Result<(), String> {
+        new_snapshot.validate().map_err(|error| error.to_string())?;
+
+        let mut streams_to_acquire = Vec::new();
+        {
+            let mut active = self
+                .active_streams
+                .lock()
+                .map_err(|_| "Active streams lock poisoned".to_string())?;
+            for layer in &new_snapshot.project.video_layers {
+                if layer.layer_id.ends_with(":subject-cutout") {
+                    continue;
+                }
+                let key = (layer.video_path.clone(), layer.layer_id.clone());
+                if active.insert(key.clone()) {
+                    streams_to_acquire.push(key);
+                }
+            }
         }
+
+        let mut new_leases = Vec::new();
+        let mut new_actors = Vec::new();
+        for (video_path, layer_id) in streams_to_acquire {
+            let lease = acquire_preview_decoder_lease_for_stream(&video_path, &layer_id).await?;
+            let actor =
+                crate::thumbnail_engine::stream_actor::get_preview_decoder_actor_for_stream(
+                    &video_path,
+                    &layer_id,
+                )
+                .await?;
+            new_leases.push(lease);
+            new_actors.push(actor);
+        }
+
+        if !new_leases.is_empty() {
+            let mut leases_guard = self
+                .leases
+                .lock()
+                .map_err(|_| "Leases lock poisoned".to_string())?;
+            leases_guard.extend(new_leases);
+        }
+        if !new_actors.is_empty() {
+            let mut actors_guard = self
+                .actors
+                .lock()
+                .map_err(|_| "Actors lock poisoned".to_string())?;
+            actors_guard.extend(new_actors);
+        }
+
+        let quality = self.snapshot.read().quality;
+        let mut snapshot_to_store = new_snapshot;
+        snapshot_to_store.quality = quality;
+        if let Some(gen) = snapshot_to_store.generation {
+            self.generation.fetch_max(gen, Ordering::AcqRel);
+        }
+        *self.snapshot.write() = Arc::new(snapshot_to_store);
+        *self.last_materialized.write() = None;
+
+        self.notify.notify_one();
+        Ok(())
     }
 
     fn mark_ready(&self) {
@@ -123,16 +192,13 @@ impl NativeRenderSession {
         if self.running.swap(true, Ordering::AcqRel) {
             return;
         }
-        if let Ok(snapshot_guard) = self.snapshot.lock() {
-            let base_request = snapshot_guard.clone();
-            drop(snapshot_guard);
-            crate::commands::native_preview::schedule_lookahead_predecode(
-                app.clone(),
-                base_request,
-                16,
-                None,
-            );
-        }
+        let base_request = (**self.snapshot.read()).clone();
+        crate::commands::native_preview::schedule_lookahead_predecode(
+            app.clone(),
+            base_request,
+            16,
+            None,
+        );
         let session = Arc::clone(self);
         let handle = tauri::async_runtime::spawn(async move {
             session.render_loop(app).await;
@@ -221,44 +287,32 @@ impl NativeRenderSession {
         &self,
         demand: Option<&NativePlaybackFrameDemand>,
     ) -> Result<FrameRequest, String> {
-        let mut request = self
-            .snapshot
-            .lock()
-            .map_err(|_| "Native render snapshot lock is poisoned".to_string())?
-            .clone();
+        let mut request = match demand {
+            Some(_) => (**self.snapshot.read()).clone(),
+            None => {
+                if let Some(last) = self.last_materialized.read().as_ref() {
+                    return Ok(last.clone());
+                }
+                (**self.snapshot.read()).clone()
+            }
+        };
         if let Some(demand) = demand {
             request.request_id = demand.request_id.clone();
             request.frame_time = demand.frame_time;
             request.generation = demand.generation;
             request.mode = demand.mode.clone();
 
-            let base_snapshot_video_count = request
-                .project
-                .video_layers
-                .iter()
-                .filter(|l| !l.layer_id.ends_with(":subject-cutout"))
-                .count();
-            let base_demand_video_count = demand
-                .video_layers
-                .iter()
-                .filter(|l| {
-                    !l.layer_id
-                        .as_deref()
-                        .map(|id| id.ends_with(":subject-cutout"))
-                        .unwrap_or(false)
-                })
-                .count();
-
-            if demand.video_layers.len() == request.project.video_layers.len() {
+            if demand.video_layers.is_empty() {
+                request.project.video_layers.clear();
+            } else if demand.video_layers.len() == request.project.video_layers.len()
+                && demand.video_layers.iter().all(|u| u.layer_id.is_none())
+            {
                 for (layer, update) in request
                     .project
                     .video_layers
                     .iter_mut()
                     .zip(&demand.video_layers)
                 {
-                    if let Some(layer_id) = &update.layer_id {
-                        layer.layer_id = layer_id.clone();
-                    }
                     layer.source_time = update.source_time;
                     layer.x = update.x;
                     layer.y = update.y;
@@ -272,37 +326,18 @@ impl NativeRenderSession {
                     }
                     if update.body_effect.is_some() {
                         layer.body_effect = update.body_effect.clone();
-                    } else if layer.layer_id.ends_with(":subject-cutout")
-                        && layer.body_effect.is_none()
-                    {
-                        let base_id = layer
-                            .layer_id
-                            .strip_suffix(":subject-cutout")
-                            .unwrap_or(&layer.layer_id);
-                        layer.body_effect = Some(crate::native_core::BodyEffectSnapshot {
-                            mask_asset_id: format!("{}_fx-body-cutout-{}", layer.layer_id, base_id),
-                            renderer: "body_cutout".to_string(),
-                            color_r: 1.0,
-                            color_g: 1.0,
-                            color_b: 1.0,
-                            strength: 1.0,
-                            radius: 4.0,
-                            time: 0.0,
-                        });
                     }
                 }
-            } else if base_demand_video_count == base_snapshot_video_count {
-                // Dynamic cutout addition or removal
+            } else {
                 let mut new_video_layers = Vec::with_capacity(demand.video_layers.len());
-                for update in &demand.video_layers {
+                for (idx, update) in demand.video_layers.iter().enumerate() {
                     let lid = update.layer_id.as_deref().unwrap_or("");
-                    if let Some(existing) = request.project.video_layers.iter().find(|l| {
-                        if !lid.is_empty() {
-                            l.layer_id == lid
-                        } else {
-                            false
-                        }
-                    }) {
+                    if let Some(existing) = request
+                        .project
+                        .video_layers
+                        .iter()
+                        .find(|l| !lid.is_empty() && l.layer_id == lid)
+                    {
                         let mut layer = existing.clone();
                         layer.source_time = update.source_time;
                         layer.x = update.x;
@@ -354,9 +389,49 @@ impl NativeRenderSession {
                             });
                             new_video_layers.push(layer);
                         }
+                    } else if let Some(existing) = request.project.video_layers.get(idx) {
+                        let mut layer = existing.clone();
+                        if !lid.is_empty() {
+                            layer.layer_id = lid.to_string();
+                        }
+                        layer.source_time = update.source_time;
+                        layer.x = update.x;
+                        layer.y = update.y;
+                        layer.width = update.width;
+                        layer.height = update.height;
+                        layer.rotation = update.rotation;
+                        layer.opacity = update.opacity;
+                        layer.z_index = update.z_index;
+                        if update.color_grade.is_some() {
+                            layer.color_grade = update.color_grade.clone();
+                        }
+                        if update.body_effect.is_some() {
+                            layer.body_effect = update.body_effect.clone();
+                        }
+                        new_video_layers.push(layer);
+                    } else if let Some(first) = request.project.video_layers.first() {
+                        let mut layer = first.clone();
+                        if !lid.is_empty() {
+                            layer.layer_id = lid.to_string();
+                        }
+                        layer.source_time = update.source_time;
+                        layer.x = update.x;
+                        layer.y = update.y;
+                        layer.width = update.width;
+                        layer.height = update.height;
+                        layer.rotation = update.rotation;
+                        layer.opacity = update.opacity;
+                        layer.z_index = update.z_index;
+                        if update.color_grade.is_some() {
+                            layer.color_grade = update.color_grade.clone();
+                        }
+                        if update.body_effect.is_some() {
+                            layer.body_effect = update.body_effect.clone();
+                        }
+                        new_video_layers.push(layer);
                     }
                 }
-                if new_video_layers.len() == demand.video_layers.len() {
+                if !new_video_layers.is_empty() || demand.video_layers.is_empty() {
                     request.project.video_layers = new_video_layers;
                 } else {
                     return Err(
@@ -364,11 +439,6 @@ impl NativeRenderSession {
                             .to_string(),
                     );
                 }
-            } else {
-                return Err(
-                    "Native playback demand does not match the configured render snapshot"
-                        .to_string(),
-                );
             }
 
             if demand.raster_layers.len() == request.project.raster_layers.len()
@@ -509,23 +579,17 @@ impl NativeRenderSession {
                 }
             }
 
-            // Fix 1: Update self.snapshot with the successfully applied demand.
+            // Update last_materialized with the successfully applied demand.
             // This ensures subsequent ticks without a new demand fall back to the
-            // last known good state rather than reverting to t=0 (preventing text blinking).
-            if let Ok(mut snapshot_guard) = self.snapshot.lock() {
-                *snapshot_guard = request.clone();
-            }
+            // last known good state rather than reverting to t=0 (preventing text blinking),
+            // while preserving self.snapshot as the immutable multi-track project graph.
+            *self.last_materialized.write() = Some(request.clone());
         }
         Ok(request)
     }
 
     async fn render_loop(self: Arc<Self>, app: AppHandle) {
-        let frame_rate = {
-            self.snapshot
-                .lock()
-                .map(|s| s.project.frame_rate.max(1) as u64)
-                .unwrap_or(60)
-        };
+        let frame_rate = self.snapshot.read().project.frame_rate.max(1) as u64;
         let tick_duration = std::time::Duration::from_nanos(1_000_000_000 / frame_rate);
         let mut ticker = tokio::time::interval(tick_duration);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -771,6 +835,10 @@ impl NativePlaybackRuntime {
         self.render_session.take()
     }
 
+    fn render_session(&self) -> Option<Arc<NativeRenderSession>> {
+        self.render_session.clone()
+    }
+
     pub fn submit_render_demand(&self, demand: NativePlaybackFrameDemand) -> Result<(), String> {
         self.render_session
             .as_ref()
@@ -806,22 +874,13 @@ impl NativePlaybackRuntime {
     fn ensure_session(&mut self) -> Result<&mut PlaybackSession, NativeCoreError> {
         if self.session.is_none() {
             let plan = if let Some(render_session) = &self.render_session {
-                if let Ok(snapshot) = render_session.snapshot.lock() {
-                    PlaybackPlan {
-                        contract_version: snapshot.contract_version,
-                        project_revision: snapshot.project.project_revision.clone(),
-                        frame_rate: snapshot.project.frame_rate.max(1),
-                        duration_frames: u64::MAX,
-                        audio_track_count: 0,
-                    }
-                } else {
-                    PlaybackPlan {
-                        contract_version: crate::native_core::NATIVE_CORE_CONTRACT_VERSION,
-                        project_revision: "default".to_string(),
-                        frame_rate: 30,
-                        duration_frames: u64::MAX,
-                        audio_track_count: 0,
-                    }
+                let snapshot = render_session.snapshot.read();
+                PlaybackPlan {
+                    contract_version: snapshot.contract_version,
+                    project_revision: snapshot.project.project_revision.clone(),
+                    frame_rate: snapshot.project.frame_rate.max(1),
+                    duration_frames: u64::MAX,
+                    audio_track_count: 0,
                 }
             } else {
                 PlaybackPlan {
@@ -1171,6 +1230,72 @@ pub async fn configure_native_playback_render(
     Ok(())
 }
 
+/// Dynamically update the persistent Native playback render graph during active playback
+/// without destroying the session, resetting frame queues, aborting the render worker,
+/// or re-running capability probing.
+#[tauri::command]
+pub async fn update_native_playback_render(
+    app: AppHandle,
+    snapshot: FrameRequest,
+) -> Result<(), String> {
+    snapshot.validate().map_err(|error| error.to_string())?;
+
+    let state = runtime(&app)?;
+    let session = {
+        let runtime = state
+            .lock()
+            .map_err(|_| "Native playback runtime lock is poisoned".to_string())?;
+        runtime.render_session()
+    };
+
+    let session = match session {
+        Some(s) => s,
+        None => {
+            return configure_native_playback_render(app, snapshot).await;
+        }
+    };
+
+    let (old_w, old_h) = {
+        let current = session.snapshot.read();
+        (current.project.canvas_width, current.project.canvas_height)
+    };
+
+    if snapshot.project.canvas_width != old_w || snapshot.project.canvas_height != old_h {
+        let target_format = if let Some(surface_runtime) = app
+            .try_state::<Arc<std::sync::Mutex<crate::commands::native_surface::NativeSurfaceRuntime>>>()
+        {
+            surface_runtime
+                .lock()
+                .ok()
+                .and_then(|s| s.configured_format())
+        } else {
+            None
+        }
+        .unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
+
+        crate::commands::native_preview::prepare_native_preview_pipelines(
+            &app,
+            snapshot.project.canvas_width,
+            snapshot.project.canvas_height,
+            target_format,
+        )
+        .await?;
+    }
+
+    let snapshot_clone = snapshot.clone();
+    session.update_snapshot(snapshot).await?;
+
+    let lookahead_quality = session.snapshot.read().quality;
+    crate::commands::native_preview::schedule_lookahead_predecode(
+        app.clone(),
+        snapshot_clone,
+        16,
+        Some(lookahead_quality),
+    );
+
+    Ok(())
+}
+
 /// Replace the single pending Native playback demand. This command returns
 /// without waiting for decode, composition, or surface presentation.
 #[tauri::command]
@@ -1431,7 +1556,9 @@ mod tests {
 
     fn test_session(snapshot: FrameRequest) -> NativeRenderSession {
         NativeRenderSession {
-            snapshot: Mutex::new(snapshot),
+            snapshot: RwLock::new(Arc::new(snapshot)),
+            last_materialized: RwLock::new(None),
+            active_streams: Mutex::new(HashSet::new()),
             leases: Mutex::new(Vec::new()),
             actors: Mutex::new(Vec::new()),
             pending: Mutex::new(LatestPlaybackDemand::default()),
@@ -1770,5 +1897,134 @@ mod tests {
             "vid-main:subject-cutout_fx:101"
         );
         assert_eq!(cutout3.opacity, 1.0);
+    }
+
+    #[test]
+    fn materialize_request_supports_varying_video_layer_counts_in_multitrack_timeline() {
+        let mut snapshot = test_snapshot();
+        snapshot.project.video_layers = vec![
+            crate::native_core::VideoLayerSnapshot {
+                layer_id: "track-1-clip".to_string(),
+                asset_id: "asset-1".to_string(),
+                video_path: "/test/v1.mp4".to_string(),
+                source_time: FrameTime::new(0, 0, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                blend_mode: "normal".to_string(),
+                color_grade: None,
+                body_effect: None,
+            },
+            crate::native_core::VideoLayerSnapshot {
+                layer_id: "track-2-clip".to_string(),
+                asset_id: "asset-2".to_string(),
+                video_path: "/test/v2.mp4".to_string(),
+                source_time: FrameTime::new(0, 0, 30).unwrap(),
+                x: 200.0,
+                y: 200.0,
+                width: 640.0,
+                height: 360.0,
+                rotation: 0.0,
+                opacity: 0.8,
+                z_index: 1,
+                blend_mode: "normal".to_string(),
+                color_grade: None,
+                body_effect: None,
+            },
+        ];
+        let session = test_session(snapshot);
+
+        // Frame 10: Single track active (demand has only track 1)
+        let mut d1 = demand("demand-t1", 10);
+        d1.video_layers = vec![crate::native_core::NativePlaybackVideoLayerUpdate {
+            layer_id: Some("track-1-clip".to_string()),
+            source_time: FrameTime::new(10, 10, 30).unwrap(),
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            rotation: 0.0,
+            opacity: 1.0,
+            z_index: 0,
+            color_grade: None,
+            body_effect: None,
+        }];
+        let mat1 = session
+            .materialize_request(Some(&d1))
+            .expect("single track demand should succeed on multitrack session");
+        assert_eq!(mat1.project.video_layers.len(), 1);
+        assert_eq!(mat1.project.video_layers[0].layer_id, "track-1-clip");
+
+        // Frame 30: Both tracks active (PIP overlay)
+        let mut d2 = demand("demand-pip", 30);
+        d2.video_layers = vec![
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("track-1-clip".to_string()),
+                source_time: FrameTime::new(30, 30, 30).unwrap(),
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 0,
+                color_grade: None,
+                body_effect: None,
+            },
+            crate::native_core::NativePlaybackVideoLayerUpdate {
+                layer_id: Some("track-2-clip".to_string()),
+                source_time: FrameTime::new(15, 15, 30).unwrap(),
+                x: 250.0,
+                y: 180.0,
+                width: 640.0,
+                height: 360.0,
+                rotation: 5.0,
+                opacity: 0.9,
+                z_index: 1,
+                color_grade: None,
+                body_effect: None,
+            },
+        ];
+        let mat2 = session
+            .materialize_request(Some(&d2))
+            .expect("pip multitrack demand should succeed");
+        assert_eq!(mat2.project.video_layers.len(), 2);
+        assert_eq!(mat2.project.video_layers[0].layer_id, "track-1-clip");
+        assert_eq!(mat2.project.video_layers[1].layer_id, "track-2-clip");
+        assert_eq!(mat2.project.video_layers[1].rotation, 5.0);
+
+        // Frame 50: Gap / title card (zero video layers)
+        let mut d3 = demand("demand-gap", 50);
+        d3.video_layers = Vec::new();
+        let mat3 = session
+            .materialize_request(Some(&d3))
+            .expect("gap with 0 video layers should succeed");
+        assert!(mat3.project.video_layers.is_empty());
+
+        // Frame 70: Track 2 only active
+        let mut d4 = demand("demand-t2-only", 70);
+        d4.video_layers = vec![crate::native_core::NativePlaybackVideoLayerUpdate {
+            layer_id: Some("track-2-clip".to_string()),
+            source_time: FrameTime::new(55, 55, 30).unwrap(),
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            rotation: 0.0,
+            opacity: 1.0,
+            z_index: 0,
+            color_grade: None,
+            body_effect: None,
+        }];
+        let mat4 = session
+            .materialize_request(Some(&d4))
+            .expect("track 2 only demand should succeed");
+        assert_eq!(mat4.project.video_layers.len(), 1);
+        assert_eq!(mat4.project.video_layers[0].layer_id, "track-2-clip");
+        assert_eq!(mat4.project.video_layers[0].video_path, "/test/v2.mp4");
     }
 }

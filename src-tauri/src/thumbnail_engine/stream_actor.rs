@@ -84,6 +84,9 @@ pub struct DecodedActorFrame {
     pub from_prime_cache: bool,
     pub quality: QualityTier,
     pub is_approximate: bool,
+    pub demux_us: u32,
+    pub container_format: String,
+    pub is_hardware_accelerated: bool,
 }
 
 impl DecodedActorFrame {
@@ -465,6 +468,8 @@ impl StreamDecoderActor {
             let mutex_wait_us = mutex_started.elapsed().as_micros() as u64;
             let decode_started = Instant::now();
             let stream_color = guard.metadata().color;
+            let container_format = guard.container_format().to_string();
+            let is_hardware_accelerated = guard.is_hardware_accelerated();
 
             #[cfg(target_os = "windows")]
             if crate::wgpu_compositor::adapter_selector::is_dxgi_runtime_enabled() {
@@ -487,6 +492,7 @@ impl StreamDecoderActor {
                             &stream_color,
                         );
                         let is_approx = guard.is_last_frame_approximate();
+                        let demux_us = guard.last_demux_us();
                         return Ok((
                             DecodedVideoPlanes::D3d11(Arc::new(shared)),
                             width,
@@ -495,6 +501,9 @@ impl StreamDecoderActor {
                             decode_us,
                             mutex_wait_us,
                             is_approx,
+                            demux_us,
+                            container_format,
+                            is_hardware_accelerated,
                         ));
                     }
                     Ok(None) => {
@@ -507,6 +516,7 @@ impl StreamDecoderActor {
             let frame_res =
                 guard.decode_frame_raw_nv12_with_options(target_time, options, is_cancelled);
             let is_approx = guard.is_last_frame_approximate();
+            let demux_us = guard.last_demux_us();
 
             let decode_us = decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
 
@@ -527,6 +537,9 @@ impl StreamDecoderActor {
                         decode_us,
                         mutex_wait_us,
                         is_approx,
+                        demux_us,
+                        container_format,
+                        is_hardware_accelerated,
                     ))
                 }
                 Err(err) => Err(err),
@@ -535,7 +548,18 @@ impl StreamDecoderActor {
         .await
         .map_err(|e| format!("Decode spawn_blocking panicked: {e}"))?;
 
-        let (planes, width, height, color, decode_us, mutex_wait_us, is_approx) = result?;
+        let (
+            planes,
+            width,
+            height,
+            color,
+            decode_us,
+            mutex_wait_us,
+            is_approx,
+            demux_us,
+            container_format,
+            is_hardware_accelerated,
+        ) = result?;
 
         Ok(DecodedActorFrame {
             time_secs: target_time,
@@ -549,6 +573,9 @@ impl StreamDecoderActor {
             from_prime_cache: false,
             quality: options.quality,
             is_approximate: is_approx,
+            demux_us,
+            container_format,
+            is_hardware_accelerated,
         })
     }
 }
@@ -630,6 +657,9 @@ mod tests {
             from_prime_cache: false,
             quality: QualityTier::Full,
             is_approximate: false,
+            demux_us: 10,
+            container_format: "mp4".to_string(),
+            is_hardware_accelerated: false,
         };
 
         prime_cache.lock().await.push_back(cached_frame);
@@ -680,6 +710,9 @@ mod tests {
             from_prime_cache: false,
             quality: QualityTier::Full,
             is_approximate: true,
+            demux_us: 10,
+            container_format: "mp4".to_string(),
+            is_hardware_accelerated: false,
         };
         prime_cache.lock().await.push_back(approx_frame);
 

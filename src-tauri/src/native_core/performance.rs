@@ -159,6 +159,15 @@ pub struct PerformanceSample {
     /// first video layer has no renderable frames at `time_secs = 0.0`.
     #[serde(default)]
     pub capability_probe_us: Option<u64>,
+    /// Time spent demuxing packets from container and file I/O (Option 3).
+    #[serde(default)]
+    pub demux_wait_us: Option<u64>,
+    /// Container format name (e.g. "mp4", "matroska,webm", "mov").
+    #[serde(default)]
+    pub container_format: Option<String>,
+    /// Whether hardware decoding acceleration is active for the frame stream.
+    #[serde(default)]
+    pub is_hardware_accelerated: Option<bool>,
 }
 
 impl PerformanceSample {
@@ -345,6 +354,9 @@ mod tests {
             submit_present_us: None,
             capability_policy: None,
             capability_probe_us: None,
+            demux_wait_us: None,
+            container_format: None,
+            is_hardware_accelerated: None,
         };
         assert!(sample.exceeds_render_budget(&budget));
     }

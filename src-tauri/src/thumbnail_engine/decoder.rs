@@ -90,6 +90,10 @@ pub struct VideoStreamMetadata {
     pub sample_aspect_ratio_den: i32,
     pub rotation: u32,
     pub color: VideoColorMetadata,
+    #[serde(default)]
+    pub container_format: String,
+    #[serde(default)]
+    pub is_hardware_accelerated: bool,
 }
 
 /// Metadata for one decoded frame, including the timestamp selected by the
@@ -390,11 +394,25 @@ pub struct VideoDecoder {
         bool,
     )>,
     raw_nv12_cache: VecDeque<CachedNv12Frame>,
+    /// Accumulated microsecond duration spent demuxing packets from container I/O during the last decode request.
+    last_demux_us: u32,
 }
 
 impl VideoDecoder {
     pub fn is_last_frame_approximate(&self) -> bool {
         self.last_raw_nv12.as_ref().map(|f| f.6).unwrap_or(false)
+    }
+
+    pub fn container_format(&self) -> &str {
+        &self.stream_metadata.container_format
+    }
+
+    pub fn is_hardware_accelerated(&self) -> bool {
+        self.stream_metadata.is_hardware_accelerated
+    }
+
+    pub fn last_demux_us(&self) -> u32 {
+        self.last_demux_us
     }
 
     fn clamp_timestamp(&self, timestamp_secs: f64) -> f64 {
@@ -523,10 +541,19 @@ impl VideoDecoder {
         let codec_ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|e| e.to_string())?;
 
-        let (decoder, width, height) = if prefer_hardware {
+        // Option 3: Stream Discard Optimization
+        // Discard all non-video streams at the demuxer layer so libavformat skips
+        // audio, subtitle, and data packets at the lowest C demuxing layer.
+        let mut input_ctx = input_ctx;
+        crate::thumbnail_engine::demuxer::configure_stream_discard(&mut input_ctx, stream_index);
+
+        let container_format = input_ctx.format().name().to_string();
+
+        let (decoder, width, height, is_hardware_accelerated) = if prefer_hardware {
             Self::open_with_hw(codec_ctx)?
         } else {
-            Self::open_software_codec(codec_ctx)?
+            let (dec, w, h) = Self::open_software_codec(codec_ctx)?;
+            (dec, w, h, false)
         };
 
         let stream_metadata = VideoStreamMetadata {
@@ -545,6 +572,8 @@ impl VideoDecoder {
             sample_aspect_ratio_den: sar.1,
             rotation,
             color,
+            container_format,
+            is_hardware_accelerated,
         };
 
         Ok(Self {
@@ -561,6 +590,7 @@ impl VideoDecoder {
             state: DecoderState::new(),
             last_raw_nv12: None,
             raw_nv12_cache: VecDeque::with_capacity(MAX_RAW_NV12_CACHE_ENTRIES),
+            last_demux_us: 0,
         })
     }
 
@@ -847,7 +877,7 @@ impl VideoDecoder {
 
     fn open_with_hw(
         mut ctx: ffmpeg::codec::context::Context,
-    ) -> Result<(ffmpeg::codec::decoder::Video, u32, u32), String> {
+    ) -> Result<(ffmpeg::codec::decoder::Video, u32, u32, bool), String> {
         #[cfg(target_os = "macos")]
         let hw_types: &[ffmpeg::ffi::AVHWDeviceType] =
             &[ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX];
@@ -914,7 +944,7 @@ impl VideoDecoder {
                     let decoder = ctx.decoder().video().map_err(|e| e.to_string())?;
                     let w = decoder.width();
                     let h = decoder.height();
-                    return Ok((decoder, w, h));
+                    return Ok((decoder, w, h, true));
                 }
             }
         }
@@ -922,7 +952,7 @@ impl VideoDecoder {
         // No compatible device is an expected capability outcome, not a
         // partially initialized decoder. Re-open using the normal software
         // format negotiation path.
-        Self::open_software_codec(ctx)
+        Self::open_software_codec(ctx).map(|(d, w, h)| (d, w, h, false))
     }
 
     /// Decode a single frame at full display resolution (no thumbnail scaling).
@@ -1766,10 +1796,13 @@ impl VideoDecoder {
             || (is_backward && backward_distance > pts_tolerance)
             || (!is_backward && !self.state.can_decode_forward(target_pts, sequential_window));
 
+        let mut demux_time_us = 0u32;
+
         if needs_seek {
             if is_cancelled() {
                 return Err("Native preview request cancelled".to_string());
             }
+            let seek_t0 = Instant::now();
             unsafe {
                 let ret = ffmpeg::ffi::av_seek_frame(
                     self.input_ctx.as_mut_ptr(),
@@ -1781,6 +1814,8 @@ impl VideoDecoder {
                     return Err(format!("Seek failed at {}s", ts));
                 }
             }
+            demux_time_us = demux_time_us
+                .saturating_add(seek_t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
             self.decoder.flush();
             self.state.current_pts = -1;
             self.state.gop_start_pts = target_pts;
@@ -2001,6 +2036,7 @@ impl VideoDecoder {
             color: result.4.clone(),
             is_approximate: is_approx,
         });
+        self.last_demux_us = demux_time_us;
         Ok((y_arc, uv_arc, result.2, result.3, result.4))
     }
 
@@ -2056,10 +2092,13 @@ impl VideoDecoder {
             || (is_backward && backward_distance > pts_tolerance)
             || (!is_backward && !self.state.can_decode_forward(target_pts, sequential_window));
 
+        let mut demux_time_us = 0u32;
+
         if needs_seek {
             if is_cancelled() {
                 return Err("Native preview request cancelled".to_string());
             }
+            let seek_t0 = Instant::now();
             unsafe {
                 let ret = ffmpeg::ffi::av_seek_frame(
                     self.input_ctx.as_mut_ptr(),
@@ -2071,6 +2110,8 @@ impl VideoDecoder {
                     return Err(format!("Seek failed at {}s", ts));
                 }
             }
+            demux_time_us = demux_time_us
+                .saturating_add(seek_t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
             self.decoder.flush();
             self.state.current_pts = -1;
             self.state.gop_start_pts = target_pts;
@@ -2173,6 +2214,7 @@ impl VideoDecoder {
                     *out_width,
                     *out_height
                 );
+                self.last_demux_us = demux_time_us;
                 return Ok(Some(shared));
             }
             log::warn!(
@@ -2185,6 +2227,7 @@ impl VideoDecoder {
         // CPU fallback: same as decode_frame_raw_nv12_with_options terminal section.
         // (We do NOT populate the LRU cache here because this method's caller
         //  is expected to call the CPU path directly on None, which will cache.)
+        self.last_demux_us = demux_time_us;
         Ok(None)
     }
 
@@ -3000,5 +3043,33 @@ mod still_image_tests {
             (!cached.is_approximate || true) && (cached.pts - target_pts).abs() <= pts_tolerance
         });
         assert_eq!(approx_match, Some(0));
+    }
+
+    #[test]
+    fn test_mkv_video_decoder_integration() {
+        let path = std::path::Path::new("/tmp/test_mkv.mkv");
+        if !path.exists() {
+            return;
+        }
+
+        let mut decoder = super::VideoDecoder::open(path.to_str().unwrap())
+            .expect("failed to open mkv with VideoDecoder");
+        assert!(
+            decoder.container_format().contains("matroska"),
+            "Container format should contain matroska, got: {}",
+            decoder.container_format()
+        );
+
+        let res = decoder.decode_frame_raw_nv12(0.0);
+        assert!(
+            res.is_ok(),
+            "Should successfully decode first frame: {:?}",
+            res.err()
+        );
+        let (y, uv, w, h, _color) = res.unwrap();
+        assert_eq!(w, 320);
+        assert_eq!(h, 240);
+        assert_eq!(y.len(), (w * h) as usize);
+        assert_eq!(uv.len(), (w * h / 2) as usize);
     }
 }

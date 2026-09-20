@@ -135,6 +135,12 @@ export interface NativePerformanceSample {
   capabilityPolicy?: "full" | "reduced" | "proxy" | string;
   /** Duration of the startup capability probe, in microseconds. */
   capabilityProbeUs?: number;
+  /** Time spent demuxing packets from container and file I/O (Option 3). */
+  demuxWaitUs?: number;
+  /** Container format name (e.g. "mp4", "matroska,webm", "mov"). */
+  containerFormat?: string;
+  /** Whether hardware decoding acceleration is active for the frame stream. */
+  isHardwareAccelerated?: boolean;
   dropReason?:
     | "stale"
     | "cancelled"
@@ -264,6 +270,7 @@ export interface NativeSurfacePresentation {
     decodeUs: number;
     decoderMutexWaitUs: number;
     actorWaitUs?: number;
+    demuxWaitUs?: number;
     conversionUploadUs: number;
     composeUs: number;
     surfaceAcquireUs: number;

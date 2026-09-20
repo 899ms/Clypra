@@ -388,6 +388,7 @@ pub fn run() {
             get_native_surface_status,
             configure_native_playback,
             configure_native_playback_render,
+            update_native_playback_render,
             submit_native_playback_demand,
             get_native_playback_state,
             native_play,

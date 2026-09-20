@@ -63,6 +63,7 @@ export interface TelemetryStageTimings {
   decodeUs?: number;
   decoderMutexWaitUs?: number;
   actorWaitUs?: number;
+  demuxWaitUs?: number;
   conversionUploadUs?: number;
   composeUs?: number;
   surfaceAcquireUs?: number;
@@ -2324,6 +2325,9 @@ class TelemetryCollector {
         dropReason?: string;
         capabilityPolicy?: "full" | "reduced" | "proxy" | string;
         capabilityProbeUs?: number;
+        demuxWaitUs?: number;
+        containerFormat?: string;
+        isHardwareAccelerated?: boolean;
       } | null;
       windowDroppedFrames?: number;
       windowStaleFrames?: number;
@@ -2353,6 +2357,7 @@ class TelemetryCollector {
       decodeUs: last.decodeTimeUs,
       decoderMutexWaitUs: last.decoderMutexWaitUs,
       actorWaitUs: last.actorWaitUs,
+      demuxWaitUs: last.demuxWaitUs,
       conversionUploadUs:
         last.conversionUploadUs ?? last.conversionTimeUs ?? last.uploadTimeUs,
       composeUs: last.composeTimeUs,
