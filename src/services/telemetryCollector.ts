@@ -332,7 +332,21 @@ export interface TelemetryAudioMetrics {
   seekP95Ms?: number;
   clockDriftP95Ms?: number;
   lastError?: string;
+  /** Present only for the first program-preview play after graph installation. */
+  startup?: TelemetryAudioStartupMetrics;
   stageTimings: TelemetryAudioStageTimings;
+}
+
+export interface TelemetryAudioStartupMetrics {
+  outcome: "audible" | "silent-timeout" | "failed" | "superseded";
+  initializationUs: number;
+  playCommandUs?: number;
+  firstAudibleUs?: number;
+  installedClipCount: number;
+  activeClipCount: number;
+  callbackCountDelta: number;
+  nonSilentFramesDelta: number;
+  failureReason?: string;
 }
 
 export interface TelemetryExportMetrics {
@@ -1773,6 +1787,60 @@ class TelemetryCollector {
       timestampMs: Date.now(),
     };
     this.enqueueEvent(event);
+  }
+
+  /** Records the bounded first-play transaction at 100% sampling. */
+  public recordAudioStartup(input: {
+    sessionId: string;
+    previewContext?: TelemetryPreviewContext;
+    metrics: TelemetryAudioStartupMetrics;
+  }): void {
+    if (!this.isEnabled) return;
+    const totalTimeUs = Math.max(
+      input.metrics.initializationUs,
+      input.metrics.firstAudibleUs ?? input.metrics.playCommandUs ?? 0,
+    );
+    this.enqueueEvent({
+      eventId: `evt_audio_startup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      measurementId: `audio-startup:${input.sessionId}:${Date.now()}`,
+      measurementSource: "frontend-span",
+      sampleKind: "interaction",
+      subsystem: "audio",
+      sessionId: input.sessionId,
+      appVersion: this.appVersion,
+      appBuildNumber: import.meta.env.MODE || "prod",
+      appEnvironment: import.meta.env.DEV ? "beta" : "production",
+      previewContext: input.previewContext,
+      device: this.initHardwareContext(),
+      video: this.sanitizeVideoProfile({ nominalFps: 60 }),
+      workload: {
+        mode: "playback",
+        durationMs: Math.max(1, Math.round(totalTimeUs / 1000)),
+        targetFps: 60,
+        renderedFps: 0,
+        totalFrames: 1,
+        droppedFrames: input.metrics.outcome === "audible" ? 0 : 1,
+        droppedFramesRatio: input.metrics.outcome === "audible" ? 0 : 1,
+        staleFrames: 0,
+        cancelledFrames: input.metrics.outcome === "superseded" ? 1 : 0,
+        peakRamMb: 0,
+        cacheHitRatio: 1,
+        stageTimings: { totalTimeUs },
+      },
+      audioMetrics: {
+        backend: "native-cpal",
+        runtimeEnvironment: import.meta.env.DEV ? "development" : "production",
+        windowDurationMs: Math.max(1, Math.round(totalTimeUs / 1000)),
+        installedClipCount: input.metrics.installedClipCount,
+        activeClipCount: input.metrics.activeClipCount,
+        callbackCount: input.metrics.callbackCountDelta,
+        nonSilentFrames: input.metrics.nonSilentFramesDelta,
+        lastError: input.metrics.failureReason,
+        startup: input.metrics,
+        stageTimings: { totalTimeUs },
+      },
+      timestampMs: Date.now(),
+    });
   }
 
   /**

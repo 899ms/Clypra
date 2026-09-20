@@ -13,6 +13,7 @@ import { getFontLoader } from "@/core/fonts/FontLoader";
 import {
   traceTextRenderGeometry,
   traceTextRenderCacheHit,
+  traceTextRenderFallback,
   traceTextRenderTiming,
   type TextRenderKind,
   type TextRenderPath,
@@ -922,6 +923,7 @@ export async function rasterizeTextLayerForNative(
         );
       } catch (err) {
         console.warn(`[nativeTextPreview] Worker template rasterize failed for ${layer.layerId}, falling back to main-thread:`, err);
+        traceTextRenderFallback("template-worker-raster-failed");
       }
     }
     // Worker not yet ready or failed — fall through to main thread.
@@ -988,6 +990,7 @@ export async function rasterizeTextLayerForNative(
         );
       } catch (err) {
         console.warn(`[nativeTextPreview] Worker effect rasterize failed for ${layer.layerId}, falling back to main-thread:`, err);
+        traceTextRenderFallback("effect-worker-raster-failed");
       }
     }
   }

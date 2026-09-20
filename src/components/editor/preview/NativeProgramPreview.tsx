@@ -2708,6 +2708,21 @@ export const NativeProgramPreview: React.FC = () => {
           if (nativeOnlyBlockersKeyRef.current !== blockerKey) {
             nativeOnlyBlockersKeyRef.current = blockerKey;
             if (blockers.length > 0) {
+              // Persist the renderer-path failure with the session. Blocker
+              // prose may include project-defined identifiers, so telemetry
+              // records only a stable subsystem category.
+              const blockedSubsystem = scene.visualLayers.some(
+                (layer) => layer.layerType === "media",
+              )
+                ? "media-or-composition"
+                : sceneTextLayers.length > 0
+                  ? "text"
+                  : "sticker-or-raster";
+              telemetryCollector.recordFallbackEvent(
+                "native-wgpu-preview",
+                "native-preview-blocked",
+                `${blockedSubsystem}-unsupported-or-unready`,
+              );
               toast.error(["Native-only preview", ...blockers].join("\n"), {
                 id: "native-only-preview-blocked",
                 duration: 6000,

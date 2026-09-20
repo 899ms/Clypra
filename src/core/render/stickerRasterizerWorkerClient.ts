@@ -102,6 +102,11 @@ export class StickerRasterizerWorkerClient {
       this.worker.onerror = (error) => {
         console.error("[StickerRasterizerWorkerClient] Worker error:", error);
         this.workerFailed = true;
+        telemetryCollector.recordFallbackEvent(
+          "sticker-worker-offscreen",
+          "sticker-main-thread-raster",
+          "sticker-worker-runtime-error",
+        );
         this.drainPendingWithError(new Error("Worker error occurred"));
       };
     } catch (err) {
@@ -111,6 +116,11 @@ export class StickerRasterizerWorkerClient {
       );
       this.worker = null;
       this.workerFailed = true;
+      telemetryCollector.recordFallbackEvent(
+        "sticker-worker-offscreen",
+        "sticker-main-thread-raster",
+        "sticker-worker-initialization-failed",
+      );
     }
   }
 
@@ -166,6 +176,11 @@ export class StickerRasterizerWorkerClient {
         msg.error,
       );
       this.workerFailed = true;
+      telemetryCollector.recordFallbackEvent(
+        "sticker-worker-offscreen",
+        "sticker-main-thread-raster",
+        "sticker-worker-frame-failed",
+      );
       this.renderFallback(
         pending.layer,
         pending.animationData,
