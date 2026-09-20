@@ -53,7 +53,10 @@ function traceFlagFromGlobal(): boolean {
 export function isSyncMetricsTraceEnabled(): boolean {
   if (traceFlagFromGlobal()) return true;
   try {
-    return typeof localStorage !== "undefined" && localStorage.getItem(TRACE_STORAGE_KEY) === "1";
+    return (
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem(TRACE_STORAGE_KEY) === "1"
+    );
   } catch {
     return false;
   }
@@ -69,10 +72,15 @@ export function setSyncMetricsTraceEnabled(enabled: boolean): void {
     // Browser privacy settings can disable localStorage; tracing still works
     // through the global flag or the normal five-second summaries.
   }
-  console.info(`[av-sync][react] source=react event=trace_config enabled=${enabled}`);
+  console.info(
+    `[av-sync][react] source=react event=trace_config enabled=${enabled}`,
+  );
 }
 
-function traceEvent(event: string, details: Record<string, number | string | boolean | null>): void {
+function traceEvent(
+  event: string,
+  details: Record<string, number | string | boolean | null>,
+): void {
   if (!isSyncMetricsTraceEnabled()) return;
   console.debug("[av-sync][react]", {
     source: "react",
@@ -93,17 +101,29 @@ const pendingSeeks = new Map<number, number>();
 const MAX_PENDING_SEEKS = 50;
 
 export function recordPlayheadPaint(timestampMs = nowMs()): void {
-  const intervalMs = lastPlayheadPaintMs === null ? null : timestampMs - lastPlayheadPaintMs;
+  const intervalMs =
+    lastPlayheadPaintMs === null ? null : timestampMs - lastPlayheadPaintMs;
   if (intervalMs !== null) playheadPaintJitter.record(intervalMs);
   lastPlayheadPaintMs = timestampMs;
-  traceEvent("playhead_paint", { monotonic_ms: timestampMs, interval_ms: intervalMs });
+  traceEvent("playhead_paint", {
+    monotonic_ms: timestampMs,
+    interval_ms: intervalMs,
+  });
 }
 
-export function recordAudioPoll(audioPositionMs: number, uiPlayheadMs: number): void {
-  if (!Number.isFinite(audioPositionMs) || !Number.isFinite(uiPlayheadMs)) return;
+export function recordAudioPoll(
+  audioPositionMs: number,
+  uiPlayheadMs: number,
+): void {
+  if (!Number.isFinite(audioPositionMs) || !Number.isFinite(uiPlayheadMs))
+    return;
   const driftMs = uiPlayheadMs - audioPositionMs;
   uiPlayheadDrift.record(driftMs);
-  traceEvent("audio_poll", { audio_position_ms: audioPositionMs, ui_playhead_ms: uiPlayheadMs, drift_ms: driftMs });
+  traceEvent("audio_poll", {
+    audio_position_ms: audioPositionMs,
+    ui_playhead_ms: uiPlayheadMs,
+    drift_ms: driftMs,
+  });
 }
 
 export function recordSeekRequested(timestampMs = nowMs()): number {
@@ -114,12 +134,19 @@ export function recordSeekRequested(timestampMs = nowMs()): number {
     if (oldest === undefined) break;
     pendingSeeks.delete(oldest);
   }
-  traceEvent("seek_requested", { handle, monotonic_ms: timestampMs, pending: pendingSeeks.size });
+  traceEvent("seek_requested", {
+    handle,
+    monotonic_ms: timestampMs,
+    pending: pendingSeeks.size,
+  });
   return handle;
 }
 
 /** Resolve a seek on the next confirmed playhead paint. */
-export function recordSeekResolved(handle?: number, timestampMs = nowMs()): void {
+export function recordSeekResolved(
+  handle?: number,
+  timestampMs = nowMs(),
+): void {
   const resolvedHandle = handle ?? pendingSeeks.keys().next().value;
   if (resolvedHandle === undefined) return;
   const requestedAt = pendingSeeks.get(resolvedHandle);
@@ -127,7 +154,11 @@ export function recordSeekResolved(handle?: number, timestampMs = nowMs()): void
   pendingSeeks.delete(resolvedHandle);
   const latencyMs = Math.max(0, timestampMs - requestedAt);
   seekUserLatency.record(latencyMs);
-  traceEvent("seek_resolved", { handle: resolvedHandle, monotonic_ms: timestampMs, latency_ms: latencyMs });
+  traceEvent("seek_resolved", {
+    handle: resolvedHandle,
+    monotonic_ms: timestampMs,
+    latency_ms: latencyMs,
+  });
 }
 
 export interface FrontendSyncMetricsSnapshot {
@@ -160,9 +191,12 @@ export function startSyncMetricsFlushLoop(intervalMs = 5000): void {
   if (flushLoopStarted || typeof window === "undefined") return;
   flushLoopStarted = true;
   window.setInterval(() => {
-    const uiDrift = uiPlayheadDrift.takeAndReset();
-    const paintJitter = playheadPaintJitter.takeAndReset();
-    const seekLatency = seekUserLatency.takeAndReset();
+    // Use snapshot() (read-only) so this dev console logger does not compete
+    // with perfLogService's takeAndReset() calls that drain the same stats
+    // into the NDJSON session file.
+    const uiDrift = uiPlayheadDrift.snapshot();
+    const paintJitter = playheadPaintJitter.snapshot();
+    const seekLatency = seekUserLatency.snapshot();
     if (uiDrift.n === 0 && paintJitter.n === 0 && seekLatency.n === 0) return;
     if (import.meta.env.DEV || isSyncMetricsTraceEnabled()) {
       console.info("[av-sync][metrics]", {

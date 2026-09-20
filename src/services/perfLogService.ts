@@ -28,6 +28,13 @@
 import { getApiBaseUrl, getApiKey } from "@/lib/api/apiUtils";
 import { getAppVersion, getAppVersionSync } from "@/lib/app/appVersion";
 import type { NativeSessionSnapshot } from "@/lib/platform/tauri";
+import { filmstripTelemetry } from "@/lib/filmstrip/filmstripTelemetry";
+import {
+  uiPlayheadDrift,
+  playheadPaintJitter,
+  seekUserLatency,
+  startSyncMetricsFlushLoop,
+} from "@/lib/playback/syncMetrics";
 
 // ── Tauri runtime guard ───────────────────────────────────────────────────────
 // Evaluated lazily at call time, not at module-load time. The module-level
@@ -61,8 +68,10 @@ export type PerfLogKind =
   | "sticker-rollup"
   | "export-span"
   | "seek-span"
-  | "ai-inference";
-
+  | "ai-inference"
+  | "filmstrip-rollup"
+  | "frontend-av-sync"
+  | "timeline-edit";
 
 export interface PerfLogEntry {
   kind: PerfLogKind;
@@ -112,8 +121,21 @@ class PerfLogService {
   private playbackStartupUnlisten: (() => void) | null = null;
   private flushInFlight: Promise<void> | null = null;
   private closeInFlight: Promise<void> | null = null;
+  /** Peak process RSS observed since the current session opened (MB). */
+  private peakMemoryMb: number = 0;
 
   // ── Public API ─────────────────────────────────────────────────────────────
+
+  /**
+   * Returns the peak process resident-set size observed since the last
+   * `openSession` call, in megabytes.
+   *
+   * Returns `0` before the first memory poll fires or in non-Tauri environments.
+   * Safe to call from any callsite that needs a real `peakRamMb` value.
+   */
+  getPeakMemoryMb(): number {
+    return this.peakMemoryMb;
+  }
 
   /**
    * Opens a perf-log session. Safe to call multiple times for the same
@@ -133,11 +155,15 @@ class PerfLogService {
       );
       this.sessionId = info.sessionId;
       this.filePath = info.filePath;
+      this.peakMemoryMb = 0; // reset peak for the new session
 
       this.startFlushTimer();
       this.startSyncPollTimer();
       await this.subscribeToNativeDiagnostics();
       await this.subscribeToNativePlaybackStartup();
+      // Start the dev-console loop (non-destructive snapshot; NDJSON forwarding
+      // uses takeAndReset() inside flushFrontendSyncMetrics on the poll timer).
+      startSyncMetricsFlushLoop(SYNC_POLL_INTERVAL_MS);
 
       // Write a session-open marker so log consumers can correlate the
       // hardware context with subsequent entries without re-parsing the whole file.
@@ -171,10 +197,13 @@ class PerfLogService {
   private async retryPendingUploads(): Promise<void> {
     if (!isTauriRuntime()) return;
     try {
-      const uploadedCount = await tauriInvoke<number>("upload_pending_perf_logs", {
-        apiBaseUrl: getApiBaseUrl(),
-        apiKey: getApiKey(),
-      });
+      const uploadedCount = await tauriInvoke<number>(
+        "upload_pending_perf_logs",
+        {
+          apiBaseUrl: getApiBaseUrl(),
+          apiKey: getApiKey(),
+        },
+      );
       if (uploadedCount > 0) {
         console.log(
           `[PerfLogService] Uploaded ${uploadedCount} pending session log(s) from previous run.`,
@@ -253,7 +282,9 @@ class PerfLogService {
     // This includes deadline misses, scheduler queue wait, decode latencies, dropped frames,
     // render path breakdown, and policy throttling counts.
     try {
-      const nativeStats = await tauriInvoke<NativeSessionSnapshot>("get_session_telemetry");
+      const nativeStats = await tauriInvoke<NativeSessionSnapshot>(
+        "get_session_telemetry",
+      );
       if (nativeStats && nativeStats.framesProduced > 0) {
         // 1. Raw native session telemetry entry for full-fidelity Cloudflare R2 archival
         this.queue.push({
@@ -265,10 +296,17 @@ class PerfLogService {
 
         // 2. Synthesized session-rollup formatted as PerformanceEventPayload
         //    so clypra-api parses and stores it directly in Neon PostgreSQL / D1 metrics_summary!
-        const totalDurationMs = Math.max(1, Math.round(nativeStats.sessionDurationSecs * 1000));
+        const totalDurationMs = Math.max(
+          1,
+          Math.round(nativeStats.sessionDurationSecs * 1000),
+        );
         const renderedFps =
           nativeStats.sessionDurationSecs > 0
-            ? Number((nativeStats.framesProduced / nativeStats.sessionDurationSecs).toFixed(2))
+            ? Number(
+                (
+                  nativeStats.framesProduced / nativeStats.sessionDurationSecs
+                ).toFixed(2),
+              )
             : 60;
 
         this.queue.push({
@@ -283,12 +321,23 @@ class PerfLogService {
             appBuildNumber: "1",
             appEnvironment: import.meta.env.DEV ? "beta" : "production",
             device: {
-              osFamily: typeof navigator !== "undefined" && navigator.userAgent.includes("Mac") ? "macos" : "windows",
+              osFamily:
+                typeof navigator !== "undefined" &&
+                navigator.userAgent.includes("Mac")
+                  ? "macos"
+                  : "windows",
               gpuVendor: "gpu",
               gpuModel: "native-wgpu",
-              screenResolution: typeof window !== "undefined" ? `${window.screen.width}x${window.screen.height}` : "1920x1080",
-              devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1,
-              cpuCores: typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 8,
+              screenResolution:
+                typeof window !== "undefined"
+                  ? `${window.screen.width}x${window.screen.height}`
+                  : "1920x1080",
+              devicePixelRatio:
+                typeof window !== "undefined" ? window.devicePixelRatio : 1,
+              cpuCores:
+                typeof navigator !== "undefined"
+                  ? navigator.hardwareConcurrency
+                  : 8,
             },
             video: {
               width: 1920,
@@ -309,7 +358,7 @@ class PerfLogService {
               droppedFramesRatio: (nativeStats.dropRatePct ?? 0) / 100,
               staleFrames: 0,
               cancelledFrames: 0,
-              peakRamMb: 512,
+              peakRamMb: this.peakMemoryMb > 0 ? this.peakMemoryMb : 512,
               cacheHitRatio: 0,
               isSessionRollup: true,
               stageTimings: {
@@ -330,7 +379,10 @@ class PerfLogService {
         });
       }
     } catch (err) {
-      console.warn("[PerfLogService] Failed to capture final session telemetry:", err);
+      console.warn(
+        "[PerfLogService] Failed to capture final session telemetry:",
+        err,
+      );
     }
 
     // Write a session-close marker before the final flush.
@@ -341,6 +393,41 @@ class PerfLogService {
       timestampEpochMs: Date.now(),
       payload: { marker: "session-close" },
     });
+
+    // Flush the final filmstrip window so the partial interval at session end is not lost.
+    const filmstripCount = filmstripTelemetry.getRecordCount();
+    if (filmstripCount > 0) {
+      const filmstripSummary = filmstripTelemetry.getSummary();
+      filmstripTelemetry.clear();
+      this.queue.push({
+        kind: "filmstrip-rollup",
+        sessionId,
+        timestampEpochMs: Date.now(),
+        payload: filmstripSummary,
+      });
+    }
+
+    // Flush the final frontend A/V sync window so the partial interval is not lost.
+    const finalUiDrift = uiPlayheadDrift.takeAndReset();
+    const finalPaintJitter = playheadPaintJitter.takeAndReset();
+    const finalSeekLatency = seekUserLatency.takeAndReset();
+    if (
+      finalUiDrift.n > 0 ||
+      finalPaintJitter.n > 0 ||
+      finalSeekLatency.n > 0
+    ) {
+      this.queue.push({
+        kind: "frontend-av-sync",
+        sessionId,
+        timestampEpochMs: Date.now(),
+        payload: {
+          windowDurationMs: SYNC_POLL_INTERVAL_MS,
+          uiPlayheadDrift: finalUiDrift,
+          playheadPaintJitter: finalPaintJitter,
+          seekUserLatency: finalSeekLatency,
+        },
+      });
+    }
 
     // Null sessionId AFTER capturing it so flushQueue doesn't bail early.
     // We own the close from this point forward.
@@ -467,6 +554,9 @@ class PerfLogService {
     this.syncPollTimer = setInterval(() => {
       void this.pollNativeSyncMetrics();
       void this.pollNativeSessionTelemetry();
+      void this.pollProcessMemory();
+      this.flushFilmstripSummary();
+      this.flushFrontendSyncMetrics();
     }, SYNC_POLL_INTERVAL_MS);
   }
 
@@ -500,7 +590,9 @@ class PerfLogService {
   private async pollNativeSessionTelemetry(): Promise<void> {
     if (!this.sessionId) return;
     try {
-      const snapshot = await tauriInvoke<NativeSessionSnapshot>("get_session_telemetry");
+      const snapshot = await tauriInvoke<NativeSessionSnapshot>(
+        "get_session_telemetry",
+      );
       if (!snapshot || snapshot.framesProduced === 0) return;
       this.enqueue({
         kind: "native-session-telemetry",
@@ -513,6 +605,77 @@ class PerfLogService {
     }
   }
 
+  /**
+   * Samples the main-process resident set size (RSS) and updates `peakMemoryMb`.
+   *
+   * Calls the `get_process_memory_mb` Tauri command which uses `getrusage(2)`.
+   * Zero-overhead on the Rust side; called at most once per flush interval.
+   * Silently no-ops in non-Tauri environments.
+   */
+  private async pollProcessMemory(): Promise<void> {
+    if (!isTauriRuntime()) return;
+    try {
+      const mb = await tauriInvoke<number>("get_process_memory_mb");
+      if (typeof mb === "number" && mb > 0) {
+        this.peakMemoryMb = Math.max(this.peakMemoryMb, mb);
+      }
+    } catch {
+      // Command unavailable on this build — silently skip.
+    }
+  }
+
+  /**
+   * Drains the in-memory filmstrip tile recorder into a single summary entry
+   * and enqueues it for the session NDJSON file.
+   *
+   * Called every flush interval. Skips when no tiles have been recorded since
+   * the last flush. The recorder is cleared after snapshot so the next window
+   * starts fresh — summary counts are per-interval, not cumulative.
+   */
+  private flushFilmstripSummary(): void {
+    if (!this.sessionId) return;
+    const count = filmstripTelemetry.getRecordCount();
+    if (count === 0) return;
+    const summary = filmstripTelemetry.getSummary();
+    filmstripTelemetry.clear();
+    this.enqueue({
+      kind: "filmstrip-rollup",
+      sessionId: this.sessionId,
+      timestampEpochMs: Date.now(),
+      payload: summary,
+    });
+  }
+
+  /**
+   * Drains the frontend A/V sync rolling stats into a single NDJSON entry.
+   *
+   * `uiPlayheadDrift`, `playheadPaintJitter`, and `seekUserLatency` accumulate
+   * in-process but have never been persisted. This method takes a snapshot via
+   * `getSyncMetricsSnapshot()` and calls `takeAndReset()` on each stat so the
+   * next window starts fresh — values are per-interval, not cumulative.
+   *
+   * Skips the enqueue when all three stats have zero samples (nothing happened
+   * in this interval, e.g. transport paused the whole time).
+   */
+  private flushFrontendSyncMetrics(): void {
+    if (!this.sessionId) return;
+    // takeAndReset() both reads and clears each stat atomically.
+    const uiDrift = uiPlayheadDrift.takeAndReset();
+    const paintJitter = playheadPaintJitter.takeAndReset();
+    const seekLatency = seekUserLatency.takeAndReset();
+    if (uiDrift.n === 0 && paintJitter.n === 0 && seekLatency.n === 0) return;
+    this.enqueue({
+      kind: "frontend-av-sync",
+      sessionId: this.sessionId,
+      timestampEpochMs: Date.now(),
+      payload: {
+        windowDurationMs: SYNC_POLL_INTERVAL_MS,
+        uiPlayheadDrift: uiDrift,
+        playheadPaintJitter: paintJitter,
+        seekUserLatency: seekLatency,
+      },
+    });
+  }
 
   /** Subscribes to the Tauri native-diagnostic event bridge. */
   private async subscribeToNativeDiagnostics(): Promise<void> {
@@ -549,7 +712,10 @@ class PerfLogService {
             kind: "native-diagnostic",
             sessionId: this.sessionId,
             timestampEpochMs: Date.now(),
-            payload: { marker: "native-playback-startup", ...(payload as object) },
+            payload: {
+              marker: "native-playback-startup",
+              ...(payload as object),
+            },
           });
         },
       );

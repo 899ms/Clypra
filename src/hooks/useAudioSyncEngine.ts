@@ -42,7 +42,9 @@ interface UseAudioSyncEngineOptions {
 
 export function getGlobalAudioEngine(): AudioEngine {
   if (isTauriRuntime()) {
-    throw new Error("Web Audio is not available for native Tauri program preview");
+    throw new Error(
+      "Web Audio is not available for native Tauri program preview",
+    );
   }
   return getSharedAudioEngine();
 }
@@ -72,7 +74,7 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
   // and can resume voices during a native handoff. Browser preview retains
   // the shared engine as its single browser authority.
   const engineRef = useRef<AudioEngine | null>(
-    options.nativeMode ? null : options.audioEngine ?? getSharedAudioEngine(),
+    options.nativeMode ? null : (options.audioEngine ?? getSharedAudioEngine()),
   );
   const rafRef = useRef<number | null>(null);
   const adapterRef = useRef<AudioPlaybackAdapter | null>(null);
@@ -86,6 +88,8 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
     callbackTimeUs: number;
     callbackMaxTimeUs: number;
     callbackOverBudgetCount: number;
+    seekCount: number;
+    seekLatencyTotalUs: number;
     lastError: string | null;
   } | null>(null);
 
@@ -94,14 +98,21 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
     0,
   );
   const totalDuration = project
-    ? Math.max(0, project.duration || 0, timelineDuration, getPlaybackClock().duration)
+    ? Math.max(
+        0,
+        project.duration || 0,
+        timelineDuration,
+        getPlaybackClock().duration,
+      )
     : 0;
   const latestAudioSource: AudioPlaybackSource | null = project
     ? {
         projectRevision: `${project.id}:${timelineEpoch}`,
         frameRate: project.frameRate,
         duration: totalDuration,
-        audioTrackCount: tracks.filter((track) => track.type === "audio" && !track.muted).length,
+        audioTrackCount: tracks.filter(
+          (track) => track.type === "audio" && !track.muted,
+        ).length,
         clips: expandedClips,
         tracks,
         assets: mediaAssets,
@@ -114,7 +125,8 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
   // audio rendering into a telemetry workload or growing while idle.
   useEffect(() => {
     if (!project?.id) return;
-    const sessionId = getActiveSessionOrNull()?.sessionId ?? `audio-${Date.now()}`;
+    const sessionId =
+      getActiveSessionOrNull()?.sessionId ?? `audio-${Date.now()}`;
     const sample = async () => {
       try {
         if (options.nativeMode && isTauriRuntime()) {
@@ -129,14 +141,45 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
             callbackTimeUs: status.callbackTimeUs,
             callbackMaxTimeUs: status.callbackMaxTimeUs,
             callbackOverBudgetCount: status.callbackOverBudgetCount,
+            seekCount: status.seekCount,
+            seekLatencyTotalUs: status.seekLatencyTotalUs,
             lastError: status.lastError,
           };
-          const callbackCount = Math.max(0, status.callbackCount - (previous?.callbackCount ?? 0));
-          const renderedFrames = Math.max(0, status.renderedFrames - (previous?.renderedFrames ?? 0));
-          const callbackTimeUs = Math.max(0, status.callbackTimeUs - (previous?.callbackTimeUs ?? 0));
-          const mixerLockMisses = Math.max(0, status.mixerLockMisses - (previous?.mixerLockMisses ?? 0));
-          const overBudget = Math.max(0, status.callbackOverBudgetCount - (previous?.callbackOverBudgetCount ?? 0));
-          const errorChanged = Boolean(status.lastError && status.lastError !== previous?.lastError);
+          const callbackCount = Math.max(
+            0,
+            status.callbackCount - (previous?.callbackCount ?? 0),
+          );
+          const renderedFrames = Math.max(
+            0,
+            status.renderedFrames - (previous?.renderedFrames ?? 0),
+          );
+          const callbackTimeUs = Math.max(
+            0,
+            status.callbackTimeUs - (previous?.callbackTimeUs ?? 0),
+          );
+          const mixerLockMisses = Math.max(
+            0,
+            status.mixerLockMisses - (previous?.mixerLockMisses ?? 0),
+          );
+          const overBudget = Math.max(
+            0,
+            status.callbackOverBudgetCount -
+              (previous?.callbackOverBudgetCount ?? 0),
+          );
+          const seekCount = Math.max(
+            0,
+            status.seekCount - (previous?.seekCount ?? 0),
+          );
+          const seekLatencyTotalUs = Math.max(
+            0,
+            status.seekLatencyTotalUs - (previous?.seekLatencyTotalUs ?? 0),
+          );
+          // Mean seek latency over this window (µs → ms). Only defined when seeks occurred.
+          const seekP95Ms =
+            seekCount > 0 ? seekLatencyTotalUs / seekCount / 1000 : undefined;
+          const errorChanged = Boolean(
+            status.lastError && status.lastError !== previous?.lastError,
+          );
           // CPAL may continue invoking a silent callback while transport is
           // paused. Do not turn that device-idle activity into unbounded DB
           // growth; report an error only once when it first appears.
@@ -145,7 +188,9 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
             sessionId,
             windowStartMs: Date.now() - 5000,
             backend: "native-cpal",
-            runtimeEnvironment: import.meta.env.DEV ? "development" : "production",
+            runtimeEnvironment: import.meta.env.DEV
+              ? "development"
+              : "production",
             windowDurationMs: 5000,
             sampleRate: status.sampleRate ?? undefined,
             channels: status.channels ?? undefined,
@@ -153,18 +198,37 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
             activeClipCount: diagnostics.activeClipIds.length,
             callbackCount,
             renderedFrames,
-            nonSilentFrames: Math.max(0, status.nonSilentFrames - (previous?.nonSilentFrames ?? 0)),
+            nonSilentFrames: Math.max(
+              0,
+              status.nonSilentFrames - (previous?.nonSilentFrames ?? 0),
+            ),
+            // mixerLockMisses is the real audio-path underrun proxy: a missed
+            // RwLock acquire forces the callback to output silence.
             underruns: mixerLockMisses,
             mixerLockMisses,
-            callbackP95Us: callbackCount > 0 ? Math.round(callbackTimeUs / callbackCount) : 0,
+            callbackP95Us:
+              callbackCount > 0
+                ? Math.round(callbackTimeUs / callbackCount)
+                : 0,
             callbackMaxUs: Math.max(0, status.callbackMaxTimeUs),
             callbackOverBudgetCount: overBudget,
+            seekCount,
+            seekP95Ms,
             clockDriftP95Ms: undefined,
             lastError: status.lastError ?? undefined,
             stageTimings: {
-              callbackUs: callbackCount > 0 ? Math.round(callbackTimeUs / callbackCount) : 0,
-              outputUs: callbackCount > 0 ? Math.round(callbackTimeUs / callbackCount) : 0,
-              totalTimeUs: callbackCount > 0 ? Math.round(callbackTimeUs / callbackCount) : 0,
+              callbackUs:
+                callbackCount > 0
+                  ? Math.round(callbackTimeUs / callbackCount)
+                  : 0,
+              outputUs:
+                callbackCount > 0
+                  ? Math.round(callbackTimeUs / callbackCount)
+                  : 0,
+              totalTimeUs:
+                callbackCount > 0
+                  ? Math.round(callbackTimeUs / callbackCount)
+                  : 0,
             },
           });
           return;
@@ -172,13 +236,16 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
 
         if (!options.nativeMode && engineRef.current) {
           const engine = engineRef.current;
-          const snapshot: AudioEngineTelemetrySnapshot = engine.takeTelemetrySnapshot();
+          const snapshot: AudioEngineTelemetrySnapshot =
+            engine.takeTelemetrySnapshot();
           if (snapshot.playingSyncCalls === 0) return;
           telemetryCollector.recordAudioSnapshot({
             sessionId,
             windowStartMs: Date.now() - snapshot.windowDurationMs,
             backend: "web-audio",
-            runtimeEnvironment: import.meta.env.DEV ? "development" : "production",
+            runtimeEnvironment: import.meta.env.DEV
+              ? "development"
+              : "production",
             windowDurationMs: snapshot.windowDurationMs,
             activeVoiceCount: snapshot.activeVoiceCount,
             syncCalls: snapshot.syncCalls,
@@ -250,16 +317,18 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
       }
       adapterDisposeChainRef.current = adapter.dispose();
     };
-  }, [
-    options.nativeMode,
-    project?.id,
-    project?.frameRate,
-  ]);
+  }, [options.nativeMode, project?.id, project?.frameRate]);
 
   // Update the audio playback source dynamically when timelineEpoch or project duration changes
   const lastProjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!options.nativeMode || !isTauriRuntime() || !project || !adapterRef.current) return;
+    if (
+      !options.nativeMode ||
+      !isTauriRuntime() ||
+      !project ||
+      !adapterRef.current
+    )
+      return;
     if (lastProjectIdRef.current !== project.id) {
       lastProjectIdRef.current = project.id;
       if (!adapterRef.current.isActive) return;
@@ -279,7 +348,10 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
   ]);
 
   useEffect(() => {
-    adapterRef.current?.setOutput(options.volume ?? 100, options.muted ?? false);
+    adapterRef.current?.setOutput(
+      options.volume ?? 100,
+      options.muted ?? false,
+    );
   }, [options.volume, options.muted]);
 
   // 1. Asynchronously pre-decode and cache audio buffers whenever timeline clips change
@@ -289,7 +361,9 @@ export function useAudioSyncEngine(options: UseAudioSyncEngineOptions = {}) {
     const items = expandedClips
       .map((clip) => {
         const key = clip.mediaId || clip.audioPath || clip.id;
-        const source = clip.audioPath || (clip.mediaId ? assetsById.get(clip.mediaId)?.path : undefined);
+        const source =
+          clip.audioPath ||
+          (clip.mediaId ? assetsById.get(clip.mediaId)?.path : undefined);
         return source ? { key, source } : null;
       })
       .filter((item): item is { key: string; source: string } => Boolean(item));

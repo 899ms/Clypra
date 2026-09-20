@@ -32,6 +32,37 @@ use diagnostics::{
 };
 use thumbnail_engine::init_thumbnail_engine;
 
+/// Returns the current process resident set size (RSS) in megabytes.
+///
+/// Used by the TS telemetry layer to replace hard-coded `peakRamMb` placeholders
+/// with real measurements. Called at most once per flush interval (~30 s) so the
+/// syscall overhead is negligible.
+///
+/// Returns `0` on platforms where the measurement is unavailable.
+#[tauri::command]
+fn get_process_memory_mb() -> u64 {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        // SAFETY: rusage is a plain C struct; zero-initialising it is correct
+        // before passing to getrusage. The kernel fills it in atomically.
+        let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+        let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+        if rc != 0 {
+            return 0;
+        }
+        // macOS reports ru_maxrss in bytes; Linux reports it in kilobytes.
+        #[cfg(target_os = "macos")]
+        let bytes = usage.ru_maxrss as u64;
+        #[cfg(target_os = "linux")]
+        let bytes = usage.ru_maxrss as u64 * 1024;
+        bytes / (1024 * 1024)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
+}
+
 #[tauri::command]
 fn set_menu_language(app: tauri::AppHandle, language: String) -> Result<(), String> {
     if let Some(menu) = app.menu() {
@@ -516,6 +547,8 @@ pub fn run() {
             log_system_media_diagnostics,
             // ── Camera Recording Processing ──────────────────────────────────
             process_camera_recording,
+            // ── Process memory telemetry ────────────────────────────────────
+            get_process_memory_mb,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

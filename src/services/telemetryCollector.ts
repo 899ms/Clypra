@@ -709,7 +709,8 @@ class SessionRollupAccumulator {
       };
     }
     if (capabilityPolicy) this.capabilityPolicy = capabilityPolicy;
-    if (capabilityProbeUs !== undefined) this.capabilityProbeUs = capabilityProbeUs;
+    if (capabilityProbeUs !== undefined)
+      this.capabilityProbeUs = capabilityProbeUs;
   }
 
   public recordSeek(seekLatencyMs: number): void {
@@ -1456,7 +1457,7 @@ class TelemetryCollector {
         staleFrames,
         cancelledFrames,
         avDriftMs,
-        peakRamMb: 512,
+        peakRamMb: perfLogService.getPeakMemoryMb() || 512,
         cacheHitRatio: 0.9,
         stageTimings: timings,
         capabilityPolicy: options.capabilityPolicy,
@@ -1509,14 +1510,20 @@ class TelemetryCollector {
     this.activeScrubSpan.latestAudioSeekUs = durationUs;
   }
 
-  public recordScrubDemandDispatched(scrubId: string, durationUs: number): void {
+  public recordScrubDemandDispatched(
+    scrubId: string,
+    durationUs: number,
+  ): void {
     if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
     if (this.activeScrubSpan.firstDemandUs === undefined) {
       this.activeScrubSpan.firstDemandUs = durationUs;
     }
   }
 
-  public recordScrubProxyFramePresented(scrubId: string, durationUs: number): void {
+  public recordScrubProxyFramePresented(
+    scrubId: string,
+    durationUs: number,
+  ): void {
     if (!this.activeScrubSpan || this.activeScrubSpan.id !== scrubId) return;
     if (this.activeScrubSpan.firstProxyFrameUs === undefined) {
       this.activeScrubSpan.firstProxyFrameUs = durationUs;
@@ -1593,8 +1600,8 @@ class TelemetryCollector {
       input.interaction.name === "scrub"
         ? "scrub"
         : input.interaction.name === "seek" ||
-          input.interaction.name === "timeline-click-seek" ||
-          input.interaction.name === "keyboard-seek"
+            input.interaction.name === "timeline-click-seek" ||
+            input.interaction.name === "keyboard-seek"
           ? "seek-warm"
           : "playback";
     this.recordRenderSpan(
@@ -2111,7 +2118,7 @@ class TelemetryCollector {
         droppedFramesRatio: 0,
         staleFrames: 0,
         cancelledFrames: 0,
-        peakRamMb: 512,
+        peakRamMb: perfLogService.getPeakMemoryMb() || 512,
         cacheHitRatio: isColdSeek ? 0.0 : 1.0,
         stageTimings: {
           decodeUs: Math.round(seekLatencyMs * 600),
@@ -2217,7 +2224,7 @@ class TelemetryCollector {
         droppedFramesRatio: success ? 0 : 1.0,
         staleFrames: 0,
         cancelledFrames: 0,
-        peakRamMb: 512,
+        peakRamMb: perfLogService.getPeakMemoryMb() || 512,
         cacheHitRatio: 1.0,
         stageTimings: {
           totalTimeUs: Math.round(inferenceDurationMs * 1000),
@@ -2267,7 +2274,7 @@ class TelemetryCollector {
         droppedFramesRatio: 1.0,
         staleFrames: 0,
         cancelledFrames: 0,
-        peakRamMb: 512,
+        peakRamMb: perfLogService.getPeakMemoryMb() || 512,
         cacheHitRatio: 0,
         stageTimings: {
           totalTimeUs: 33000,
@@ -2463,7 +2470,7 @@ class TelemetryCollector {
           staleFrames: rollup.staleFrames,
           cancelledFrames: rollup.cancelledFrames,
           avDriftMs: rollup.avDriftP95Ms,
-          peakRamMb: 512,
+          peakRamMb: perfLogService.getPeakMemoryMb() || 512,
           cacheHitRatio: rollup.cacheHitRatio,
           stageTimings: rollup.stageTimings,
           capabilityPolicy: rollup.capabilityPolicy,

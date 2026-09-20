@@ -46,6 +46,12 @@ pub struct NativeAudioStatus {
     pub callback_time_us: u64,
     pub callback_max_time_us: u64,
     pub callback_over_budget_count: u64,
+    /// Total number of `seek()` calls since the stream was last started.
+    /// Useful for correlating audio latency spikes with seek activity.
+    pub seek_count: u64,
+    /// Cumulative seek latency in microseconds since the stream was last
+    /// started. Divide by `seek_count` to obtain the mean seek latency.
+    pub seek_latency_total_us: u64,
     /// Microseconds since the last CPAL callback advanced the audio clock.
     /// `None` if the stream has never fired a callback (clock never started).
     /// Used by A/V drift suppression: when this value exceeds the adaptive
@@ -679,6 +685,10 @@ struct NativeAudioClockInner {
     callback_time_us: Arc<AtomicU64>,
     callback_max_time_us: Arc<AtomicU64>,
     callback_over_budget_count: Arc<AtomicU64>,
+    /// Incremented by `seek()` on every call.
+    seek_count: Arc<AtomicU64>,
+    /// Accumulated seek latency in microseconds. Incremented by `seek()`.
+    seek_latency_total_us: Arc<AtomicU64>,
     mixer: Arc<RwLock<NativeAudioMixer>>,
     last_error: Arc<Mutex<Option<String>>>,
     /// Fixed reference point set at `NativeAudioClock::new()`. Used to
@@ -730,6 +740,8 @@ impl NativeAudioClock {
                 callback_time_us: Arc::new(AtomicU64::new(0)),
                 callback_max_time_us: Arc::new(AtomicU64::new(0)),
                 callback_over_budget_count: Arc::new(AtomicU64::new(0)),
+                seek_count: Arc::new(AtomicU64::new(0)),
+                seek_latency_total_us: Arc::new(AtomicU64::new(0)),
                 mixer: Arc::new(RwLock::new(NativeAudioMixer::default())),
                 last_error: Arc::new(Mutex::new(None)),
                 clock_epoch: Instant::now(),
@@ -773,6 +785,8 @@ impl NativeAudioClock {
         self.inner
             .callback_over_budget_count
             .store(0, Ordering::Release);
+        self.inner.seek_count.store(0, Ordering::Release);
+        self.inner.seek_latency_total_us.store(0, Ordering::Release);
         // Reset the freshness tracker so the new stream starts with a clean slate.
         // Zero is the sentinel for "no callback has fired yet".
         self.inner.last_callback_ns.store(0, Ordering::Release);
@@ -1193,6 +1207,7 @@ impl NativeAudioClock {
     }
 
     pub fn seek(&self, position_ticks: i64) {
+        let t0 = std::time::Instant::now();
         self.inner
             .transport_ramp_frames
             .store(TRANSPORT_RAMP_FRAMES, Ordering::Release);
@@ -1200,6 +1215,15 @@ impl NativeAudioClock {
             .position_ticks
             .store(position_ticks.max(0), Ordering::Release);
         self.inner.played_frames.store(0, Ordering::Release);
+        // Record seek count and cumulative latency for telemetry.
+        // The actual cost of a seek is the atomic store above — negligible —
+        // but we measure it end-to-end so callers that hold a lock before
+        // calling seek() also contribute to the latency sum.
+        let elapsed_us = t0.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        self.inner.seek_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .seek_latency_total_us
+            .fetch_add(elapsed_us, Ordering::Relaxed);
     }
 
     pub fn install_clip(&mut self, clip: NativePcmClip) -> Result<NativeAudioClipStatus, String> {
@@ -1350,6 +1374,8 @@ impl NativeAudioClock {
                 .inner
                 .callback_over_budget_count
                 .load(Ordering::Acquire),
+            seek_count: self.inner.seek_count.load(Ordering::Acquire),
+            seek_latency_total_us: self.inner.seek_latency_total_us.load(Ordering::Acquire),
             clock_freshness_us,
             median_callback_interval_us,
         }

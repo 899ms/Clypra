@@ -14,6 +14,7 @@ import { AudioEnvelopeEditor } from "./AudioEnvelopeEditor";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useHistoryStore } from "@/store/historyStore";
 import { TimelineTrimCommand } from "@/core/history/commands/TimelineTrimCommand";
+import { EditingActions } from "@/core/interactions/EditingActions";
 import {
   getPreviewInteractionCoordinator,
   type PreviewInteractionToken,
@@ -73,7 +74,11 @@ interface ClipProps {
 
 function getClipDisplayText(clip: any): string {
   // 1. If explicit text is set on the clip
-  if (clip.text && typeof clip.text === "string" && clip.text.trim().length > 0) {
+  if (
+    clip.text &&
+    typeof clip.text === "string" &&
+    clip.text.trim().length > 0
+  ) {
     return clip.text;
   }
 
@@ -89,15 +94,22 @@ function getClipDisplayText(clip: any): string {
     const nodes = clip.templateSnapshot?.document?.nodes;
     if (Array.isArray(nodes)) {
       const textNode = nodes.find(
-        (n: any) => n.type === "text" && typeof n.text === "string" && n.text.trim().length > 0,
+        (n: any) =>
+          n.type === "text" &&
+          typeof n.text === "string" &&
+          n.text.trim().length > 0,
       );
       if (textNode?.text) return textNode.text;
     }
   }
 
   // 3. Clean up clip name or template label
-  const rawLabel = clip.name || clip.templateSnapshot?.metadata?.label || "Text";
-  return rawLabel.replace(/^text-template-/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+  const rawLabel =
+    clip.name || clip.templateSnapshot?.metadata?.label || "Text";
+  return rawLabel
+    .replace(/^text-template-/, "")
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (c: string) => c.toUpperCase());
 }
 
 const ClipInner: React.FC<ClipProps> = ({
@@ -140,6 +152,8 @@ const ClipInner: React.FC<ClipProps> = ({
     isRipple: boolean;
     beforeClips: ClipType[];
     beforeGaps: import("@/types/gap").Gap[];
+    /** Timestamp when trim gesture started, for telemetry. */
+    trimStartedAtMs: number;
   } | null>(null);
   const [isRippleResize, setIsRippleResize] = useState(false);
   const clipRef = useRef<HTMLDivElement>(null);
@@ -411,6 +425,7 @@ const ClipInner: React.FC<ClipProps> = ({
         ...gap,
         metadata: gap.metadata ? { ...gap.metadata } : gap.metadata,
       })),
+      trimStartedAtMs: performance.now(),
     };
 
     // Let's prevent text selection during resize
@@ -718,6 +733,27 @@ const ClipInner: React.FC<ClipProps> = ({
               afterResize.gaps,
             ),
           );
+        // Record trim telemetry — count affected clips as the number that
+        // actually changed between before/after snapshots.
+        const trimmedCount = initialResizeStart.beforeClips.filter((bc) => {
+          const ac = afterResize.clips.find((c) => c.id === bc.id);
+          return (
+            ac &&
+            (bc.startTime !== ac.startTime ||
+              bc.duration !== ac.duration ||
+              bc.trimIn !== ac.trimIn ||
+              bc.trimOut !== ac.trimOut)
+          );
+        }).length;
+        EditingActions.recordTimelineEdit({
+          operation: "trim",
+          clipId,
+          trimClipCount: trimmedCount,
+          success: true,
+          durationMs:
+            performance.now() -
+            (initialResizeStart.trimStartedAtMs ?? performance.now()),
+        });
       }
       if (previewInteractionRef.current) {
         previewInteractionCoordinator.commit(previewInteractionRef.current);
