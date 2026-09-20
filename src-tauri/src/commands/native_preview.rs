@@ -109,11 +109,14 @@ pub fn clear_native_font_warnings() -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct NativeDecodeTimings {
     decode_time_us: u32,
     decoder_mutex_wait_us: u64,
     actor_wait_us: Option<u64>,
+    demux_wait_us: Option<u64>,
+    container_format: Option<String>,
+    is_hardware_accelerated: Option<bool>,
 }
 
 struct QueuedNativeFrame {
@@ -222,7 +225,7 @@ fn record_native_surface_sample(
     app: &tauri::AppHandle,
     request: &FrameRequest,
     started_at: Instant,
-    decode_timings: NativeDecodeTimings,
+    decode_timings: &NativeDecodeTimings,
     queue_hit: bool,
     scheduler_wait_us: u64,
     lookahead_wait_us: Option<u64>,
@@ -293,6 +296,9 @@ fn record_native_surface_sample(
         submit_present_us,
         capability_policy,
         capability_probe_us,
+        demux_wait_us: decode_timings.demux_wait_us,
+        container_format: decode_timings.container_format.clone(),
+        is_hardware_accelerated: decode_timings.is_hardware_accelerated,
     });
 }
 
@@ -2336,6 +2342,9 @@ async fn decode_native_video_layers(
         let decode_us = actor_frame.decode_us;
         let mutex_wait_us = actor_frame.decoder_mutex_wait_us;
         let actor_wait_us = actor_frame.actor_wait_us;
+        let demux_us = actor_frame.demux_us;
+        let container_format = actor_frame.container_format.clone();
+        let is_hw = actor_frame.is_hardware_accelerated;
         let decoded = actor_frame.into_native_video_frame();
         return Ok((
             vec![decoded],
@@ -2343,6 +2352,9 @@ async fn decode_native_video_layers(
                 decode_time_us: decode_us,
                 decoder_mutex_wait_us: mutex_wait_us,
                 actor_wait_us: Some(actor_wait_us),
+                demux_wait_us: Some(u64::from(demux_us)),
+                container_format: Some(container_format),
+                is_hardware_accelerated: Some(is_hw),
             },
         ));
     }
@@ -2390,8 +2402,20 @@ async fn decode_native_video_layers(
                 let decode_us = actor_frame.decode_us;
                 let mutex_wait_us = actor_frame.decoder_mutex_wait_us;
                 let actor_wait_us = actor_frame.actor_wait_us;
+                let demux_us = actor_frame.demux_us;
+                let container_format = actor_frame.container_format.clone();
+                let is_hw = actor_frame.is_hardware_accelerated;
                 let decoded = actor_frame.into_native_video_frame();
-                Ok::<_, String>((decoded, decode_us, mutex_wait_us, actor_wait_us, layer_id))
+                Ok::<_, String>((
+                    decoded,
+                    decode_us,
+                    mutex_wait_us,
+                    actor_wait_us,
+                    demux_us,
+                    container_format,
+                    is_hw,
+                    layer_id,
+                ))
             }));
         }
     }
@@ -2400,6 +2424,9 @@ async fn decode_native_video_layers(
     let mut max_decode_us = 0u32;
     let mut total_mutex_wait_us = 0u64;
     let mut max_actor_wait_us = 0u64;
+    let mut max_demux_us = 0u64;
+    let mut primary_container = None;
+    let mut all_hw = true;
 
     for task in unique_tasks {
         let res = task
@@ -2408,6 +2435,13 @@ async fn decode_native_video_layers(
         max_decode_us = max_decode_us.max(res.1);
         total_mutex_wait_us = total_mutex_wait_us.saturating_add(res.2);
         max_actor_wait_us = max_actor_wait_us.max(res.3);
+        max_demux_us = max_demux_us.max(u64::from(res.4));
+        if primary_container.is_none() && !res.5.is_empty() {
+            primary_container = Some(res.5.clone());
+        }
+        if !res.6 {
+            all_hw = false;
+        }
         unique_results.push(res);
     }
 
@@ -2423,6 +2457,9 @@ async fn decode_native_video_layers(
             decode_time_us: max_decode_us,
             decoder_mutex_wait_us: total_mutex_wait_us,
             actor_wait_us: Some(max_actor_wait_us),
+            demux_wait_us: Some(max_demux_us),
+            container_format: primary_container,
+            is_hardware_accelerated: Some(all_hw),
         },
     ))
 }
@@ -3042,7 +3079,7 @@ pub(crate) async fn present_native_frame_internal(
             &app,
             &request,
             presentation_started,
-            NativeDecodeTimings::default(),
+            &NativeDecodeTimings::default(),
             false,
             0,
             Some(0),
@@ -3127,7 +3164,7 @@ pub(crate) async fn present_native_frame_internal(
                     &app,
                     &request,
                     request_started_at,
-                    decode_timings,
+                    &decode_timings,
                     queue_hit,
                     scheduler_wait_us,
                     Some(lookahead_wait_us),
@@ -3202,7 +3239,7 @@ pub(crate) async fn present_native_frame_internal(
             &app,
             &request,
             request_started_at,
-            decode_timings,
+            &decode_timings,
             queue_hit,
             scheduler_wait_us,
             Some(lookahead_wait_us),
@@ -3243,7 +3280,7 @@ pub(crate) async fn present_native_frame_internal(
             &app,
             &request,
             request_started_at,
-            decode_timings,
+            &decode_timings,
             queue_hit,
             scheduler_wait_us,
             Some(lookahead_wait_us),
@@ -3643,7 +3680,7 @@ pub(crate) async fn present_native_frame_internal(
         &app,
         &request,
         request_started_at,
-        decode_timings,
+        &decode_timings,
         queue_hit,
         scheduler_wait_us,
         Some(lookahead_wait_us),
@@ -3683,6 +3720,7 @@ pub(crate) async fn present_native_frame_internal(
             decode_us: decode_timings.decode_time_us,
             decoder_mutex_wait_us: decode_timings.decoder_mutex_wait_us,
             actor_wait_us: decode_timings.actor_wait_us.unwrap_or(0),
+            demux_wait_us: decode_timings.demux_wait_us.unwrap_or(0),
             conversion_upload_us,
             compose_us,
             surface_acquire_us,
@@ -3795,6 +3833,9 @@ pub async fn render_native_frame(
                 submit_present_us: None,
                 capability_policy: None,
                 capability_probe_us: None,
+                demux_wait_us: None,
+                container_format: None,
+                is_hardware_accelerated: None,
             });
             record_successful_readback_metrics(&app, &request);
             return Ok(tauri::ipc::Response::new(packet.data));
@@ -3873,6 +3914,9 @@ pub async fn render_native_frame(
             submit_present_us: None,
             capability_policy: None,
             capability_probe_us: None,
+            demux_wait_us: None,
+            container_format: None,
+            is_hardware_accelerated: None,
         });
     }
 

@@ -2,6 +2,7 @@
 
 pub mod atlas;
 pub mod decoder;
+pub mod demuxer;
 pub mod geometry;
 pub mod pyramid;
 pub mod stream_actor;
