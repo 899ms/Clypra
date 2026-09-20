@@ -2786,6 +2786,29 @@ export const NativeProgramPreview: React.FC = () => {
               surface: outputAdapter.surface,
               ...telemetryContextBase,
             };
+        // Capture composition complexity from the evaluated scene—not clip
+        // metadata—so hidden, transparent, and non-active layers never skew
+        // the media/multi-stack cohort that is persisted with this session.
+        const visualLayers = scene.visualLayers;
+        const mediaLayers = visualLayers.filter(
+          (layer) => layer.layerType === "media",
+        );
+        const activeAudioClipCount = renderClips.filter(
+          (clip) =>
+            clip.kind === "audio" &&
+            clip.startTime < frameStartTime + 1 / frameRate &&
+            frameStartTime < clip.startTime + clip.duration,
+        ).length;
+        telemetryCollector.recordCompositionSample({
+          previewContext: previewTelemetryContextRef.current,
+          visualLayerCount: visualLayers.length,
+          mediaLayerCount: mediaLayers.length,
+          videoLayerCount: mediaLayers.filter((layer) => layer.mediaType === "video").length,
+          imageLayerCount: mediaLayers.filter((layer) => layer.mediaType === "image").length,
+          textLayerCount: visualLayers.filter((layer) => layer.layerType === "text").length,
+          stickerLayerCount: mediaLayers.filter((layer) => layer.clipKind === "sticker").length,
+          activeAudioClipCount,
+        });
         // The child surface is playback-only on desktop. Paused and seeking
         // frames must be committed to the DOM canvas so they share the exact
         // same placement and layering as the editor overlays (TransformOverlay,

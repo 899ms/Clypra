@@ -146,6 +146,8 @@ Each line:
 | `export-span`       | `PerformanceEventPayload` | Export transcode completion                         |
 | `audio-snapshot`    | `PerformanceEventPayload` | Audio engine health window                          |
 | `text-rollup`       | `PerformanceEventPayload` | Text renderer window                                |
+| `sticker-rollup`    | `PerformanceEventPayload` | Sticker renderer window                             |
+| `composition-rollup`| `PerformanceEventPayload` | Evaluated media and multi-stack complexity window   |
 | `fallback-event`    | `PerformanceEventPayload` | WebGPU→WebGL or HW→SW fallback                      |
 | `ai-inference`      | `PerformanceEventPayload` | Whisper / auto-reframe / silence detection          |
 | `native-sync`       | `SyncMetricsSnapshot`     | A/V drift, frame pacing, seek correctness from Rust |
@@ -320,6 +322,8 @@ App launch
 During session
   └─ Every frame anomaly / rollup window / seek / export:
        telemetryCollector.enqueueEvent() → perfLogService.enqueue()
+  └─ Every evaluated editor frame:
+       composition sampler → bounded media/layer-stack rollup
   └─ Every 30s: perfLogService flush timer → append_perf_log_entries (Rust)
   └─ Every 30s: sync-metrics poll → get_sync_metrics_snapshot → enqueue native-sync entry
   └─ On native-diagnostic event: enqueue native-diagnostic entry

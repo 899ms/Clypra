@@ -66,6 +66,7 @@ export type PerfLogKind =
   | "audio-snapshot"
   | "text-rollup"
   | "sticker-rollup"
+  | "composition-rollup"
   | "export-span"
   | "seek-span"
   | "ai-inference"

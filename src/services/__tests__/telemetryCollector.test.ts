@@ -308,4 +308,34 @@ describe("Production Telemetry Collector in Clypra Desktop", () => {
     expect(event.textMetrics.stagePercentiles).toEqual({});
     expect(event.textMetrics.interactionStagePercentiles).toEqual({});
   });
+
+  it("aggregates evaluated media stacks into one session-rollup event", () => {
+    telemetryCollector.recordCompositionSample({
+      sessionId: "composition-session",
+      previewContext: {
+        sessionId: "composition-session",
+        view: "native",
+        surface: "native-surface",
+        runtimeEnvironment: "development",
+        scenario: "playback",
+      },
+      visualLayerCount: 5,
+      mediaLayerCount: 3,
+      videoLayerCount: 2,
+      imageLayerCount: 1,
+      textLayerCount: 1,
+      stickerLayerCount: 1,
+      activeAudioClipCount: 2,
+    });
+    telemetryCollector.flushCompositionWindowsIfPending(true);
+
+    const event = (telemetryCollector as any).queue[0];
+    expect(event.subsystem).toBe("composition");
+    expect(event.compositionMetrics).toMatchObject({
+      observedFrames: 1,
+      multiStackedFrames: 1,
+      maxMediaLayers: 3,
+      maxAudioClips: 2,
+    });
+  });
 });
