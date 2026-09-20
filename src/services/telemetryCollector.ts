@@ -118,7 +118,36 @@ export type TelemetryOperationMode =
   | "ai-inference"
   | "filmstrip-extraction";
 
-export type TelemetrySubsystem = "preview" | "audio" | "text" | "sticker";
+export type TelemetrySubsystem = "preview" | "audio" | "text" | "sticker" | "composition";
+
+/** Content-free composition pressure sampled from the evaluated editor scene. */
+export interface TelemetryCompositionSample {
+  sessionId?: string;
+  previewContext?: TelemetryPreviewContext;
+  visualLayerCount: number;
+  mediaLayerCount: number;
+  videoLayerCount: number;
+  imageLayerCount: number;
+  textLayerCount: number;
+  stickerLayerCount: number;
+  activeAudioClipCount: number;
+}
+
+export interface TelemetryCompositionMetrics {
+  windowDurationMs: number;
+  observedFrames: number;
+  multiStackedFrames: number;
+  maxVisualLayers: number;
+  maxMediaLayers: number;
+  maxAudioClips: number;
+  visualLayerPercentiles: TelemetryMetricPercentiles;
+  mediaLayerPercentiles: TelemetryMetricPercentiles;
+  videoLayerPercentiles: TelemetryMetricPercentiles;
+  imageLayerPercentiles: TelemetryMetricPercentiles;
+  textLayerPercentiles: TelemetryMetricPercentiles;
+  stickerLayerPercentiles: TelemetryMetricPercentiles;
+  audioClipPercentiles: TelemetryMetricPercentiles;
+}
 
 export type TelemetryStickerFormat = "lottie" | "gif" | "static";
 export type TelemetryStickerRendererPath =
@@ -392,6 +421,7 @@ export interface TelemetryEvent {
   audioMetrics?: TelemetryAudioMetrics;
   textMetrics?: TelemetryTextMetrics;
   stickerMetrics?: TelemetryStickerMetrics;
+  compositionMetrics?: TelemetryCompositionMetrics;
   fallbackEvent?: {
     triggered: boolean;
     fromBackend: string;
@@ -561,6 +591,7 @@ function resolvePerfLogKind(event: TelemetryEvent): PerfLogKind {
   if (event.audioMetrics) return "audio-snapshot";
   if (event.textMetrics) return "text-rollup";
   if (event.stickerMetrics) return "sticker-rollup";
+  if (event.compositionMetrics) return "composition-rollup";
   if (
     event.workload.mode === "seek-cold" ||
     event.workload.mode === "seek-warm"
@@ -1113,6 +1144,52 @@ class StickerWindowAccumulator {
   }
 }
 
+class CompositionWindowAccumulator {
+  private windowStartMs = Date.now();
+  private samples: TelemetryCompositionSample[] = [];
+
+  record(sample: TelemetryCompositionSample): void {
+    if (this.samples.length < 1000) this.samples.push(sample);
+  }
+
+  shouldEmit(): boolean {
+    return this.samples.length > 0 && Date.now() - this.windowStartMs >= ROLLUP_WINDOW_MS;
+  }
+
+  extract(): (TelemetryCompositionMetrics & { windowStartMs: number }) | null {
+    if (this.samples.length === 0) return null;
+    const percentile = (values: number[]): TelemetryMetricPercentiles => {
+      const sorted = [...values].sort((a, b) => a - b);
+      const at = (pct: number) => sorted[Math.min(sorted.length - 1, Math.round((sorted.length - 1) * pct))] ?? 0;
+      return { p50: at(0.5), p95: at(0.95), p99: at(0.99) };
+    };
+    const values = (key: keyof TelemetryCompositionSample) =>
+      this.samples.map((sample) => Math.max(0, Number(sample[key]) || 0));
+    const media = values("mediaLayerCount");
+    const visual = values("visualLayerCount");
+    const audio = values("activeAudioClipCount");
+    const result = {
+      windowStartMs: this.windowStartMs,
+      windowDurationMs: Math.max(1, Date.now() - this.windowStartMs),
+      observedFrames: this.samples.length,
+      multiStackedFrames: this.samples.filter((sample) => sample.mediaLayerCount > 1).length,
+      maxVisualLayers: Math.max(...visual),
+      maxMediaLayers: Math.max(...media),
+      maxAudioClips: Math.max(...audio),
+      visualLayerPercentiles: percentile(visual),
+      mediaLayerPercentiles: percentile(media),
+      videoLayerPercentiles: percentile(values("videoLayerCount")),
+      imageLayerPercentiles: percentile(values("imageLayerCount")),
+      textLayerPercentiles: percentile(values("textLayerCount")),
+      stickerLayerPercentiles: percentile(values("stickerLayerCount")),
+      audioClipPercentiles: percentile(audio),
+    };
+    this.windowStartMs = Date.now();
+    this.samples = [];
+    return result;
+  }
+}
+
 class TelemetryCollector {
   private queue: TelemetryEvent[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -1131,6 +1208,7 @@ class TelemetryCollector {
   private reportedStickerMeasurementIds = new Set<string>();
   private textAccumulators = new Map<string, TextWindowAccumulator>();
   private stickerAccumulators = new Map<string, StickerWindowAccumulator>();
+  private compositionAccumulators = new Map<string, CompositionWindowAccumulator>();
   private transportStatus: TelemetryTransportStatus = {
     // Batch endpoint is gone — all data flows through perfLogService session file.
     endpoint: "session-file",
@@ -1152,6 +1230,7 @@ class TelemetryCollector {
           this.flushRollupIfPending();
           this.flushTextWindowsIfPending();
           this.flushStickerWindowsIfPending();
+          this.flushCompositionWindowsIfPending(true);
           this.flush();
         }
       });
@@ -1885,6 +1964,73 @@ class TelemetryCollector {
     accumulator.recordCacheHit();
   }
 
+  /**
+   * Aggregates evaluated-scene complexity so media and multi-stack latency can
+   * be queried alongside the existing text, sticker, and audio rollups.
+   * Individual frames never leave the process; one cohort row is emitted per
+   * preview context and rollup window.
+   */
+  public recordCompositionSample(sample: TelemetryCompositionSample): void {
+    if (!this.isEnabled) return;
+    const context = sample.previewContext;
+    const key = JSON.stringify([
+      sample.sessionId ?? context?.sessionId ?? "composition-runtime",
+      context?.view ?? "webview",
+      context?.surface ?? "dom-canvas",
+      context?.scenario ?? "playback",
+      context?.runtimeEnvironment ?? (import.meta.env.DEV ? "development" : "production"),
+    ]);
+    let accumulator = this.compositionAccumulators.get(key);
+    if (!accumulator) {
+      accumulator = new CompositionWindowAccumulator();
+      this.compositionAccumulators.set(key, accumulator);
+    }
+    accumulator.record(sample);
+    if (accumulator.shouldEmit()) this.flushCompositionWindowsIfPending();
+  }
+
+  public flushCompositionWindowsIfPending(force = false): void {
+    for (const [key, accumulator] of this.compositionAccumulators) {
+      if (!force && !accumulator.shouldEmit()) continue;
+      const values = JSON.parse(key) as [string, TelemetryPreviewView, TelemetryPreviewSurface, TelemetryPreviewScenario, TelemetryRuntimeEnvironment];
+      const summary = accumulator.extract();
+      if (!summary) continue;
+      const [sessionId, view, surface, scenario, runtimeEnvironment] = values;
+      const measurementId = `composition:${sessionId}:${view}:${surface}:${scenario}:${summary.windowStartMs}`;
+      this.enqueueEvent({
+        eventId: `evt_composition_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        measurementId,
+        measurementSource: "session-rollup",
+        sampleKind: "window-rollup",
+        subsystem: "composition",
+        sessionId,
+        appVersion: this.appVersion,
+        appBuildNumber: import.meta.env.MODE || "prod",
+        appEnvironment: import.meta.env.DEV ? "beta" : "production",
+        previewContext: { sessionId, view, surface, scenario, runtimeEnvironment },
+        device: this.initHardwareContext(),
+        video: this.sanitizeVideoProfile({ nominalFps: 60 }),
+        workload: {
+          mode: "shader-composition",
+          durationMs: summary.windowDurationMs,
+          targetFps: 60,
+          renderedFps: summary.observedFrames / (summary.windowDurationMs / 1000),
+          totalFrames: summary.observedFrames,
+          droppedFrames: 0,
+          droppedFramesRatio: 0,
+          staleFrames: 0,
+          cancelledFrames: 0,
+          peakRamMb: 0,
+          cacheHitRatio: 1,
+          stageTimings: { totalTimeUs: 0 },
+          isSessionRollup: true,
+        },
+        compositionMetrics: summary,
+        timestampMs: Date.now(),
+      });
+    }
+  }
+
   public flushStickerWindowsIfPending(): void {
     for (const [key, accumulator] of this.stickerAccumulators) {
       if (!accumulator.shouldEmit()) continue;
@@ -2486,6 +2632,7 @@ class TelemetryCollector {
     }
     this.flushTextWindowsIfPending();
     this.flushStickerWindowsIfPending();
+    this.flushCompositionWindowsIfPending();
   }
 
   private getRollupAccumulator(
@@ -2528,6 +2675,7 @@ class TelemetryCollector {
       this.flushRollupIfPending();
       this.flushTextWindowsIfPending();
       this.flushStickerWindowsIfPending();
+      this.flushCompositionWindowsIfPending();
       this.flush();
     }, FLUSH_INTERVAL_MS);
   }
