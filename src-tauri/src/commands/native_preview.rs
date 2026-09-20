@@ -35,7 +35,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::{Emitter, Manager};
 
-type DecodedNativeVideoFrame = (Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata);
+use crate::thumbnail_engine::stream_actor::DecodedVideoPlanes;
+
+type DecodedNativeVideoFrame = (DecodedVideoPlanes, u32, u32, VideoColorMetadata);
 static NATIVE_SURFACE_PRESENTATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Register an editor font before a frame request references it. The native
@@ -2024,7 +2026,7 @@ async fn render_native_video_project_frame_bytes_timed(
         decoder_mutex_wait_us = decode_timings.decoder_mutex_wait_us;
 
         session = state.lock().await;
-        for (layer, (y_plane, uv_plane, width, height, color)) in
+        for (layer, (planes, width, height, color)) in
             request.layers.iter().zip(decoded_frames.iter())
         {
             let params = color_params(color)?;
@@ -2033,9 +2035,43 @@ async fn render_native_video_project_frame_bytes_timed(
             } else {
                 &layer.video_path
             };
-            let texture = session.render_nv12_frame_to_texture(
-                layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
-            )?;
+
+            #[allow(unused_mut)]
+            let mut layer_texture: Option<Arc<wgpu::Texture>> = None;
+            #[cfg(target_os = "windows")]
+            if let DecodedVideoPlanes::D3d11(ref shared_arc) = planes {
+                if session.gpu.capabilities.zero_copy_available()
+                    && session.dxgi_state.is_usable()
+                    && crate::wgpu_compositor::adapter_selector::is_dxgi_runtime_enabled()
+                {
+                    if let Some(duped_shared) = shared_arc.duplicate() {
+                        if let Ok(imported) = crate::wgpu_compositor::dxgi_import::import_into_wgpu(
+                            &session.gpu.device,
+                            duped_shared,
+                        ) {
+                            if let Ok(texture) = session.render_nv12_from_imported_texture(
+                                layer_key, *width, *height, &imported, &params,
+                            ) {
+                                session.mark_dxgi_supported();
+                                render_path = FrameRenderPath::ZeroCopyDxgi;
+                                layer_texture = Some(texture);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let texture = match layer_texture {
+                Some(t) => t,
+                None => {
+                    let (y_plane, uv_plane) = planes.cpu_planes().ok_or_else(|| {
+                        "CPU fallback planes unavailable for preview rendering".to_string()
+                    })?;
+                    session.render_nv12_frame_to_texture(
+                        layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
+                    )?
+                }
+            };
             views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
             textures.push(texture);
         }
@@ -3145,13 +3181,12 @@ pub(crate) async fn present_native_frame_internal(
         .probe()
         .ok_or_else(|| "Native surface lost its readiness probe".to_string())?;
     let is_playback = request.mode.as_deref() == Some("playback");
-    let (audio_position_ticks, frame_age_ticks, late_for_audio) =
-        native_presentation_timing(
-            &app,
-            request.frame_time.ticks,
-            request.frame_time.timescale,
-            is_playback,
-        );
+    let (audio_position_ticks, frame_age_ticks, late_for_audio) = native_presentation_timing(
+        &app,
+        request.frame_time.ticks,
+        request.frame_time.timescale,
+        is_playback,
+    );
     // Non-video frames (still images, text, stickers, canvas backgrounds) have 0
     // video decoder streams and compose on the GPU in ~0.05ms. Dropping them
     // for being "late for audio" causes multi-second freezes of the previous frame.
@@ -3275,7 +3310,7 @@ pub(crate) async fn present_native_frame_internal(
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
     let mut views: Vec<wgpu::TextureView> =
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
-    for (layer_idx, (layer, (y_plane, uv_plane, width, height, color))) in legacy_request
+    for (layer_idx, (layer, (planes, width, height, color))) in legacy_request
         .layers
         .iter()
         .zip(decoded_frames.iter())
@@ -3287,7 +3322,7 @@ pub(crate) async fn present_native_frame_internal(
             .position(|(prev_idx, prev)| {
                 prev.video_path == layer.video_path
                     && (prev.time_secs - layer.time_secs).abs() < 0.0001
-                    && Arc::ptr_eq(&decoded_frames[prev_idx].0, y_plane)
+                    && decoded_frames[prev_idx].0.is_same_source(planes)
             });
 
         if let Some(prev_idx) = duplicate_of {
@@ -3300,9 +3335,75 @@ pub(crate) async fn present_native_frame_internal(
             } else {
                 &layer.video_path
             };
-            let texture = session.render_nv12_frame_to_texture(
-                layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
-            )?;
+
+            #[allow(unused_mut)]
+            let mut layer_texture: Option<Arc<wgpu::Texture>> = None;
+
+            #[cfg(target_os = "windows")]
+            if let DecodedVideoPlanes::D3d11(ref shared_arc) = planes {
+                if session.gpu.capabilities.zero_copy_available()
+                    && session.dxgi_state.is_usable()
+                    && crate::wgpu_compositor::adapter_selector::is_dxgi_runtime_enabled()
+                {
+                    if let Some(duped_shared) = shared_arc.duplicate() {
+                        match crate::wgpu_compositor::dxgi_import::import_into_wgpu(
+                            &session.gpu.device,
+                            duped_shared,
+                        ) {
+                            Ok(imported) => {
+                                match session.render_nv12_from_imported_texture(
+                                    layer_key, *width, *height, &imported, &params,
+                                ) {
+                                    Ok(texture) => {
+                                        session.mark_dxgi_supported();
+                                        layer_texture = Some(texture);
+                                    }
+                                    Err(render_error) => {
+                                        log::warn!(
+                                            "[NativePreviewSession] render_nv12_from_imported_texture failed: {render_error:?}"
+                                        );
+                                        match render_error {
+                                            crate::wgpu_compositor::PreviewRenderError::UnsupportedFeature(_) => {
+                                                session.mark_dxgi_disabled(crate::wgpu_compositor::DisableReason::UnsupportedFeature);
+                                            }
+                                            crate::wgpu_compositor::PreviewRenderError::DimensionMismatch { .. } => {
+                                                session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::DimensionMismatch);
+                                            }
+                                            _ => {
+                                                session.mark_dxgi_failed(crate::wgpu_compositor::DxgiFailureReason::ImportFailed);
+                                            }
+                                        }
+                                        crate::wgpu_compositor::adapter_selector::mark_dxgi_runtime_disabled();
+                                    }
+                                }
+                            }
+                            Err(reason) => {
+                                log::warn!(
+                                    "[NativePreviewSession] import_into_wgpu failed: {reason:?}"
+                                );
+                                session.mark_dxgi_failed(reason);
+                                crate::wgpu_compositor::adapter_selector::mark_dxgi_runtime_disabled();
+                            }
+                        }
+                    }
+                }
+            }
+
+            let texture = match layer_texture {
+                Some(t) => t,
+                None => match planes.cpu_planes() {
+                    Some((y_plane, uv_plane)) => session.render_nv12_frame_to_texture(
+                        layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
+                    )?,
+                    None => {
+                        crate::wgpu_compositor::adapter_selector::mark_dxgi_runtime_disabled();
+                        return Err(
+                            "DXGI zero-copy texture import failed and no CPU planes cached"
+                                .to_string(),
+                        );
+                    }
+                },
+            };
             views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
             textures.push(texture);
         }

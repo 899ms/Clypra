@@ -13,6 +13,49 @@ pub struct SelectedGpuInfo {
     pub is_discrete: bool,
 }
 
+#[cfg(target_os = "windows")]
+static SELECTED_DXGI_ADAPTER_INDEX: once_cell::sync::Lazy<std::sync::atomic::AtomicI32> =
+    once_cell::sync::Lazy::new(|| std::sync::atomic::AtomicI32::new(-1));
+
+/// Query the DXGI adapter index that matches the active discrete wgpu GPU.
+/// Used by FFmpeg D3D11VA hardware initialization to bind to the same physical adapter.
+#[cfg(target_os = "windows")]
+pub fn get_selected_dxgi_adapter_index() -> Option<u32> {
+    let idx = SELECTED_DXGI_ADAPTER_INDEX.load(std::sync::atomic::Ordering::Relaxed);
+    if idx >= 0 {
+        Some(idx as u32)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+static DXGI_RUNTIME_DISABLED: once_cell::sync::Lazy<std::sync::atomic::AtomicBool> =
+    once_cell::sync::Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
+
+pub fn mark_dxgi_runtime_disabled() {
+    #[cfg(target_os = "windows")]
+    DXGI_RUNTIME_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_dxgi_runtime_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        static DISABLED_BY_ENV: once_cell::sync::Lazy<bool> = once_cell::sync::Lazy::new(|| {
+            std::env::var("CLYPRA_DISABLE_DXGI").as_deref() == Ok("1")
+                || std::env::var("CLYPRA_DISABLE_DXGI_ZERO_COPY").as_deref() == Ok("1")
+        });
+        if *DISABLED_BY_ENV {
+            return false;
+        }
+        !DXGI_RUNTIME_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 pub struct GpuContext {
     pub instance: Instance,
     pub adapter: Adapter,
@@ -21,6 +64,7 @@ pub struct GpuContext {
     pub device: Device,
     pub queue: Queue,
     pub nv12_supported: bool,
+    pub dxgi_adapter_index: Option<u32>,
 }
 
 impl GpuContext {
@@ -175,6 +219,32 @@ impl GpuContext {
             capabilities.hdr,
         );
 
+        #[allow(unused_mut)]
+        let mut dxgi_adapter_index = None;
+        #[cfg(target_os = "windows")]
+        if info.backend == wgpu::Backend::Dx12 {
+            use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
+            if let Ok(factory) = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() } {
+                let mut i = 0u32;
+                while let Ok(dxgi_adapter) = unsafe { factory.EnumAdapters1(i) } {
+                    if let Ok(desc) = unsafe { dxgi_adapter.GetDesc1() } {
+                        if desc.VendorId == info.vendor && desc.DeviceId == info.device {
+                            SELECTED_DXGI_ADAPTER_INDEX
+                                .store(i as i32, std::sync::atomic::Ordering::Relaxed);
+                            dxgi_adapter_index = Some(i);
+                            log::info!(
+                                "🔗 [adapter_selector] Matched wgpu DX12 adapter '{}' to DXGI adapter index {}",
+                                info.name,
+                                i
+                            );
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+
         Ok(Self {
             instance: instance.clone(),
             adapter: best_adapter,
@@ -183,6 +253,7 @@ impl GpuContext {
             device,
             queue,
             nv12_supported,
+            dxgi_adapter_index,
         })
     }
 }

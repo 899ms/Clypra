@@ -52,6 +52,42 @@ pub struct D3d11SharedFrame {
 unsafe impl Send for D3d11SharedFrame {}
 unsafe impl Sync for D3d11SharedFrame {}
 
+impl D3d11SharedFrame {
+    /// Duplicate the underlying NT kernel handle using Win32 `DuplicateHandle`.
+    /// This allows a shared frame stored in the lookahead queue to produce independent
+    /// handles for multiple import or presentation passes without lifetime conflicts.
+    pub fn duplicate(&self) -> Option<Self> {
+        if self.nt_handle.is_invalid() {
+            return None;
+        }
+        unsafe {
+            use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
+            use windows::Win32::System::Threading::GetCurrentProcess;
+            let mut target_handle = HANDLE::default();
+            let process = GetCurrentProcess();
+            let ret = windows::Win32::Foundation::DuplicateHandle(
+                process,
+                self.nt_handle,
+                process,
+                &mut target_handle,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            );
+            if ret.is_ok() && !target_handle.is_invalid() {
+                Some(Self {
+                    nt_handle: target_handle,
+                    array_index: self.array_index,
+                    width: self.width,
+                    height: self.height,
+                })
+            } else {
+                None
+            }
+        }
+    }
+}
+
 impl Drop for D3d11SharedFrame {
     fn drop(&mut self) {
         if !self.nt_handle.is_invalid() {

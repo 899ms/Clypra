@@ -2466,6 +2466,7 @@ mod tests {
             device: renderer.device,
             queue: renderer.queue,
             nv12_supported,
+            dxgi_adapter_index: None,
         });
         let mut session = NativePreviewSession::new(gpu);
         let source_width = 64u32;

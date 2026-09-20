@@ -35,12 +35,46 @@ const DEFAULT_FRAME_DURATION_SECS: f64 = 1.0 / 30.0;
 static PREVIEW_ACTOR_POOL: Lazy<DashMap<String, Arc<StreamDecoderActorHandle>>> =
     Lazy::new(DashMap::new);
 
+/// Video plane storage supporting both CPU memory slices and Windows zero-copy DXGI textures.
+#[derive(Clone)]
+pub enum DecodedVideoPlanes {
+    Cpu {
+        y: Arc<[u8]>,
+        uv: Arc<[u8]>,
+    },
+    #[cfg(target_os = "windows")]
+    D3d11(Arc<crate::wgpu_compositor::dxgi_import::D3d11SharedFrame>),
+}
+
+impl DecodedVideoPlanes {
+    /// Returns CPU Y and UV slices if available.
+    pub fn cpu_planes(&self) -> Option<(&Arc<[u8]>, &Arc<[u8]>)> {
+        match self {
+            Self::Cpu { y, uv } => Some((y, uv)),
+            #[cfg(target_os = "windows")]
+            Self::D3d11(_) => None,
+        }
+    }
+
+    /// Check whether two decoded plane representations point to the exact same underlying GPU/CPU buffer.
+    pub fn is_same_source(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Cpu { y: y1, .. }, Self::Cpu { y: y2, .. }) => Arc::ptr_eq(y1, y2),
+            #[cfg(target_os = "windows")]
+            (Self::D3d11(s1), Self::D3d11(s2)) => {
+                Arc::ptr_eq(s1, s2) || s1.nt_handle == s2.nt_handle
+            }
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+}
+
 /// Result of decoding a frame through the stream decoder actor.
 #[derive(Clone)]
 pub struct DecodedActorFrame {
     pub time_secs: f64,
-    pub y_plane: Arc<[u8]>,
-    pub uv_plane: Arc<[u8]>,
+    pub planes: DecodedVideoPlanes,
     pub width: u32,
     pub height: u32,
     pub color: VideoColorMetadata,
@@ -53,14 +87,24 @@ pub struct DecodedActorFrame {
 }
 
 impl DecodedActorFrame {
-    pub fn into_native_video_frame(self) -> (Arc<[u8]>, Arc<[u8]>, u32, u32, VideoColorMetadata) {
-        (
-            self.y_plane,
-            self.uv_plane,
-            self.width,
-            self.height,
-            self.color,
-        )
+    pub fn into_native_video_frame(self) -> (DecodedVideoPlanes, u32, u32, VideoColorMetadata) {
+        (self.planes, self.width, self.height, self.color)
+    }
+
+    pub fn y_plane(&self) -> Option<&Arc<[u8]>> {
+        match &self.planes {
+            DecodedVideoPlanes::Cpu { y, .. } => Some(y),
+            #[cfg(target_os = "windows")]
+            DecodedVideoPlanes::D3d11(_) => None,
+        }
+    }
+
+    pub fn uv_plane(&self) -> Option<&Arc<[u8]>> {
+        match &self.planes {
+            DecodedVideoPlanes::Cpu { uv, .. } => Some(uv),
+            #[cfg(target_os = "windows")]
+            DecodedVideoPlanes::D3d11(_) => None,
+        }
     }
 }
 
@@ -422,6 +466,44 @@ impl StreamDecoderActor {
             let decode_started = Instant::now();
             let stream_color = guard.metadata().color;
 
+            #[cfg(target_os = "windows")]
+            if crate::wgpu_compositor::adapter_selector::is_dxgi_runtime_enabled() {
+                let mut frame_color = VideoColorMetadata::default();
+                let mut width = 0u32;
+                let mut height = 0u32;
+                match guard.decode_frame_dxgi_windows(
+                    target_time,
+                    options,
+                    &is_cancelled,
+                    &mut frame_color,
+                    &mut width,
+                    &mut height,
+                ) {
+                    Ok(Some(shared)) => {
+                        let decode_us =
+                            decode_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                        let color = crate::commands::native_preview::merge_color_metadata(
+                            frame_color,
+                            &stream_color,
+                        );
+                        let is_approx = guard.is_last_frame_approximate();
+                        return Ok((
+                            DecodedVideoPlanes::D3d11(Arc::new(shared)),
+                            width,
+                            height,
+                            color,
+                            decode_us,
+                            mutex_wait_us,
+                            is_approx,
+                        ));
+                    }
+                    Ok(None) => {
+                        // Software or non-D3D11 frame; proceed to CPU fallback below
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+
             let frame_res =
                 guard.decode_frame_raw_nv12_with_options(target_time, options, is_cancelled);
             let is_approx = guard.is_last_frame_approximate();
@@ -435,8 +517,10 @@ impl StreamDecoderActor {
                         &stream_color,
                     );
                     Ok((
-                        y_plane,
-                        uv_plane,
+                        DecodedVideoPlanes::Cpu {
+                            y: y_plane,
+                            uv: uv_plane,
+                        },
                         width,
                         height,
                         color,
@@ -451,12 +535,11 @@ impl StreamDecoderActor {
         .await
         .map_err(|e| format!("Decode spawn_blocking panicked: {e}"))?;
 
-        let (y_plane, uv_plane, width, height, color, decode_us, mutex_wait_us, is_approx) = result?;
+        let (planes, width, height, color, decode_us, mutex_wait_us, is_approx) = result?;
 
         Ok(DecodedActorFrame {
             time_secs: target_time,
-            y_plane,
-            uv_plane,
+            planes,
             width,
             height,
             color,
@@ -534,8 +617,10 @@ mod tests {
 
         let cached_frame = DecodedActorFrame {
             time_secs: 1.0,
-            y_plane: Arc::from(vec![0u8; 16]),
-            uv_plane: Arc::from(vec![0u8; 8]),
+            planes: DecodedVideoPlanes::Cpu {
+                y: Arc::from(vec![0u8; 16]),
+                uv: Arc::from(vec![0u8; 8]),
+            },
             width: 4,
             height: 4,
             color: VideoColorMetadata::default(),
@@ -582,8 +667,10 @@ mod tests {
         // Insert an approximate frame into prime cache
         let approx_frame = DecodedActorFrame {
             time_secs: 2.0,
-            y_plane: Arc::from(vec![0u8; 16]),
-            uv_plane: Arc::from(vec![0u8; 8]),
+            planes: DecodedVideoPlanes::Cpu {
+                y: Arc::from(vec![0u8; 16]),
+                uv: Arc::from(vec![0u8; 8]),
+            },
             width: 4,
             height: 4,
             color: VideoColorMetadata::default(),
@@ -616,7 +703,10 @@ mod tests {
             quality: QualityTier::Full,
         };
         let err_exact = handle.decode_frame(2.0, opts_exact, false, 0).await;
-        assert!(err_exact.is_err(), "Exact request must not return approximate cached frame");
+        assert!(
+            err_exact.is_err(),
+            "Exact request must not return approximate cached frame"
+        );
 
         let opts_half = DecodeFrameOptions {
             allow_keyframe_approx: false,
