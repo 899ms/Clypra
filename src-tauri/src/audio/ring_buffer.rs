@@ -206,6 +206,16 @@ impl AudioRingBufferConsumer {
             }
         }
     }
+
+    /// Cumulative number of underruns since this consumer was created.
+    ///
+    /// Each underrun corresponds to one `render_into` call where the ring had
+    /// zero samples, causing the full output buffer to be zero-filled with
+    /// silence. Safe to call from any thread.
+    #[inline]
+    pub fn total_underruns(&self) -> u64 {
+        self.underrun_count.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]

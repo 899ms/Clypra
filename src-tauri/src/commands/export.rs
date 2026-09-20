@@ -27,6 +27,30 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
+/// Timing breakdown returned by `finalize_video_export`.
+///
+/// All duration fields are in **milliseconds** so the TypeScript layer can
+/// feed them directly into `telemetryCollector.recordExportSpan` without
+/// unit conversion gymnastics.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportTimings {
+    /// Wall-clock time from `start_video_export` to FFmpeg process exit (ms).
+    pub total_export_ms: f64,
+    /// Time from closing stdin (all frames written) to FFmpeg process exit.
+    /// This is the pure FFmpeg encode/mux time with no frame rendering in it.
+    pub ffmpeg_finalize_ms: f64,
+    /// Mean per-frame stdin write latency over the last ≤60 frames (ms).
+    /// Represents the render→pipe transfer cost on the TS/Rust boundary.
+    pub avg_frame_write_ms: f64,
+    /// p95 per-frame stdin write latency (ms). High values indicate
+    /// scheduling jitter or pipe backpressure from a slow encoder.
+    pub p95_frame_write_ms: f64,
+    /// Number of frames written to the encoder (may differ from
+    /// `total_frames` if the export was cancelled partway through).
+    pub frames_written: u32,
+}
+
 /// Export progress update.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1324,8 +1348,12 @@ pub async fn render_and_write_export_frames_batch(
 /// Finalize the export session.
 ///
 /// Closes stdin, waits for FFmpeg to finish encoding, and atomically commits output.
+///
+/// Returns [`ExportTimings`] with a breakdown of where time was spent so the
+/// TypeScript layer can fill `telemetryCollector.recordExportSpan` with real
+/// measurements rather than made-up ratios.
 #[tauri::command]
-pub async fn finalize_video_export(session_id: String) -> Result<(), String> {
+pub async fn finalize_video_export(session_id: String) -> Result<ExportTimings, String> {
     let session_arc = {
         let mut sessions = EXPORT_SESSIONS.lock().await;
         sessions
@@ -1336,18 +1364,36 @@ pub async fn finalize_video_export(session_id: String) -> Result<(), String> {
     // Lock session directly — waits for any concurrent in-flight batch write to complete
     let mut session = session_arc.lock().await;
 
-    // Close stdin to signal end of input
+    // Capture timing data before consuming the session fields.
+    let start_time = session.start_time;
+    let current_frame = session.current_frame;
+    let temp_output_path = session.temp_output_path.clone();
+    let final_output_path = session.final_output_path.clone();
+
+    // Compute per-frame write statistics from the rolling window.
+    let (avg_frame_write_ms, p95_frame_write_ms) = {
+        let times = &session.frame_write_times;
+        if times.is_empty() {
+            (0.0_f64, 0.0_f64)
+        } else {
+            let avg = times.iter().sum::<f64>() / times.len() as f64;
+            let mut sorted: Vec<f64> = times.iter().copied().collect();
+            sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let p95_idx = ((sorted.len() as f64 - 1.0) * 0.95).round() as usize;
+            let p95 = sorted[p95_idx.min(sorted.len() - 1)];
+            (avg, p95)
+        }
+    };
+
+    // Close stdin to signal end of input. Record the timestamp so we can
+    // measure pure FFmpeg encode/mux time (no frame rendering in this window).
     let _ = session.stdin.take();
+    let finalize_start = std::time::Instant::now();
 
     let process = session
         .process
         .take()
         .ok_or_else(|| "Export process has already been finalized or cancelled".to_string())?;
-
-    let temp_output_path = session.temp_output_path.clone();
-    let final_output_path = session.final_output_path.clone();
-    let start_time = session.start_time;
-    let current_frame = session.current_frame;
 
     // Wait for FFmpeg to finish
     let output = match process.wait_with_output().await {
@@ -1359,7 +1405,8 @@ pub async fn finalize_video_export(session_id: String) -> Result<(), String> {
         }
     };
 
-    let elapsed = start_time.elapsed();
+    let ffmpeg_finalize_ms = finalize_start.elapsed().as_secs_f64() * 1000.0;
+    let total_export_ms = start_time.elapsed().as_secs_f64() * 1000.0;
     super::native_export::release_export_slot();
 
     if output.status.success() {
@@ -1370,12 +1417,20 @@ pub async fn finalize_video_export(session_id: String) -> Result<(), String> {
         }
 
         eprintln!(
-            "[finalize_video_export] Session {} completed successfully in {:.2}s ({} frames)",
+            "[finalize_video_export] Session {} completed successfully in {:.2}s ({} frames, ffmpeg={:.0}ms)",
             session_id,
-            elapsed.as_secs_f64(),
-            current_frame
+            total_export_ms / 1000.0,
+            current_frame,
+            ffmpeg_finalize_ms,
         );
-        Ok(())
+
+        Ok(ExportTimings {
+            total_export_ms,
+            ffmpeg_finalize_ms,
+            avg_frame_write_ms,
+            p95_frame_write_ms,
+            frames_written: current_frame,
+        })
     } else {
         let _ = tokio::fs::remove_file(&temp_output_path).await;
         let stderr = String::from_utf8_lossy(&output.stderr);

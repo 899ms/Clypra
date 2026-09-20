@@ -26,11 +26,54 @@ import { useProjectStore } from "@/store/projectStore";
 import { getPlaybackClock } from "@/hooks/usePlaybackClock";
 import { getActiveSessionOrNull } from "@/core/runtime/ProjectSession";
 import { useUIStore } from "@/store/uiStore";
-import { DeleteClipCommand, RippleDeleteRangeCommand, SplitClipCommand, UpdateClipCommand, GroupClipsCommand, UngroupClipsCommand, SwapClipsCommand, validateGroupSelection } from "../history/commands";
+import {
+  DeleteClipCommand,
+  RippleDeleteRangeCommand,
+  SplitClipCommand,
+  UpdateClipCommand,
+  GroupClipsCommand,
+  UngroupClipsCommand,
+  SwapClipsCommand,
+  validateGroupSelection,
+} from "../history/commands";
 import type { Clip } from "@/types";
 import { snapToFrameBoundary } from "@/lib/utils/frameTime";
-import { getScrollLeftToRevealTime, getTimelineViewportEndForDuration } from "@/lib/timeline/timelineViewport";
+import {
+  getScrollLeftToRevealTime,
+  getTimelineViewportEndForDuration,
+} from "@/lib/timeline/timelineViewport";
 import { getClipDisplayName } from "@/lib/timeline/clipName";
+import { perfLogService } from "@/services/perfLogService";
+
+// ---------------------------------------------------------------------------
+// Timeline edit telemetry types
+// ---------------------------------------------------------------------------
+
+export type TimelineEditOperation = "split" | "move" | "trim";
+
+export interface TimelineEditTelemetry {
+  operation: TimelineEditOperation;
+  /** Primary clip involved (for split and move; trim may affect multiple). */
+  clipId?: string;
+  /** For split: the time the split was applied (seconds). */
+  splitTime?: number;
+  /** For split: which UI surface triggered the action. */
+  splitSource?: SplitIntent["source"];
+  /** For move: original timeline track ID before the move. */
+  fromTrackId?: string;
+  /** For move: destination track ID after the move. */
+  toTrackId?: string;
+  /** For move: original start time (seconds). */
+  fromTime?: number;
+  /** For move: committed start time (seconds). */
+  toTime?: number;
+  /** For trim: number of clips affected by the trim gesture. */
+  trimClipCount?: number;
+  /** Whether the operation completed successfully (false = rolled back). */
+  success: boolean;
+  /** Wall-clock duration of the interaction from start to commit (ms). */
+  durationMs: number;
+}
 
 /**
  * Split interaction context.
@@ -85,52 +128,106 @@ export interface RenameClipResult {
 export class EditingActions {
   /** Rename one timeline clip while keeping the edit undoable. */
   static renameClip(clipId: string, name: string): RenameClipResult {
-    const clip = useTimelineStore.getState().clips.find((candidate) => candidate.id === clipId);
+    const clip = useTimelineStore
+      .getState()
+      .clips.find((candidate) => candidate.id === clipId);
     if (!clip) return { success: false, error: "Clip not found" };
 
     const trimmedName = name.trim();
-    if (!trimmedName) return { success: false, error: "Clip name cannot be empty" };
+    if (!trimmedName)
+      return { success: false, error: "Clip name cannot be empty" };
 
-    useHistoryStore.getState().execute(
-      new UpdateClipCommand(clipId, { name: clip.name }, { name: trimmedName }),
-    );
+    useHistoryStore
+      .getState()
+      .execute(
+        new UpdateClipCommand(
+          clipId,
+          { name: clip.name },
+          { name: trimmedName },
+        ),
+      );
 
     return { success: true, name: trimmedName };
   }
 
   static swapSelectedClips(): { error: string | null } {
     const selectedClipIds = useUIStore.getState().selectedClipIds;
-    if (selectedClipIds.length !== 2) return { error: "Select exactly 2 clips to swap" };
+    if (selectedClipIds.length !== 2)
+      return { error: "Select exactly 2 clips to swap" };
     const timeline = useTimelineStore.getState();
-    const validationError = SwapClipsCommand.validate(timeline, selectedClipIds[0], selectedClipIds[1]);
+    const validationError = SwapClipsCommand.validate(
+      timeline,
+      selectedClipIds[0],
+      selectedClipIds[1],
+    );
     if (validationError) return { error: validationError };
-    const command = new SwapClipsCommand(selectedClipIds[0], selectedClipIds[1]);
+    const command = new SwapClipsCommand(
+      selectedClipIds[0],
+      selectedClipIds[1],
+    );
     useHistoryStore.getState().execute(command);
     return { error: command.getError() };
   }
 
-  static groupSelectedClips(clipIds: string[]): { success: boolean; compoundClipId?: string; error?: string } {
+  static groupSelectedClips(clipIds: string[]): {
+    success: boolean;
+    compoundClipId?: string;
+    error?: string;
+  } {
     const timeline = useTimelineStore.getState();
     const selected = timeline.clips.filter((clip) => clipIds.includes(clip.id));
-    const validation = validateGroupSelection(clipIds, timeline.clips, timeline.tracks, timeline.transitions);
+    const validation = validateGroupSelection(
+      clipIds,
+      timeline.clips,
+      timeline.tracks,
+      timeline.transitions,
+    );
     if (!validation.valid) return { success: false, error: validation.reason };
-    const preview = selected.map((clip) => useProjectStore.getState().mediaAssets.find((asset) => asset.id === clip.mediaId)?.posterFrame || (clip as any).compoundPreview).find(Boolean);
+    const preview = selected
+      .map(
+        (clip) =>
+          useProjectStore
+            .getState()
+            .mediaAssets.find((asset) => asset.id === clip.mediaId)
+            ?.posterFrame || (clip as any).compoundPreview,
+      )
+      .find(Boolean);
     try {
-      const command = new GroupClipsCommand(clipIds, timeline.clips, timeline.tracks, preview, timeline.transitions);
+      const command = new GroupClipsCommand(
+        clipIds,
+        timeline.clips,
+        timeline.tracks,
+        preview,
+        timeline.transitions,
+      );
       useHistoryStore.getState().execute(command);
       const parent = command.getParentClip();
       useUIStore.getState().selectClip(parent.id);
       return { success: true, compoundClipId: parent.id };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : "Unable to group clips" };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unable to group clips",
+      };
     }
   }
 
-  static ungroupClip(clipId: string): { success: boolean; childClipIds?: string[]; error?: string } {
+  static ungroupClip(clipId: string): {
+    success: boolean;
+    childClipIds?: string[];
+    error?: string;
+  } {
     const timeline = useTimelineStore.getState();
     const parent = timeline.clips.find((clip) => clip.id === clipId);
-    if (!parent || parent.kind !== "compound" || !parent.compoundChildren) return { success: false, error: "Select a compound clip" };
-    const command = new UngroupClipsCommand(parent, parent.compoundChildren, timeline.clips.findIndex((clip) => clip.id === clipId), undefined, timeline.tracks);
+    if (!parent || parent.kind !== "compound" || !parent.compoundChildren)
+      return { success: false, error: "Select a compound clip" };
+    const command = new UngroupClipsCommand(
+      parent,
+      parent.compoundChildren,
+      timeline.clips.findIndex((clip) => clip.id === clipId),
+      undefined,
+      timeline.tracks,
+    );
     useHistoryStore.getState().execute(command);
     const childIds = command.getChildIds();
     useUIStore.getState().clearSelection();
@@ -139,9 +236,16 @@ export class EditingActions {
   }
 
   /** Delete selected clips with ripple closure, or lift them while preserving time. */
-  static deleteSelection(clipIds: string[], lift = false): DeleteSelectionResult | null {
+  static deleteSelection(
+    clipIds: string[],
+    lift = false,
+  ): DeleteSelectionResult | null {
     const timeline = useTimelineStore.getState();
-    const selected = timeline.clips.filter((clip) => clipIds.includes(clip.id) && !timeline.tracks.find((track) => track.id === clip.trackId)?.locked);
+    const selected = timeline.clips.filter(
+      (clip) =>
+        clipIds.includes(clip.id) &&
+        !timeline.tracks.find((track) => track.id === clip.trackId)?.locked,
+    );
     if (selected.length === 0) return null;
 
     const editTime = Math.min(...selected.map((clip) => clip.startTime));
@@ -150,18 +254,28 @@ export class EditingActions {
 
     if (lift) {
       history.beginTransaction("Lift Delete Clips");
-      selected.forEach((clip) => history.execute(new DeleteClipCommand(clip.id)));
+      selected.forEach((clip) =>
+        history.execute(new DeleteClipCommand(clip.id)),
+      );
       history.commitTransaction();
     } else {
-      history.execute(new RippleDeleteRangeCommand(selected.map((clip) => clip.id)));
+      history.execute(
+        new RippleDeleteRangeCommand(selected.map((clip) => clip.id)),
+      );
     }
 
-    affectedTrackIds.forEach((trackId) => useTimelineStore.getState().detectAndSyncGaps(trackId));
+    affectedTrackIds.forEach((trackId) =>
+      useTimelineStore.getState().detectAndSyncGaps(trackId),
+    );
 
     const nextState = useTimelineStore.getState();
     const nextClip =
       nextState.clips
-        .filter((clip) => affectedTrackIds.has(clip.trackId) && clip.startTime >= editTime - 0.001)
+        .filter(
+          (clip) =>
+            affectedTrackIds.has(clip.trackId) &&
+            clip.startTime >= editTime - 0.001,
+        )
         .sort((a, b) => a.startTime - b.startTime)[0] ?? null;
 
     const ui = useUIStore.getState();
@@ -174,7 +288,9 @@ export class EditingActions {
     const container =
       typeof document === "undefined"
         ? null
-        : (document.getElementById("timeline-tracks-container") as HTMLDivElement | null);
+        : (document.getElementById(
+            "timeline-tracks-container",
+          ) as HTMLDivElement | null);
     if (container) {
       const currentTimeline = useTimelineStore.getState();
       const nextScrollLeft = getScrollLeftToRevealTime({
@@ -182,7 +298,9 @@ export class EditingActions {
         currentScrollLeft: container.scrollLeft,
         containerWidth: container.clientWidth,
         pixelsPerSecond: currentTimeline.pixelsPerSecond,
-        viewportEndSeconds: getTimelineViewportEndForDuration(currentTimeline.getTimelineEndTime()),
+        viewportEndSeconds: getTimelineViewportEndForDuration(
+          currentTimeline.getTimelineEndTime(),
+        ),
         hasClips: currentTimeline.clips.length > 0,
       });
       container.scrollLeft = nextScrollLeft;
@@ -205,7 +323,22 @@ export class EditingActions {
    * @returns Split result
    */
   static executeSplit(intent: SplitIntent): SplitResult {
+    const t0 = performance.now();
     const { clipId, time, source } = intent;
+    const result = EditingActions._executeSplitImpl(intent);
+    EditingActions.recordTimelineEdit({
+      operation: "split",
+      clipId,
+      splitTime: time,
+      splitSource: source,
+      success: result.success,
+      durationMs: performance.now() - t0,
+    });
+    return result;
+  }
+
+  private static _executeSplitImpl(intent: SplitIntent): SplitResult {
+    const { clipId, time, source: _source } = intent;
 
     // Get current state
     const timelineState = useTimelineStore.getState();
@@ -256,7 +389,10 @@ export class EditingActions {
 
     // Create and execute command
     const command = new SplitClipCommand(clipId, time, frameRate, clip);
-    const clipName = getClipDisplayName(clip, useProjectStore.getState().mediaAssets);
+    const clipName = getClipDisplayName(
+      clip,
+      useProjectStore.getState().mediaAssets,
+    );
 
     try {
       useHistoryStore.getState().execute(command);
@@ -395,10 +531,17 @@ export class EditingActions {
     const clips = useTimelineStore.getState().clips;
     const tracks = useTimelineStore.getState().tracks;
 
-    const unlockedTrackIds = new Set(tracks.filter((t) => !t.locked).map((t) => t.id));
+    const unlockedTrackIds = new Set(
+      tracks.filter((t) => !t.locked).map((t) => t.id),
+    );
     const clipsUnderPlayhead = clips.filter((clip) => {
       const clipEndTime = clip.startTime + clip.duration;
-      return clip.kind !== "compound" && unlockedTrackIds.has(clip.trackId) && currentTime > clip.startTime && currentTime < clipEndTime;
+      return (
+        clip.kind !== "compound" &&
+        unlockedTrackIds.has(clip.trackId) &&
+        currentTime > clip.startTime &&
+        currentTime < clipEndTime
+      );
     });
 
     if (clipsUnderPlayhead.length === 0) return [];
@@ -433,19 +576,35 @@ export class EditingActions {
     return this.trimAtPlayhead("right");
   }
 
-  private static trimAtPlayhead(side: "left" | "right"): TrimAtPlayheadResult[] {
+  private static trimAtPlayhead(
+    side: "left" | "right",
+  ): TrimAtPlayheadResult[] {
     const currentTime = getPlaybackClock().time;
     const timelineState = useTimelineStore.getState();
     const selectedClipIds = useUIStore.getState().selectedClipIds;
-    const lockedTrackIds = new Set(timelineState.tracks.filter((t) => t.locked).map((t) => t.id));
+    const lockedTrackIds = new Set(
+      timelineState.tracks.filter((t) => t.locked).map((t) => t.id),
+    );
 
     const selectedSet = new Set(selectedClipIds);
-    const candidates = (selectedClipIds.length > 0 ? timelineState.clips.filter((c) => selectedSet.has(c.id)) : timelineState.clips.filter((clip) => currentTime > clip.startTime && currentTime < clip.startTime + clip.duration)).filter((clip) => !lockedTrackIds.has(clip.trackId) && clip.kind !== "compound");
+    const candidates = (
+      selectedClipIds.length > 0
+        ? timelineState.clips.filter((c) => selectedSet.has(c.id))
+        : timelineState.clips.filter(
+            (clip) =>
+              currentTime > clip.startTime &&
+              currentTime < clip.startTime + clip.duration,
+          )
+    ).filter(
+      (clip) => !lockedTrackIds.has(clip.trackId) && clip.kind !== "compound",
+    );
 
     if (candidates.length === 0) return [];
 
     const history = useHistoryStore.getState();
-    history.beginTransaction(side === "left" ? "Delete Left at Playhead" : "Delete Right at Playhead");
+    history.beginTransaction(
+      side === "left" ? "Delete Left at Playhead" : "Delete Right at Playhead",
+    );
     const results: TrimAtPlayheadResult[] = [];
 
     try {
@@ -509,7 +668,8 @@ export class EditingActions {
       return results;
     } catch (error) {
       history.rollbackTransaction();
-      const message = error instanceof Error ? error.message : "Unknown trim error";
+      const message =
+        error instanceof Error ? error.message : "Unknown trim error";
       return candidates.map((clip) => ({
         success: false,
         clipId: clip.id,
@@ -557,5 +717,27 @@ export class EditingActions {
    */
   static canSplitAtPlayhead(): boolean {
     return this.getClipsUnderPlayhead().length > 0;
+  }
+
+  /**
+   * Record a completed timeline edit operation to the NDJSON session log.
+   *
+   * Call this after every move, trim, or split commit (and on failure).
+   * The entry is enqueued non-blocking — it will never throw.
+   *
+   * @param telemetry - Edit telemetry to record.
+   */
+  static recordTimelineEdit(telemetry: TimelineEditTelemetry): void {
+    try {
+      const sessionId = perfLogService.getSessionId() ?? "unknown";
+      perfLogService.enqueue({
+        kind: "timeline-edit",
+        sessionId,
+        timestampEpochMs: Date.now(),
+        payload: telemetry,
+      });
+    } catch {
+      // Never let telemetry throw into the editing hot path.
+    }
   }
 }

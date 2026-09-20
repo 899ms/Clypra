@@ -48,6 +48,20 @@ export interface NativeAudioStatus {
   callbackTimeUs: number;
   callbackMaxTimeUs: number;
   callbackOverBudgetCount: number;
+  /** Total seek() calls since the stream was last started. */
+  seekCount: number;
+  /** Cumulative seek latency in microseconds since the stream was last started. */
+  seekLatencyTotalUs: number;
+  /**
+   * Microseconds since the last CPAL callback advanced the audio clock.
+   * Undefined if the stream has never fired a callback.
+   */
+  clockFreshnessUs?: number;
+  /**
+   * Median inter-callback spacing in microseconds.
+   * Undefined when fewer than 2 callbacks have fired.
+   */
+  medianCallbackIntervalUs?: number;
 }
 
 export interface NativeAudioClipStatus {
@@ -347,7 +361,6 @@ export interface NativeSessionSnapshot {
   policyBackgroundPauses: number;
   policyInteractiveThrottles: number;
 }
-
 
 export interface NativeFrameTime {
   frameIndex: number;

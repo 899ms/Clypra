@@ -42,12 +42,16 @@ import {
 } from "@/lib/timeline/timelineViewport";
 import { useHistoryStore } from "@/store/historyStore";
 import { buildTimelineDragCommand } from "@/core/history/commands/TimelineDragCommand";
-import { isTrackBelowMainVideo, resolveTrackTypeForClip } from "@/lib/timeline/trackTypeConfig";
+import {
+  isTrackBelowMainVideo,
+  resolveTrackTypeForClip,
+} from "@/lib/timeline/trackTypeConfig";
 import {
   getPreviewInteractionCoordinator,
   type PreviewInteractionToken,
 } from "@/core/interactions";
 import { useTimelineDraftStore } from "@/store/timelineDraftStore";
+import { EditingActions } from "@/core/interactions/EditingActions";
 
 const DRAG_RENDER_EPSILON_PX = 0.25;
 const EDGE_HIT_WIDTH_PX = 8; // Screen-space edge detection (stable at any zoom)
@@ -312,6 +316,8 @@ export interface DragState {
   draggedClipIdsSet: Set<string>;
   // PERF-3: Cached track rects (invalidated only on auto-scroll)
   cachedTrackRects: Array<{ id: string; top: number; bottom: number }> | null;
+  /** Timestamp when the drag gesture started, for telemetry. */
+  dragStartedAtMs: number;
 }
 
 export function useTimelineDrag(
@@ -501,6 +507,7 @@ export function useTimelineDrag(
         isInvalidPosition: false,
         willCreateNewTrack: false,
         newTrackPosition: null,
+        dragStartedAtMs: performance.now(),
         pointerOffsetFromLeft,
       };
       dragStateRef.current = nextDragState;
@@ -618,7 +625,9 @@ export function useTimelineDrag(
           clipMapRef.current.get(draggedId) ??
           liveClips.find((c) => c.id === draggedId);
         if (!draggedClip) continue;
-        const sourceTrack = liveTracks.find((t) => t.id === draggedClip.trackId);
+        const sourceTrack = liveTracks.find(
+          (t) => t.id === draggedClip.trackId,
+        );
         const resolvedType = resolveTrackTypeForClip(draggedClip, sourceTrack);
         if (resolvedType === "text" && targetTrack.type !== "text") {
           isTrackTypeMismatch = true;
@@ -632,15 +641,24 @@ export function useTimelineDrag(
           isTrackTypeMismatch = true;
           break;
         }
-        if (resolvedType === "video-effect" && targetTrack.type !== "video-effect") {
+        if (
+          resolvedType === "video-effect" &&
+          targetTrack.type !== "video-effect"
+        ) {
           isTrackTypeMismatch = true;
           break;
         }
-        if (resolvedType === "body-effect" && targetTrack.type !== "body-effect") {
+        if (
+          resolvedType === "body-effect" &&
+          targetTrack.type !== "body-effect"
+        ) {
           isTrackTypeMismatch = true;
           break;
         }
-        if (resolvedType === "animated-overlay" && targetTrack.type !== "animated-overlay") {
+        if (
+          resolvedType === "animated-overlay" &&
+          targetTrack.type !== "animated-overlay"
+        ) {
           isTrackTypeMismatch = true;
           break;
         }
@@ -956,6 +974,27 @@ export function useTimelineDrag(
         return;
       }
 
+      // Helper: record move telemetry non-blocking after command commit.
+      const recordMove = (committed: boolean) => {
+        EditingActions.recordTimelineEdit({
+          operation: "move",
+          clipId: dragSnapshot.draggingClipId ?? undefined,
+          fromTrackId: dragSnapshot.originalTrackId,
+          toTrackId: dragSnapshot.targetTrackId ?? dragSnapshot.originalTrackId,
+          fromTime: dragSnapshot.originalStartTime,
+          toTime: (() => {
+            const p = dragSnapshot.placementPreview;
+            return p && "startTime" in p
+              ? p.startTime
+              : dragSnapshot.originalStartTime;
+          })(),
+          success: committed,
+          durationMs:
+            performance.now() -
+            (dragSnapshot.dragStartedAtMs ?? performance.now()),
+        });
+      };
+
       // Handle new track creation
       if (dragSnapshot.willCreateNewTrack && dragSnapshot.newTrackPosition) {
         const store = useTimelineStore.getState();
@@ -963,7 +1002,11 @@ export function useTimelineDrag(
         const mediaAsset = useProjectStore
           .getState()
           .mediaAssets.find((a) => a.id === clip.mediaId);
-        const trackType = resolveTrackTypeForClip(clip, sourceTrack, mediaAsset);
+        const trackType = resolveTrackTypeForClip(
+          clip,
+          sourceTrack,
+          mediaAsset,
+        );
 
         const insertIndex = getInsertIndexForNewTrackSmart(
           store.tracks,
@@ -985,6 +1028,7 @@ export function useTimelineDrag(
           newTrackInsertIndex: insertIndex,
         });
         if (command) useHistoryStore.getState().execute(command);
+        recordMove(Boolean(command));
         dragStateRef.current = null;
         setDragState(null);
         clearQueuedDragMove();
@@ -1041,6 +1085,7 @@ export function useTimelineDrag(
         }
       }
 
+      recordMove(true);
       dragStateRef.current = null;
       setDragState(null);
       clearQueuedDragMove();
@@ -1078,11 +1123,7 @@ export function useTimelineDrag(
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    clearQueuedDragMove,
-    clearSnapGuides,
-    previewInteractionCoordinator,
-  ]);
+  }, [clearQueuedDragMove, clearSnapGuides, previewInteractionCoordinator]);
 
   useEffect(() => {
     return () => {

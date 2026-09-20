@@ -35,6 +35,7 @@ import {
   type MissingTextEffect,
 } from "./exportPreflight";
 import { telemetryCollector } from "@/services/telemetryCollector";
+import { perfLogService } from "@/services/perfLogService";
 
 /**
  * Video export progress - Re-exported from types/export
@@ -280,6 +281,14 @@ export async function exportVideo(
 
   let cancelled = false;
   let completedFrames = 0;
+  // Timing data returned by finalize_video_export — null until finalize completes.
+  let exportTimings: {
+    totalExportMs: number;
+    ffmpegFinalizeMs: number;
+    avgFrameWriteMs: number;
+    p95FrameWriteMs: number;
+    framesWritten: number;
+  } | null = null;
 
   // FIX (BUG-C2): Provide a cancel function to the caller immediately after the session
   // starts so the UI can kill FFmpeg when the user presses Cancel. Setting isCancelled
@@ -476,8 +485,14 @@ export async function exportVideo(
     }
 
     if (!cancelled) {
-      // Finalize export
-      await invoke("finalize_video_export", { sessionId });
+      // Finalize export — returns real timing breakdown from Rust.
+      exportTimings = await invoke<{
+        totalExportMs: number;
+        ffmpegFinalizeMs: number;
+        avgFrameWriteMs: number;
+        p95FrameWriteMs: number;
+        framesWritten: number;
+      }>("finalize_video_export", { sessionId });
     }
   } catch (error) {
     // Check if cancelled
@@ -505,7 +520,7 @@ export async function exportVideo(
         realTimeFactor: 0,
         renderTimeUs: 0,
         encodeTimeUs: 0,
-        peakRamMb: 1024,
+        peakRamMb: perfLogService.getPeakMemoryMb() || 1024,
         success: false,
         failureReason: error instanceof Error ? error.message : String(error),
         videoProfile: {
@@ -553,9 +568,18 @@ export async function exportVideo(
     totalFrames: completedFrames,
     exportFps,
     realTimeFactor,
-    renderTimeUs: Math.round(totalTimeMs * 600),
-    encodeTimeUs: Math.round(totalTimeMs * 400),
-    peakRamMb: 1024,
+    // Use real timing breakdown from Rust when available.
+    // renderTimeUs = total frame-write time (render → stdin pipe cost).
+    // encodeTimeUs = pure FFmpeg finalize time (stdin-close → process exit).
+    // Fallback to proportional estimates when finalize didn't return timings
+    // (e.g. export was cancelled before finalize was called).
+    renderTimeUs: exportTimings
+      ? Math.round(exportTimings.avgFrameWriteMs * completedFrames * 1000)
+      : Math.round(totalTimeMs * 600),
+    encodeTimeUs: exportTimings
+      ? Math.round(exportTimings.ffmpegFinalizeMs * 1000)
+      : Math.round(totalTimeMs * 400),
+    peakRamMb: perfLogService.getPeakMemoryMb() || 1024,
     success: !cancelled,
     failureReason: cancelled ? "User cancelled export" : undefined,
     videoProfile: {
