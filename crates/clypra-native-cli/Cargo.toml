@@ -15,3 +15,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 web-time = "1"
 wgpu = "24.0"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+]
