@@ -55,38 +55,75 @@ export const useKeyboardShortcuts = () => {
       // ─── Seeking (context-aware) ─────────────────────────────────────────
       // PB-BUG-001 fix: Read clock.time imperatively instead of using throttled
       // transportTime (which lags by up to 100ms at 10fps throttle rate).
+      const isArrowLeft = e.key === "ArrowLeft" || e.code === "ArrowLeft";
+      const isArrowRight = e.key === "ArrowRight" || e.code === "ArrowRight";
 
-      if (e.key === "ArrowLeft") {
+      // Do not hijack Alt+Arrow (which nudges clips) or Meta/Ctrl+Arrow
+      if (!e.altKey && !isMeta && (isArrowLeft || isArrowRight)) {
         e.preventDefault();
         const session = getActiveSessionOrNull();
+        const clock = getPlaybackClock();
+        const isPlaying = clock.state === "playing";
+
         if (previewMode === "source") {
-          // SP-1 & SP-6 fix: In source mode, read the active source context time instead of the
-          // master program clock. Step 1 frame (or 1s with Shift) for frame-accurate in/out trimming.
+          // Source preview seeking
           const sourceTime = session?.sourceContext?.getTime() ?? 0;
-          const step = e.shiftKey ? 1.0 : 1 / frameRate;
-          seek?.(Math.max(0, sourceTime - step));
+          const sourceDuration = session?.sourceContext?.getDuration() ?? Infinity;
+          const step = isPlaying
+            ? e.shiftKey ? 5.0 : 1.0
+            : e.shiftKey ? 1.0 : 1 / frameRate;
+
+          const targetTime = isArrowLeft
+            ? Math.max(0, sourceTime - step)
+            : Math.min(sourceDuration, sourceTime + step);
+
+          seek?.(targetTime, {
+            source: "keyboard-seek",
+            mode: isPlaying ? "playback" : (e.shiftKey ? "seek" : "frameStep"),
+            quality: "full",
+            allowKeyframeApprox: false,
+          });
         } else {
-          const liveTime = getPlaybackClock().time;
-          const frameTime = 1 / frameRate;
-          seek?.(Math.max(0, liveTime - frameTime));
+          // Program timeline seeking
+          const liveTime = clock.time;
+          const projectDuration = clock.duration || (project?.duration ?? Infinity);
+          const step = isPlaying
+            ? e.shiftKey ? 5.0 : 1.0
+            : e.shiftKey ? 1.0 : 1 / frameRate;
+
+          const targetTime = isArrowLeft
+            ? Math.max(0, liveTime - step)
+            : Math.min(projectDuration, liveTime + step);
+
+          seek?.(targetTime, {
+            source: "keyboard-seek",
+            mode: isPlaying ? "playback" : (e.shiftKey ? "seek" : "frameStep"),
+            quality: "full",
+            allowKeyframeApprox: false,
+          });
         }
         return;
       }
 
-      if (e.key === "ArrowRight") {
+      // ─── Undo / Redo (global, available in program and source mode) ─────
+      const isZ = e.key.toLowerCase() === "z" || e.code === "KeyZ";
+      const isY = e.key.toLowerCase() === "y" || e.code === "KeyY";
+      const matchingAction = useShortcutStore.getState().getMatchingAction(e);
+
+      if ((isMeta && !e.shiftKey && isZ) || matchingAction === "undo") {
         e.preventDefault();
-        const session = getActiveSessionOrNull();
-        if (previewMode === "source") {
-          // SP-1 & SP-6 fix: In source mode, read the active source context time instead of the
-          // master program clock. Step 1 frame (or 1s with Shift) for frame-accurate in/out trimming.
-          const sourceTime = session?.sourceContext?.getTime() ?? 0;
-          const step = e.shiftKey ? 1.0 : 1 / frameRate;
-          seek?.(sourceTime + step);
-        } else {
-          const liveTime = getPlaybackClock().time;
-          const frameTime = 1 / frameRate;
-          seek?.(liveTime + frameTime);
-        }
+        undo();
+        return;
+      }
+
+      if (
+        (isMeta && e.shiftKey && isZ) ||
+        (isMeta && !e.shiftKey && isY) ||
+        matchingAction === "redo" ||
+        matchingAction === "redo-alt"
+      ) {
+        e.preventDefault();
+        redo();
         return;
       }
 
@@ -122,7 +159,9 @@ export const useKeyboardShortcuts = () => {
 
       // ─── Program mode shortcuts ──────────────────────────────────────────
 
-      if (useShortcutStore.getState().getMatchingAction(e) === "group-clips") {
+      const action = useShortcutStore.getState().getMatchingAction(e);
+
+      if (action === "group-clips") {
         e.preventDefault();
         const result = EditingActions.groupSelectedClips(selectedClipIds);
         if (result.success) toast.success("Grouped clips");
@@ -130,52 +169,117 @@ export const useKeyboardShortcuts = () => {
         return;
       }
 
-      if (isMeta && e.key === "z" && !e.shiftKey) {
+      // Cmd/Ctrl+S: Save project
+      if (isMeta && !e.shiftKey && (e.key.toLowerCase() === "s" || e.code === "KeyS")) {
         e.preventDefault();
-        undo();
-      } else if ((isMeta && e.shiftKey && e.key === "z") || (isMeta && e.key === "y")) {
-        e.preventDefault();
-        redo();
-      } else if (isMeta && e.key === "s") {
-        e.preventDefault();
-      } else if (isMeta && e.key === "i") {
-        e.preventDefault();
-      } else if (isMeta && e.key.toLowerCase() === "d" && !e.shiftKey) {
-        e.preventDefault();
-        clipboardService.duplicateClips(selectedClipIds);
-      } else if (isMeta && e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        clipboardService.copyClips(selectedClipIds);
-      } else if (isMeta && e.key.toLowerCase() === "x") {
-        e.preventDefault();
-        clipboardService.cutClips(selectedClipIds, false);
-      } else if (isMeta && e.key.toLowerCase() === "v") {
-        e.preventDefault();
-        clipboardService.pasteClips(transportTime);
-      } else if (isMeta && e.shiftKey && e.key === "S") {
+        const store = useProjectStore.getState();
+        if (store.project) {
+          store
+            .saveCurrentProject()
+            .then((result) => {
+              if (result?.verified) {
+                toast.success("Project saved");
+              }
+            })
+            .catch(() => {
+              toast.error("Failed to save project");
+            });
+        }
+        return;
+      }
+
+      // Cmd/Ctrl+Shift+S: Swap selected clips
+      if (isMeta && e.shiftKey && (e.key.toLowerCase() === "s" || e.code === "KeyS")) {
         e.preventDefault();
         const result = EditingActions.swapSelectedClips();
         if (result.error) {
           toast.error(result.error);
         }
-      } else if (e.key === "Escape") {
+        return;
+      }
+
+      // Cmd/Ctrl+D: Duplicate clips
+      if (isMeta && !e.shiftKey && (e.key.toLowerCase() === "d" || e.code === "KeyD")) {
+        e.preventDefault();
+        clipboardService.duplicateClips(selectedClipIds);
+        return;
+      }
+
+      // Cmd/Ctrl+Shift+D: Deselect all clips
+      if (isMeta && e.shiftKey && (e.key.toLowerCase() === "d" || e.code === "KeyD")) {
+        e.preventDefault();
+        useUIStore.getState().clearSelection();
+        toast.info("Deselected all clips");
+        return;
+      }
+
+      // Cmd/Ctrl+C: Copy clips
+      if (isMeta && !e.shiftKey && (e.key.toLowerCase() === "c" || e.code === "KeyC")) {
+        e.preventDefault();
+        clipboardService.copyClips(selectedClipIds);
+        return;
+      }
+
+      // Cmd/Ctrl+X: Cut clips
+      if (isMeta && !e.shiftKey && (e.key.toLowerCase() === "x" || e.code === "KeyX")) {
+        e.preventDefault();
+        clipboardService.cutClips(selectedClipIds, false);
+        return;
+      }
+
+      // Cmd/Ctrl+V: Paste clips
+      if (isMeta && !e.shiftKey && (e.key.toLowerCase() === "v" || e.code === "KeyV")) {
+        e.preventDefault();
+        clipboardService.pasteClips(transportTime);
+        return;
+      }
+
+      // Cmd/Ctrl+A: Select all clips
+      if (isMeta && !e.shiftKey && (e.key.toLowerCase() === "a" || e.code === "KeyA")) {
+        e.preventDefault();
+        const store = useTimelineStore.getState();
+        const allClipIds = store.clips.map((c) => c.id);
+        useUIStore.setState({ selectedClipIds: allClipIds, selectedGapId: null });
+        toast.info(`Selected ${allClipIds.length} clip${allClipIds.length !== 1 ? "s" : ""}`);
+        return;
+      }
+
+      // Escape: Deselect clip and track
+      if (e.key === "Escape") {
         e.preventDefault();
         selectClip(null);
         selectTrack(null);
-      } else if (isMeta && e.key === "=") {
+        return;
+      }
+
+      // Cmd/Ctrl+= or Cmd/Ctrl++: Zoom in
+      if (isMeta && (e.key === "=" || e.key === "+" || e.code === "Equal" || e.code === "NumpadAdd")) {
         e.preventDefault();
         zoomByStep(1);
-      } else if (isMeta && e.key === "-") {
+        return;
+      }
+
+      // Cmd/Ctrl+- or Cmd/Ctrl+_: Zoom out
+      if (isMeta && (e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract")) {
         e.preventDefault();
         zoomByStep(-1);
-      } else if (e.shiftKey && e.key.toLowerCase() === "z") {
+        return;
+      }
+
+      // Cmd/Ctrl+0 or Shift+Z (without Cmd/Ctrl): Fit sequence to timeline
+      if (
+        (isMeta && (e.key === "0" || e.code === "Digit0" || e.code === "Numpad0")) ||
+        (!isMeta && !e.ctrlKey && !e.altKey && e.shiftKey && (e.key.toLowerCase() === "z" || e.code === "KeyZ"))
+      ) {
         e.preventDefault();
         fitSequence();
-      } else if (isMeta && e.key.toLowerCase() === "k") {
+        return;
+      }
+
+      // Cmd/Ctrl+K or Cmd/Ctrl+Shift+K: Split clips at playhead
+      if (isMeta && (e.key.toLowerCase() === "k" || e.code === "KeyK")) {
         e.preventDefault();
-        // Ctrl/Cmd+K: Split selected clips (or all if none selected)
         if (e.shiftKey) {
-          // PB-HIDDEN-005 fix: Ctrl+Shift+K splits ALL clips at playhead
           const results = EditingActions.splitAtPlayhead();
           if (results.length === 0) {
             toast.info("No clips under playhead to split");
@@ -188,8 +292,6 @@ export const useKeyboardShortcuts = () => {
             }
           }
         } else {
-          // PB-HIDDEN-005 fix: Ctrl+K splits only SELECTED clips at playhead
-          // If no clips are selected, falls back to splitting all clips
           const store = useTimelineStore.getState();
           const selected = store.clips.filter((c) => selectedClipIds.includes(c.id));
           if (selected.length > 0) {
@@ -205,7 +307,6 @@ export const useKeyboardShortcuts = () => {
               }
             }
           } else {
-            // No selection — fall back to split all
             const results = EditingActions.splitAtPlayhead();
             if (results.length === 0) {
               toast.info("No clips under playhead to split");
@@ -219,22 +320,13 @@ export const useKeyboardShortcuts = () => {
             }
           }
         }
-      } else if (isMeta && e.key.toLowerCase() === "a") {
+        return;
+      }
+
+      // Ctrl/Cmd+] or Ctrl/Cmd+[: Nudge selected clips by frame
+      if (isMeta && (e.key === "]" || e.key === "[" || e.code === "BracketRight" || e.code === "BracketLeft")) {
         e.preventDefault();
-        // Ctrl/Cmd+A: Select all clips
-        const store = useTimelineStore.getState();
-        const allClipIds = store.clips.map((c) => c.id);
-        useUIStore.setState({ selectedClipIds: allClipIds, selectedGapId: null });
-        toast.info(`Selected ${allClipIds.length} clip${allClipIds.length !== 1 ? "s" : ""}`);
-      } else if (isMeta && e.shiftKey && e.key.toLowerCase() === "d") {
-        e.preventDefault();
-        // Ctrl/Cmd+Shift+D: Deselect all
-        useUIStore.getState().clearSelection();
-        toast.info("Deselected all clips");
-      } else if (isMeta && (e.key === "]" || e.key === "[")) {
-        e.preventDefault();
-        // Ctrl/Cmd+] or Ctrl/Cmd+[: Nudge selected clips by frame
-        const direction = e.key === "]" ? 1 : -1;
+        const direction = e.key === "]" || e.code === "BracketRight" ? 1 : -1;
         const nudgeAmount = e.shiftKey ? 10 : 1; // Shift = 10 frames, no shift = 1 frame
         const frameTime = 1 / frameRate;
         const nudgeTime = direction * nudgeAmount * frameTime;
@@ -298,7 +390,7 @@ export const useKeyboardShortcuts = () => {
         const closestClip = targetTrackClips[0];
         uiStore.selectClip(closestClip.id);
         toast.info(`Selected clip on track ${direction < 0 ? "above" : "below"}`);
-      } else if (isMeta && e.altKey && e.key.toLowerCase() === "l") {
+      } else if (isMeta && e.altKey && (e.key.toLowerCase() === "l" || e.code === "KeyL")) {
         e.preventDefault();
         // Ctrl/Cmd+Alt+L: Toggle lock on selected track
         const uiStore = useUIStore.getState();
@@ -313,7 +405,7 @@ export const useKeyboardShortcuts = () => {
 
         const track = useTimelineStore.getState().tracks.find((t) => t.id === selectedTrackId);
         toast.info(track?.locked ? "Track locked" : "Track unlocked");
-      } else if (isMeta && e.altKey && e.key.toLowerCase() === "v") {
+      } else if (isMeta && e.altKey && (e.key.toLowerCase() === "v" || e.code === "KeyV")) {
         e.preventDefault();
         // Ctrl/Cmd+Alt+V: Toggle visibility on selected track
         const uiStore = useUIStore.getState();
@@ -328,7 +420,7 @@ export const useKeyboardShortcuts = () => {
 
         const track = useTimelineStore.getState().tracks.find((t) => t.id === selectedTrackId);
         toast.info(track?.visible ? "Track visible" : "Track hidden");
-      } else if (isMeta && e.altKey && e.key.toLowerCase() === "m") {
+      } else if (isMeta && e.altKey && (e.key.toLowerCase() === "m" || e.code === "KeyM")) {
         e.preventDefault();
         // Ctrl/Cmd+Alt+M: Toggle mute on selected track
         const uiStore = useUIStore.getState();
@@ -349,20 +441,20 @@ export const useKeyboardShortcuts = () => {
 
         const track = useTimelineStore.getState().tracks.find((t) => t.id === selectedTrackId);
         toast.info(track?.muted ? "Track muted" : "Track unmuted");
-      } else if (isMeta && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
+      } else if (isMeta && !e.altKey && !e.shiftKey && (e.key.toLowerCase() === "b" || e.code === "KeyB")) {
         e.preventDefault();
         // Ctrl/Cmd+B: Toggle media sidebar
         const settings = useSettingsStore.getState();
         settings.setSidebarCollapsed(!settings.sidebarCollapsed);
       } else if (
-        (e.altKey && !isMeta && !e.shiftKey && e.key.toLowerCase() === "p") ||
-        (isMeta && e.shiftKey && e.key.toLowerCase() === "p")
+        ((e.altKey && !isMeta && !e.shiftKey) || (isMeta && e.shiftKey)) &&
+        (e.key.toLowerCase() === "p" || e.code === "KeyP")
       ) {
         e.preventDefault();
         // Alt+P or Ctrl/Cmd+Shift+P: Toggle properties panel
         const settings = useSettingsStore.getState();
         settings.setPropertiesPanelCollapsed(!settings.propertiesPanelCollapsed);
-      } else if (isMeta && e.altKey && e.key.toLowerCase() === "p") {
+      } else if (isMeta && e.altKey && (e.key.toLowerCase() === "p" || e.code === "KeyP")) {
         e.preventDefault();
         // Ctrl/Cmd+Alt+P: Pack selected track (remove gaps)
         const uiStore = useUIStore.getState();
@@ -385,7 +477,7 @@ export const useKeyboardShortcuts = () => {
           GapManager.packTrack(selectedTrackId);
           toast.success(`Packed track - removed ${unprotectedCount} gap${unprotectedCount > 1 ? "s" : ""}`);
         });
-      } else if (isMeta && e.altKey && e.key.toLowerCase() === "t") {
+      } else if (isMeta && e.altKey && (e.key.toLowerCase() === "t" || e.code === "KeyT")) {
         e.preventDefault();
         // Ctrl/Cmd+Alt+T: Add new track
         const store = useTimelineStore.getState();
@@ -412,7 +504,7 @@ export const useKeyboardShortcuts = () => {
 
         // Select the new track
         useUIStore.getState().selectTrack(newTrackId);
-      } else if (e.key === "m" && !isMeta && !e.altKey) {
+      } else if (!isMeta && !e.altKey && (e.key.toLowerCase() === "m" || e.code === "KeyM")) {
         e.preventDefault();
         // M: Add marker at playhead position
         const liveTime = getPlaybackClock().time;
@@ -421,7 +513,7 @@ export const useKeyboardShortcuts = () => {
         const timeLabel = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
         addMarker(liveTime);
         toast.success(`Marker added at ${timeLabel}`);
-      } else if (e.key === "s" && !isMeta) {
+      } else if (!isMeta && !e.altKey && (e.key.toLowerCase() === "s" || e.code === "KeyS")) {
         e.preventDefault();
         const results = EditingActions.splitAtPlayhead();
 
@@ -437,7 +529,7 @@ export const useKeyboardShortcuts = () => {
             toast.error(results[0].error || "Split failed");
           }
         }
-      } else if (e.key.toLowerCase() === "q" && !isMeta) {
+      } else if (!isMeta && !e.altKey && (e.key.toLowerCase() === "q" || e.code === "KeyQ")) {
         e.preventDefault();
         const results = EditingActions.deleteLeftAtPlayhead();
         if (results.length === 0) {
@@ -446,7 +538,7 @@ export const useKeyboardShortcuts = () => {
           const successCount = results.filter((r) => r.success).length;
           toast.success(`Delete left applied to ${successCount} clip${successCount > 1 ? "s" : ""}`);
         }
-      } else if (e.key.toLowerCase() === "w" && !isMeta) {
+      } else if (!isMeta && !e.altKey && (e.key.toLowerCase() === "w" || e.code === "KeyW")) {
         e.preventDefault();
         const results = EditingActions.deleteRightAtPlayhead();
         if (results.length === 0) {
@@ -461,6 +553,74 @@ export const useKeyboardShortcuts = () => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [transportTime, frameRate, selectedClipIds, previewMode, togglePlayback, pause, seek, setActiveContext, zoomByStep, fitSequence, selectClip, selectTrack, exitSourceMode, markSourceIn, markSourceOut, addMarker, undo, redo]);
+
+  // Listen for native desktop application menu events ("menu-undo", "menu-redo").
+  // On macOS, native menu bar accelerators (Cmd+Z / Shift+Cmd+Z) trigger menu events.
+  useEffect(() => {
+    let disposed = false;
+    let unlistenUndo: (() => void) | undefined;
+    let unlistenRedo: (() => void) | undefined;
+
+    const setupMenuListeners = async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        if (disposed) return;
+        const uUndo = await listen("menu-undo", () => {
+          const target = document.activeElement as HTMLElement | null;
+          const isTyping =
+            target &&
+            (target.tagName === "INPUT" ||
+              target.tagName === "TEXTAREA" ||
+              target.isContentEditable);
+
+          if (isTyping) {
+            document.execCommand("undo");
+            return;
+          }
+
+          useHistoryStore.getState().undo();
+        });
+
+        if (disposed) {
+          uUndo();
+          return;
+        }
+        unlistenUndo = uUndo;
+
+        const uRedo = await listen("menu-redo", () => {
+          const target = document.activeElement as HTMLElement | null;
+          const isTyping =
+            target &&
+            (target.tagName === "INPUT" ||
+              target.tagName === "TEXTAREA" ||
+              target.isContentEditable);
+
+          if (isTyping) {
+            document.execCommand("redo");
+            return;
+          }
+
+          useHistoryStore.getState().redo();
+        });
+
+        if (disposed) {
+          uRedo();
+          return;
+        }
+        unlistenRedo = uRedo;
+      } catch {
+        // Fallback for non-Tauri / test environments
+      }
+    };
+
+    void setupMenuListeners();
+
+    return () => {
+      disposed = true;
+      unlistenUndo?.();
+      unlistenRedo?.();
+    };
+  }, []);
 
   return { toastMessage: null };
 };
