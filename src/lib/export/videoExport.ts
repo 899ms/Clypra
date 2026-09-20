@@ -113,6 +113,12 @@ export interface VideoExportConfig {
    * The ExportDialog stores this reference so the Cancel button works correctly.
    */
   onSessionReady?: (cancel: () => Promise<void>) => void;
+
+  /**
+   * When true, renders directly on the native GPU compositor and pipes straight
+   * to FFmpeg's stdin in Rust, bypassing the 33MB/frame IPC bounce to JavaScript.
+   */
+  directGpuPipe?: boolean;
 }
 
 /**
@@ -419,38 +425,53 @@ export async function exportVideo(
         { mode: "frameStep", quality: "full" },
       );
       if (nativeRequest) {
-        try {
-          frameBytes = new Uint8Array(await renderNativeFrame(nativeRequest));
-        } catch (error) {
-          throw new Error(
-            `[videoExport] Native frame ${i} failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
+        if (config.directGpuPipe) {
+          try {
+            await invoke("render_and_write_export_frame", {
+              sessionId,
+              request: nativeRequest,
+            });
+          } catch (error) {
+            throw new Error(
+              `[videoExport] Direct native export frame ${i} failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        } else {
+          try {
+            frameBytes = new Uint8Array(await renderNativeFrame(nativeRequest));
+          } catch (error) {
+            throw new Error(
+              `[videoExport] Native frame ${i} failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          frameBuffer.push(frameBytes);
         }
       } else {
         throw new Error(
           `[videoExport] Frame ${i} is outside the native compositor contract`,
         );
       }
-      frameBuffer.push(frameBytes);
 
       completedFrames++;
 
-      // Flush batch when full or at end of export (double-buffering)
-      if (frameBuffer.length >= BATCH_SIZE || i === frameTimes.length - 1) {
-        const batchToFlush = [...frameBuffer];
-        frameBuffer.length = 0;
+      if (!config.directGpuPipe) {
+        // Flush batch when full or at end of export (double-buffering)
+        if (frameBuffer.length >= BATCH_SIZE || i === frameTimes.length - 1) {
+          const batchToFlush = [...frameBuffer];
+          frameBuffer.length = 0;
 
-        // Await previous in-flight write batch to complete before launching the next one
-        if (inFlightWritePromise) {
-          await inFlightWritePromise;
+          // Await previous in-flight write batch to complete before launching the next one
+          if (inFlightWritePromise) {
+            await inFlightWritePromise;
+          }
+
+          inFlightWritePromise = flushFrameBatch(batchToFlush);
         }
-
-        inFlightWritePromise = flushFrameBatch(batchToFlush);
       }
     }
 
     // Wait for the last in-flight batch write to complete
-    if (inFlightWritePromise) {
+    if (!config.directGpuPipe && inFlightWritePromise) {
       await inFlightWritePromise;
     }
 

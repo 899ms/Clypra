@@ -1817,6 +1817,22 @@ async fn render_native_video_project_frame_bytes(
         .0)
 }
 
+pub(crate) async fn render_frame_request_rgba(
+    app: &tauri::AppHandle,
+    request: &FrameRequest,
+) -> Result<Vec<u8>, String> {
+    if request.contract_version != NATIVE_CORE_CONTRACT_VERSION {
+        return Err(format!(
+            "Unsupported native core contract version: {}",
+            request.contract_version
+        ));
+    }
+    let legacy_request = to_video_project_request(request)?;
+    let (rgba, _timings) =
+        render_native_video_project_frame_bytes_timed(app.clone(), legacy_request).await?;
+    Ok(rgba)
+}
+
 async fn render_native_video_project_frame_bytes_timed(
     app: tauri::AppHandle,
     request: NativeVideoProjectFrameRequest,

@@ -64,6 +64,7 @@ interface NativeTimelineRunCallbacks {
     progress: number;
     etaSeconds: number;
     fps: number;
+    rtf?: number;
   }) => void;
   signal?: AbortSignal;
   onSessionReady?: (cancel: () => Promise<void>) => void;
@@ -278,6 +279,7 @@ export async function runNativeTimelineExport(
     progress: number;
     etaSeconds: number;
     fps: number;
+    rtf?: number;
   }>();
   progressChannel.onmessage = (progress) => {
     completedFrames = progress.currentFrame;
