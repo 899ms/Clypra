@@ -14,8 +14,8 @@ pub struct SelectedGpuInfo {
 }
 
 #[cfg(target_os = "windows")]
-static SELECTED_DXGI_ADAPTER_INDEX: once_cell::sync::Lazy<std::sync::atomic::AtomicI32> =
-    once_cell::sync::Lazy::new(|| std::sync::atomic::AtomicI32::new(-1));
+static SELECTED_DXGI_ADAPTER_INDEX: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(-1);
 
 /// Query the DXGI adapter index that matches the active discrete wgpu GPU.
 /// Used by FFmpeg D3D11VA hardware initialization to bind to the same physical adapter.
@@ -30,8 +30,8 @@ pub fn get_selected_dxgi_adapter_index() -> Option<u32> {
 }
 
 #[cfg(target_os = "windows")]
-static DXGI_RUNTIME_DISABLED: once_cell::sync::Lazy<std::sync::atomic::AtomicBool> =
-    once_cell::sync::Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
+static DXGI_RUNTIME_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub fn mark_dxgi_runtime_disabled() {
     #[cfg(target_os = "windows")]
@@ -41,11 +41,9 @@ pub fn mark_dxgi_runtime_disabled() {
 pub fn is_dxgi_runtime_enabled() -> bool {
     #[cfg(target_os = "windows")]
     {
-        static DISABLED_BY_ENV: once_cell::sync::Lazy<bool> = once_cell::sync::Lazy::new(|| {
-            std::env::var("CLYPRA_DISABLE_DXGI").as_deref() == Ok("1")
-                || std::env::var("CLYPRA_DISABLE_DXGI_ZERO_COPY").as_deref() == Ok("1")
-        });
-        if *DISABLED_BY_ENV {
+        if std::env::var("CLYPRA_DISABLE_DXGI").as_deref() == Ok("1")
+            || std::env::var("CLYPRA_DISABLE_DXGI_ZERO_COPY").as_deref() == Ok("1")
+        {
             return false;
         }
         !DXGI_RUNTIME_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
