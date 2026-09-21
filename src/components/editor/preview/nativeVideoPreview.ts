@@ -8,6 +8,7 @@ import { parseColor } from "@/core/evaluation/animation";
 import { resolveFilterToIR, type FilterIR } from "@/core/render/filterIR";
 import { buildNativeImageAssetId } from "@/core/render/nativeRasterAssetIds";
 import { traceCutoutEvent } from "@/core/playback/cutoutPipelineTrace";
+import { toNativePath } from "@/lib/platform/pathConversion";
 
 function parseColorToRgba(color: string): [number, number, number, number] {
   if (!color) return [1, 1, 1, 1];
@@ -1391,7 +1392,7 @@ export function buildNativeFrameRequest(
       return {
         assetId: layer.mediaId,
         layerId: layer.layerId,
-        videoPath: layer.sourcePath,
+        videoPath: toNativePath(layer.sourcePath),
         sourceTime: secondsToNativeTime(layer.sourceTime, Math.max(0, Math.round(layer.sourceTime * Math.max(frameRate, 1)))),
         x: layer.x,
         y: layer.y,
@@ -1411,7 +1412,7 @@ export function buildNativeFrameRequest(
     videoLayers.push({
       assetId: NATIVE_BACKGROUND_MEDIA_LAYER_ID,
       layerId: NATIVE_BACKGROUND_MEDIA_LAYER_ID,
-      videoPath: nativeBackgroundLayer.videoPath,
+      videoPath: toNativePath(nativeBackgroundLayer.videoPath),
       sourceTime: secondsToNativeTime(nativeBackgroundLayer.timeSecs, frameIndex),
       x: nativeBackgroundLayer.x,
       y: nativeBackgroundLayer.y,
