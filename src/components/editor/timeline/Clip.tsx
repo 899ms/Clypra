@@ -441,7 +441,7 @@ const ClipInner: React.FC<ClipProps> = ({
       return;
     }
 
-    // FIX: Capture clipId and trackId once at effect start to avoid stale closure bug.
+    // Capture clipId and trackId once at effect start to avoid stale closure bug.
     // Previously, `clip` was in the dependency array, causing the effect to rebuild
     // on every state update during resize. This reset resizeStartRef mid-drag, breaking
     // cumulative delta calculations. Now we capture stable IDs and never re-run the effect
@@ -809,7 +809,7 @@ const ClipInner: React.FC<ClipProps> = ({
     setSnapGuides,
     clearSnapGuides,
     previewInteractionCoordinator,
-    // NOTE: useHistoryStore is intentionally omitted — it is the stable Zustand
+    // useHistoryStore is intentionally omitted — it is the stable Zustand
     // hook reference itself (never changes), so including it was misleading (BUG 8-D).
     // useHistoryStore.getState() is called imperatively inside finishResize.
   ]);

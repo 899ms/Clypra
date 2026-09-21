@@ -18,7 +18,14 @@ import {
   type DragGeometry,
 } from "../TransformController";
 
-const makeTransformState = (overrides: Partial<{ x: number; y: number; width: number; height: number }> = {}) => ({
+const makeTransformState = (
+  overrides: Partial<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }> = {},
+) => ({
   clipId: "clip-1",
   handle: "move" as const,
   startTransform: {
@@ -101,7 +108,10 @@ describe("TransformController — drag session tracking", () => {
     expect(controller.getCurrentDragGeometry()).toMatchObject({ x: 150 });
 
     controller.updateDragGeometry(makeGeometry({ x: 200, y: 200 }));
-    expect(controller.getCurrentDragGeometry()).toMatchObject({ x: 200, y: 200 });
+    expect(controller.getCurrentDragGeometry()).toMatchObject({
+      x: 200,
+      y: 200,
+    });
     controller.endTransform();
   });
 
@@ -132,7 +142,11 @@ describe("TransformController — onDragGeometry fast-path subscriber", () => {
   });
 
   it("notifies subscriber synchronously when updateDragGeometry is called", () => {
-    const received: Array<{ geometry: DragGeometry; sessionId: number; revision: number }> = [];
+    const received: Array<{
+      geometry: DragGeometry;
+      sessionId: number;
+      revision: number;
+    }> = [];
     controller.onDragGeometry((geometry, sessionId, revision) => {
       received.push({ geometry, sessionId, revision });
     });
@@ -214,7 +228,9 @@ describe("TransformController — onDragEnd subscriber", () => {
 
   it("fires once on endTransform with the final geometry", () => {
     const ended: Array<{ sessionId: number; geometry: DragGeometry }> = [];
-    controller.onDragEnd((sessionId, geometry) => ended.push({ sessionId, geometry }));
+    controller.onDragEnd((sessionId, geometry) =>
+      ended.push({ sessionId, geometry }),
+    );
 
     controller.startTransform(makeTransformState());
     const sessionId = controller.getDragSessionId();
@@ -232,7 +248,7 @@ describe("TransformController — onDragEnd subscriber", () => {
     controller.onDragEnd(subscriber);
 
     controller.startTransform(makeTransformState());
-    // Note: startTransform seeds geometry from startTransform.x/y/w/h
+    // startTransform seeds geometry from startTransform.x/y/w/h
     // so getCurrentDragGeometry() is not null — it fires with seed.
     controller.endTransform();
     // It should fire once (with seeded geometry)

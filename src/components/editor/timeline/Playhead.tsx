@@ -131,7 +131,7 @@ export const Playhead: React.FC<PlayheadProps> = ({
       }
 
       // ✅ 2. THEN derive playhead from pointer
-      // Invariant: playheadX - scrollX === pointerX (+ offset)
+      // playheadX - scrollX === pointerX (+ offset)
       const scrollX = container.scrollLeft;
       const playheadX = scrollX + pointerXRef.current + dragOffsetRef.current;
 

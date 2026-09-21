@@ -177,7 +177,7 @@ export const AudioEnvelopeEditor: React.FC<AudioEnvelopeEditorProps> = ({
     const drag = fadeDragRef.current;
     if (!drag) return;
 
-    // PERF: Drain any pending RAF before reading the final value
+    // Drain any pending RAF before reading the final value
     if (envelopeRafRef.current !== null) {
       cancelAnimationFrame(envelopeRafRef.current);
       envelopeRafRef.current = null;
@@ -268,7 +268,7 @@ export const AudioEnvelopeEditor: React.FC<AudioEnvelopeEditorProps> = ({
   const finishVolumeDrag = (pointerId?: number) => {
     if (!dragStartRef.current) return;
 
-    // PERF: Drain any pending RAF before reading the final value
+    // Drain any pending RAF before reading the final value
     if (envelopeRafRef.current !== null) {
       cancelAnimationFrame(envelopeRafRef.current);
       envelopeRafRef.current = null;

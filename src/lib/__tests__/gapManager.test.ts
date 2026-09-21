@@ -61,7 +61,9 @@ describe("GapManager - Imperative Architecture", () => {
       let timelineStore = useTimelineStore.getState();
       expect(timelineStore.clips).toHaveLength(2);
       expect(timelineStore.gaps).toHaveLength(0);
-      expect(timelineStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(10);
+      expect(
+        timelineStore.clips.find((c) => c.id === "clip-2")!.startTime,
+      ).toBe(10);
 
       // Insert gap at position 7
       const gap = GapManager.insertGap("track-1", 7, 3);
@@ -74,21 +76,27 @@ describe("GapManager - Imperative Architecture", () => {
       // Verify clip shifted right
       const freshStore = useTimelineStore.getState();
       expect(freshStore.gaps).toHaveLength(1);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(13);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        13,
+      );
 
       // Undo: Gap should be removed, clip restored
       historyStore.undo();
 
       const afterUndo = useTimelineStore.getState();
       expect(afterUndo.gaps).toHaveLength(0);
-      expect(afterUndo.clips.find((c) => c.id === "clip-2")!.startTime).toBe(10);
+      expect(afterUndo.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        10,
+      );
 
       // Redo: Gap should be re-inserted
       historyStore.redo();
 
       const afterRedo = useTimelineStore.getState();
       expect(afterRedo.gaps).toHaveLength(1);
-      expect(afterRedo.clips.find((c) => c.id === "clip-2")!.startTime).toBe(13);
+      expect(afterRedo.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        13,
+      );
     });
   });
 
@@ -103,28 +111,36 @@ describe("GapManager - Imperative Architecture", () => {
 
       let freshStore = useTimelineStore.getState();
       expect(freshStore.gaps).toHaveLength(1);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(13);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        13,
+      );
 
       // Remove the gap
       GapManager.removeGap(gap!.id);
 
       freshStore = useTimelineStore.getState();
       expect(freshStore.gaps).toHaveLength(0);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(10);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        10,
+      );
 
       // Undo: Gap should be restored
       historyStore.undo();
 
       freshStore = useTimelineStore.getState();
       expect(freshStore.gaps).toHaveLength(1);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(13);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        13,
+      );
 
       // Redo: Gap should be removed again
       historyStore.redo();
 
       freshStore = useTimelineStore.getState();
       expect(freshStore.gaps).toHaveLength(0);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(10);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        10,
+      );
     });
   });
 
@@ -166,7 +182,9 @@ describe("GapManager - Imperative Architecture", () => {
 
       let freshStore = useTimelineStore.getState();
       // After first gap at 7-9, clip2 moves from 10 to 12
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(12);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        12,
+      );
 
       const gap2 = GapManager.insertGap("track-1", 17, 1);
 
@@ -179,7 +197,9 @@ describe("GapManager - Imperative Architecture", () => {
       expect(freshStore.gaps[1].protected).toBe(false);
 
       // After both gaps: clip2 was at 12 after first gap, second gap is after clip2, so clip2 stays at 12
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(12);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        12,
+      );
 
       // Pack track (removes all unprotected gaps in one transaction)
       GapManager.packTrack("track-1");
@@ -201,7 +221,9 @@ describe("GapManager - Imperative Architecture", () => {
       // After undo, gaps are restored
       expect(freshStore.gaps).toHaveLength(2);
       // Clip2 should be back at position 12
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(12);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        12,
+      );
     });
   });
 
@@ -215,28 +237,36 @@ describe("GapManager - Imperative Architecture", () => {
 
       let freshStore = useTimelineStore.getState();
       expect(freshStore.gaps[0].duration).toBe(3);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(13);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        13,
+      );
 
       // Resize to 5 seconds
       GapManager.resizeGap(gap!.id, 5);
 
       freshStore = useTimelineStore.getState();
       expect(freshStore.gaps[0].duration).toBe(5);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(15);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        15,
+      );
 
       // Undo: Gap back to 3 seconds
       historyStore.undo();
 
       freshStore = useTimelineStore.getState();
       expect(freshStore.gaps[0].duration).toBe(3);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(13);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        13,
+      );
 
       // Redo: Gap to 5 seconds again
       historyStore.redo();
 
       freshStore = useTimelineStore.getState();
       expect(freshStore.gaps[0].duration).toBe(5);
-      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(15);
+      expect(freshStore.clips.find((c) => c.id === "clip-2")!.startTime).toBe(
+        15,
+      );
     });
   });
 
@@ -332,13 +362,17 @@ describe("GapManager - Imperative Architecture", () => {
       expect(freshStore.gaps).toHaveLength(2);
 
       // Find the gap that was just toggled by position (since ID may change)
-      const toggledGap = freshStore.gaps.find((g) => g.startTime === gap1StartTime);
+      const toggledGap = freshStore.gaps.find(
+        (g) => g.startTime === gap1StartTime,
+      );
       expect(toggledGap!.protected).toBe(false);
 
       // Undo operation 3: First gap protected again
       historyStore.undo();
       freshStore = useTimelineStore.getState();
-      expect(freshStore.gaps.find((g) => g.startTime === gap1StartTime)!.protected).toBe(true);
+      expect(
+        freshStore.gaps.find((g) => g.startTime === gap1StartTime)!.protected,
+      ).toBe(true);
 
       // Undo operation 2: Second gap removed
       historyStore.undo();
@@ -362,12 +396,16 @@ describe("GapManager - Imperative Architecture", () => {
       expect(freshStore.gaps).toHaveLength(2);
 
       // Verify final state
-      const finalGap1 = freshStore.gaps.find((g) => g.startTime === gap1StartTime);
-      const finalGap2 = freshStore.gaps.find((g) => g.startTime === gap2StartTime);
+      const finalGap1 = freshStore.gaps.find(
+        (g) => g.startTime === gap1StartTime,
+      );
+      const finalGap2 = freshStore.gaps.find(
+        (g) => g.startTime === gap2StartTime,
+      );
       expect(finalGap1).toBeDefined();
       expect(finalGap2).toBeDefined();
 
-      // NOTE: After undo/redo cycles, gap IDs change, so toggle operations
+      // After undo/redo cycles, gap IDs change, so toggle operations
       // referencing old IDs don't affect the newly created gaps
       // The gaps are recreated with default protected=false state
       expect(finalGap1!.protected).toBe(false); // Default state after recreation

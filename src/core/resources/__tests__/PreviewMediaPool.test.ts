@@ -43,7 +43,9 @@ if (typeof HTMLVideoElement === "undefined") {
 }
 
 if (typeof HTMLAudioElement === "undefined") {
-  (globalThis as any).HTMLAudioElement = class HTMLAudioElement extends (globalThis as any).HTMLVideoElement {};
+  (globalThis as any).HTMLAudioElement = class HTMLAudioElement extends (
+    (globalThis as any).HTMLVideoElement
+  ) {};
 }
 
 if (typeof document === "undefined") {
@@ -69,7 +71,13 @@ if (typeof document === "undefined") {
 }
 
 // Helper to create mock clips
-function createMockClip(id: string, mediaId: string, startTime: number, duration: number, trimIn = 0): Clip {
+function createMockClip(
+  id: string,
+  mediaId: string,
+  startTime: number,
+  duration: number,
+  trimIn = 0,
+): Clip {
   return {
     id,
     mediaId,
@@ -194,7 +202,9 @@ describe("PreviewMediaPool — Re-entrancy Protection", () => {
   });
 
   it("keeps the native pool video-only and never creates HTML audio", () => {
-    const nativePool = new PreviewMediaPool(undefined, undefined, { audioEnabled: false });
+    const nativePool = new PreviewMediaPool(undefined, undefined, {
+      audioEnabled: false,
+    });
     const clips = [createMockClip("clip-1", "media-1", 0, 5)];
     const assets = [createMockAsset("media-1", "/path/to/video.mp4")];
     const tracks = [{ id: "track-1", type: "video" }];
@@ -240,8 +250,12 @@ describe("PreviewMediaPool — Re-entrancy Protection", () => {
 
   it("should queue sync request when already syncing", async () => {
     // Create a large number of clips to make sync() take longer
-    const clips = Array.from({ length: 100 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 100 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 100 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 100 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     const syncState1 = {
@@ -275,8 +289,12 @@ describe("PreviewMediaPool — Re-entrancy Protection", () => {
   });
 
   it("should only process the most recent queued request", async () => {
-    const clips = Array.from({ length: 50 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 50 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 50 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 50 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Call sync multiple times rapidly (simulating 60fps calls)
@@ -368,7 +386,9 @@ describe("PreviewMediaPool — Re-entrancy Protection", () => {
 
     // Should only have one element for the clip (not duplicates)
     const videoElements = pool.getVideoElements();
-    const clipKeys = Array.from(videoElements.keys()).filter((key) => key.includes("clip-1"));
+    const clipKeys = Array.from(videoElements.keys()).filter((key) =>
+      key.includes("clip-1"),
+    );
     expect(clipKeys.length).toBeLessThanOrEqual(1);
   });
 
@@ -378,7 +398,13 @@ describe("PreviewMediaPool — Re-entrancy Protection", () => {
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Simulate rapid playback state changes
-    const states: Array<"playing" | "paused" | "stopped"> = ["playing", "paused", "playing", "paused", "stopped"];
+    const states: Array<"playing" | "paused" | "stopped"> = [
+      "playing",
+      "paused",
+      "playing",
+      "paused",
+      "stopped",
+    ];
 
     for (const state of states) {
       pool.sync(clips, assets, tracks, {
@@ -587,7 +613,10 @@ describe("PreviewMediaPool — Split Clip Scenarios", () => {
     });
 
     // Simulate multiple rapid splits
-    clips = [createMockClip("clip-1", "media-1", 0, 2, 0), createMockClip("clip-2", "media-1", 2, 8, 2)];
+    clips = [
+      createMockClip("clip-1", "media-1", 0, 2, 0),
+      createMockClip("clip-2", "media-1", 2, 8, 2),
+    ];
     pool.sync(clips, assets, tracks, {
       time: 2.0,
       state: "playing" as const,
@@ -597,7 +626,11 @@ describe("PreviewMediaPool — Split Clip Scenarios", () => {
       frameRate: 30 as 24 | 30 | 60,
     });
 
-    clips = [createMockClip("clip-1", "media-1", 0, 2, 0), createMockClip("clip-2", "media-1", 2, 4, 2), createMockClip("clip-3", "media-1", 6, 4, 6)];
+    clips = [
+      createMockClip("clip-1", "media-1", 0, 2, 0),
+      createMockClip("clip-2", "media-1", 2, 4, 2),
+      createMockClip("clip-3", "media-1", 6, 4, 6),
+    ];
     pool.sync(clips, assets, tracks, {
       time: 4.0,
       state: "playing" as const,
@@ -628,8 +661,12 @@ describe("PreviewMediaPool — Performance and Memory", () => {
 
   it("should handle large number of clips efficiently", async () => {
     // Create 100 clips
-    const clips = Array.from({ length: 100 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 100 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 100 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 100 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     const startTime = Date.now();
@@ -652,8 +689,12 @@ describe("PreviewMediaPool — Performance and Memory", () => {
 
   it("should respect cache limits", async () => {
     // Create more clips than cache limit (20)
-    const clips = Array.from({ length: 30 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 30 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 30 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 30 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Sync with all clips
@@ -674,8 +715,16 @@ describe("PreviewMediaPool — Performance and Memory", () => {
   });
 
   it("should handle rapid time changes during playback", async () => {
-    const clips = [createMockClip("clip-1", "media-1", 0, 5), createMockClip("clip-2", "media-2", 5, 5), createMockClip("clip-3", "media-3", 10, 5)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4"), createMockAsset("media-3", "/path/to/video3.mp4")];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 5),
+      createMockClip("clip-2", "media-2", 5, 5),
+      createMockClip("clip-3", "media-3", 10, 5),
+    ];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+      createMockAsset("media-3", "/path/to/video3.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Simulate 60fps playback for 1 second (60 syncs)
@@ -744,8 +793,14 @@ describe("PreviewMediaPool —: Seeked Event Listener Leak", () => {
   });
 
   it("should handle prolonged scrubbing session without memory leak", async () => {
-    const clips = [createMockClip("clip-1", "media-1", 0, 5), createMockClip("clip-2", "media-2", 5, 5)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 5),
+      createMockClip("clip-2", "media-2", 5, 5),
+    ];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Simulate extended scrubbing session (500 rapid seeks)
@@ -774,8 +829,12 @@ describe("PreviewMediaPool —: Seeked Event Listener Leak", () => {
 
   it("should handle scrubbing with multiple clips without listener leak", async () => {
     // Create 10 clips to test listener leak across multiple elements
-    const clips = Array.from({ length: 10 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 10 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 10 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 10 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Scrub across all clips multiple times
@@ -928,7 +987,10 @@ describe("PreviewMediaPool —: Missing isActive Guard", () => {
       createMockClip("clip-1", "media-1", 0, 5), // 0-5s
       createMockClip("clip-2", "media-2", 5, 5), // 5-10s
     ];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Start at 4.5s (clip-1 active, clip-2 inactive)
@@ -994,8 +1056,12 @@ describe("PreviewMediaPool —: Missing isActive Guard", () => {
 
   it("should handle multiple clips transitioning without playing inactive elements", async () => {
     // Create timeline with 5 sequential clips
-    const clips = Array.from({ length: 5 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 5 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 5 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 5 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Play through entire timeline rapidly
@@ -1017,8 +1083,16 @@ describe("PreviewMediaPool —: Missing isActive Guard", () => {
   });
 
   it("should respect isActive guard during rapid seeks across clip boundaries", async () => {
-    const clips = [createMockClip("clip-1", "media-1", 0, 3), createMockClip("clip-2", "media-2", 3, 3), createMockClip("clip-3", "media-3", 6, 3)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4"), createMockAsset("media-3", "/path/to/video3.mp4")];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 3),
+      createMockClip("clip-2", "media-2", 3, 3),
+      createMockClip("clip-3", "media-3", 6, 3),
+    ];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+      createMockAsset("media-3", "/path/to/video3.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Rapidly seek back and forth across boundaries
@@ -1043,8 +1117,14 @@ describe("PreviewMediaPool —: Missing isActive Guard", () => {
   it("should prevent simultaneous audio from multiple clips due to missing guard", async () => {
     // This test simulates the exact bug scenario: audio continues from
     // inactive clip while new clip also plays audio
-    const clips = [createMockClip("clip-1", "media-1", 0, 5), createMockClip("clip-2", "media-2", 5, 5)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 5),
+      createMockClip("clip-2", "media-2", 5, 5),
+    ];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Play through first clip
@@ -1130,7 +1210,10 @@ describe("PreviewMediaPool —: Missing isActive Guard", () => {
       createMockClip("clip-1", "media-1", 0, 1), // Short 1s clip
       createMockClip("clip-2", "media-2", 1, 1),
     ];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Simulate 60fps playback across clip boundary
@@ -1293,7 +1376,10 @@ describe("PreviewMediaPool —: Early Exit Optimization", () => {
   });
 
   it("should process sync when clip count changes", () => {
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // First sync - one clip
@@ -1308,14 +1394,22 @@ describe("PreviewMediaPool —: Early Exit Optimization", () => {
 
     // Second sync - two clips (clip count changed)
     // Should NOT early exit because clip count changed
-    pool.sync([createMockClip("clip-1", "media-1", 0, 5), createMockClip("clip-2", "media-2", 5, 5)], assets, tracks, {
-      time: 2.5,
-      state: "playing" as const,
-      speed: 1.0,
-      muted: false,
-      volume: 100,
-      frameRate: 30 as 24 | 30 | 60,
-    });
+    pool.sync(
+      [
+        createMockClip("clip-1", "media-1", 0, 5),
+        createMockClip("clip-2", "media-2", 5, 5),
+      ],
+      assets,
+      tracks,
+      {
+        time: 2.5,
+        state: "playing" as const,
+        speed: 1.0,
+        muted: false,
+        volume: 100,
+        frameRate: 30 as 24 | 30 | 60,
+      },
+    );
 
     expect(() => pool.getVideoElements()).not.toThrow();
   });
@@ -1834,8 +1928,16 @@ describe("PreviewMediaPool —: State Machine Divergence Prevention", () => {
   });
 
   it("should handle multiple clips without state divergence", async () => {
-    const clips = [createMockClip("clip-1", "media-1", 0, 5), createMockClip("clip-2", "media-2", 5, 5), createMockClip("clip-3", "media-3", 10, 5)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4"), createMockAsset("media-3", "/path/to/video3.mp4")];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 5),
+      createMockClip("clip-2", "media-2", 5, 5),
+      createMockClip("clip-3", "media-3", 10, 5),
+    ];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+      createMockAsset("media-3", "/path/to/video3.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Play through timeline
@@ -1970,8 +2072,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should respect MAX_CACHED_VIDEOS limit even when all clips are in timeline", async () => {
     // Create 25 clips (exceeds MAX_CACHED_VIDEOS = 20)
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Sync with all clips in timeline
@@ -1993,8 +2099,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should evict oldest inactive protected elements when over limit", async () => {
     // Create 25 clips
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Sync at time 0 (only first few clips active)
@@ -2016,8 +2126,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should prefer evicting inactive elements over active ones", async () => {
     // Create 25 clips
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // First sync creates all elements
@@ -2051,8 +2165,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should prevent unbounded memory growth on large projects", async () => {
     // Simulate large project with 50 clips
-    const clips = Array.from({ length: 50 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 50 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 50 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 50 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Sync multiple times
@@ -2075,8 +2193,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should enforce hard limit in 4-pass eviction strategy", async () => {
     // Create exactly MAX+5 clips (25)
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Load all clips
@@ -2102,9 +2224,16 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should handle timeline with all clips active", async () => {
     // Create 25 clips but make them all "active" by having overlapping ranges
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, 0, 10)); // All start at 0
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
-    const tracks = Array.from({ length: 25 }, (_, i) => ({ id: `track-${i}`, type: "video" }));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, 0, 10),
+    ); // All start at 0
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
+    const tracks = Array.from({ length: 25 }, (_, i) => ({
+      id: `track-${i}`,
+      type: "video",
+    }));
 
     pool.sync(clips, assets, tracks, {
       time: 5.0,
@@ -2124,8 +2253,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should use LRU policy for eviction within each pass", async () => {
     // Create 25 clips
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Initial load
@@ -2170,8 +2303,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should prevent browser crash on mobile with many clips", async () => {
     // Mobile scenario: 30 clips, limited memory
-    const clips = Array.from({ length: 30 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 30 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 30 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 30 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Load project
@@ -2193,8 +2330,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should handle edge case of exactly MAX clips", async () => {
     // Exactly 20 clips (at the limit)
-    const clips = Array.from({ length: 20 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 20 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 20 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 20 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     pool.sync(clips, assets, tracks, {
@@ -2215,8 +2356,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should evict elements as timeline changes", async () => {
     // Start with 25 clips
-    let clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    let assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    let clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    let assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     pool.sync(clips, assets, tracks, {
@@ -2252,8 +2397,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should not evict elements that are about to be used", async () => {
     // Create 25 clips
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Sync at beginning
@@ -2275,8 +2424,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
   });
 
   it("should handle rapid timeline changes with many clips", async () => {
-    const clips = Array.from({ length: 40 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 40 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 40 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 40 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Rapid scrubbing through timeline
@@ -2300,8 +2453,12 @@ describe("PreviewMediaPool —: Cache Eviction Hard Limit", () => {
 
   it("should prioritize active clips when at capacity", async () => {
     // Create 25 clips
-    const clips = Array.from({ length: 25 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 25 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 25 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 25 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Load first half
@@ -2539,8 +2696,14 @@ describe("PreviewMediaPool —: Play Promise Cancellation", () => {
   });
 
   it("should handle multiple clips with rapid play/pause", async () => {
-    const clips = [createMockClip("clip-1", "media-1", 0, 5), createMockClip("clip-2", "media-2", 5, 5)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 5),
+      createMockClip("clip-2", "media-2", 5, 5),
+    ];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Rapid sequence at clip boundary
@@ -2798,9 +2961,18 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
     let volumeSetCount = 0;
     let playbackRateSetCount = 0;
 
-    const originalMutedDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "muted");
-    const originalVolumeDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "volume");
-    const originalPlaybackRateDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "playbackRate");
+    const originalMutedDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "muted",
+    );
+    const originalVolumeDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "volume",
+    );
+    const originalPlaybackRateDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "playbackRate",
+    );
 
     Object.defineProperty(element, "muted", {
       get: originalMutedDescriptor?.get || (() => false),
@@ -2931,9 +3103,18 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
 
     // Track setter calls
     let totalSetterCalls = 0;
-    const originalMutedDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "muted");
-    const originalVolumeDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "volume");
-    const originalPlaybackRateDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "playbackRate");
+    const originalMutedDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "muted",
+    );
+    const originalVolumeDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "volume",
+    );
+    const originalPlaybackRateDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "playbackRate",
+    );
 
     Object.defineProperty(element, "muted", {
       get: originalMutedDescriptor?.get || (() => false),
@@ -2998,7 +3179,10 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
     const element = Array.from(videoElements.values())[0];
 
     let volumeSetCount = 0;
-    const originalDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "volume");
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element),
+      "volume",
+    );
 
     Object.defineProperty(element, "volume", {
       get: originalDescriptor?.get || (() => 0.33333),
@@ -3041,7 +3225,10 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
     expect(element).toBeDefined();
 
     let volumeSetCount = 0;
-    const originalDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element!), "volume");
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(element!),
+      "volume",
+    );
 
     Object.defineProperty(element!, "volume", {
       get: originalDescriptor?.get || (() => 0.5),
@@ -3087,7 +3274,10 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
     const props = ["muted", "volume", "playbackRate"] as const;
 
     props.forEach((prop) => {
-      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), prop);
+      const descriptor = Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(element),
+        prop,
+      );
       Object.defineProperty(element, prop, {
         get: descriptor?.get || (() => (prop === "muted" ? false : 1)),
         set: (value: any) => {
@@ -3123,7 +3313,10 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
       createMockClip("clip-1", "media-1", 0, 5),
       createMockClip("clip-2", "media-2", 0, 5), // Overlapping
     ];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Sync with both clips
@@ -3157,8 +3350,12 @@ describe("PreviewMediaPool —: Conditional Property Updates", () => {
       frameRate: 30 as 24 | 30 | 60,
     });
 
-    const unmutedVideoCountAfter = videoElementsList.filter((e) => !e.muted).length;
-    const unmutedAudioCountAfter = audioElementsList.filter((e) => !e.muted).length;
+    const unmutedVideoCountAfter = videoElementsList.filter(
+      (e) => !e.muted,
+    ).length;
+    const unmutedAudioCountAfter = audioElementsList.filter(
+      (e) => !e.muted,
+    ).length;
     expect(unmutedVideoCountAfter).toBe(0);
     expect(unmutedAudioCountAfter).toBe(2);
   });
@@ -3335,7 +3532,10 @@ describe("PreviewMediaPool — &: Grace Period and Original ClipId", () => {
 
   it("should prevent black frame during split transition", async () => {
     const originalClip = [createMockClip("clip-original", "media-1", 0, 10)];
-    const splitClips = [createMockClip("clip-left", "media-1", 0, 5), createMockClip("clip-right", "media-1", 5, 5)];
+    const splitClips = [
+      createMockClip("clip-left", "media-1", 0, 5),
+      createMockClip("clip-right", "media-1", 5, 5),
+    ];
     const assets = [createMockAsset("media-1", "/path/to/video.mp4")];
     const tracks = [{ id: "track-1", type: "video" }];
 
@@ -3387,7 +3587,10 @@ describe("PreviewMediaPool — &: Grace Period and Original ClipId", () => {
   it("should clear recently removed clips after grace period expires", async () => {
     const clip1 = [createMockClip("clip-1", "media-1", 0, 5)];
     const clip2 = [createMockClip("clip-2", "media-2", 0, 5)];
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Create clip-1 element
@@ -3476,9 +3679,18 @@ describe("PreviewMediaPool — &: Grace Period and Original ClipId", () => {
   });
 
   it("should maintain correct clip-to-element mapping during complex timeline changes", () => {
-    const clips1 = [createMockClip("clip-A", "media-1", 0, 5), createMockClip("clip-B", "media-2", 5, 5)];
-    const clips2 = [createMockClip("clip-B", "media-2", 5, 5), createMockClip("clip-C", "media-1", 0, 5)]; // Swap A for C (same media, same position)
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const clips1 = [
+      createMockClip("clip-A", "media-1", 0, 5),
+      createMockClip("clip-B", "media-2", 5, 5),
+    ];
+    const clips2 = [
+      createMockClip("clip-B", "media-2", 5, 5),
+      createMockClip("clip-C", "media-1", 0, 5),
+    ]; // Swap A for C (same media, same position)
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Create initial clips
@@ -3537,7 +3749,7 @@ describe("PreviewMediaPool —: Cache Key Precision", () => {
   it("should normalize trimIn values to prevent floating point rounding errors", () => {
     // PROBLEM: Without normalization, 5.1234999 and 5.1234001 could produce
     // different cache keys due to toFixed(3) rounding, causing duplicate elements
-    // FIX: Math.round(trimIn * 1000) / 1000 normalizes before toFixed(3)
+    // Math.round(trimIn * 1000) / 1000 normalizes before toFixed(3)
 
     const asset: MediaAsset = {
       id: "asset-1",
@@ -3550,7 +3762,9 @@ describe("PreviewMediaPool —: Cache Key Precision", () => {
       size: 1000000,
     };
 
-    const tracks = [{ id: "track-1", type: "video", visible: true, muted: false }];
+    const tracks = [
+      { id: "track-1", type: "video", visible: true, muted: false },
+    ];
     const syncState = {
       time: 0.5,
       state: "playing" as const,
@@ -3597,7 +3811,9 @@ describe("PreviewMediaPool —: Cache Key Precision", () => {
       size: 1000000,
     };
 
-    const tracks = [{ id: "track-1", type: "video", visible: true, muted: false }];
+    const tracks = [
+      { id: "track-1", type: "video", visible: true, muted: false },
+    ];
     const syncState = {
       time: 0.5,
       state: "playing" as const,
@@ -3662,7 +3878,9 @@ describe("PreviewMediaPool —: Cache Key Precision", () => {
       size: 1000000,
     };
 
-    const tracks = [{ id: "track-1", type: "video", visible: true, muted: false }];
+    const tracks = [
+      { id: "track-1", type: "video", visible: true, muted: false },
+    ];
     const syncState = {
       time: 0.5,
       state: "playing" as const,
@@ -3730,8 +3948,14 @@ describe("PreviewMediaPool —: Missing Seeking Guard", () => {
     const managed = Array.from((pool as any).videoCache.values())[0] as any;
     const element = managed.element;
 
-    Object.defineProperty(element, "paused", { value: false, configurable: true });
-    Object.defineProperty(element, "seeking", { value: true, configurable: true });
+    Object.defineProperty(element, "paused", {
+      value: false,
+      configurable: true,
+    });
+    Object.defineProperty(element, "seeking", {
+      value: true,
+      configurable: true,
+    });
 
     let pauseCalled = false;
     element.pause = () => {
@@ -3767,8 +3991,14 @@ describe("PreviewMediaPool —: Missing Seeking Guard", () => {
     const managed = Array.from((pool as any).videoCache.values())[0] as any;
     const element = managed.element;
 
-    Object.defineProperty(element, "paused", { value: false, configurable: true });
-    Object.defineProperty(element, "seeking", { value: false, configurable: true });
+    Object.defineProperty(element, "paused", {
+      value: false,
+      configurable: true,
+    });
+    Object.defineProperty(element, "seeking", {
+      value: false,
+      configurable: true,
+    });
 
     let pauseCalled = false;
     element.pause = () => {
@@ -3806,7 +4036,10 @@ describe("PreviewMediaPool —: Missing Seeking Guard", () => {
     const managed = Array.from((pool as any).videoCache.values())[0] as any;
     const element = managed.element;
 
-    Object.defineProperty(element, "paused", { value: true, configurable: true });
+    Object.defineProperty(element, "paused", {
+      value: true,
+      configurable: true,
+    });
 
     let pauseCalled = false;
     element.pause = () => {
@@ -3910,8 +4143,14 @@ describe("PreviewMediaPool —: Dispose During Play Promise", () => {
     const element = managed.element;
 
     // Setup element to pass all guards by overriding getters
-    Object.defineProperty(element, "paused", { get: () => true, configurable: true });
-    Object.defineProperty(element, "readyState", { get: () => 4, configurable: true });
+    Object.defineProperty(element, "paused", {
+      get: () => true,
+      configurable: true,
+    });
+    Object.defineProperty(element, "readyState", {
+      get: () => 4,
+      configurable: true,
+    });
     managed.isActive = true; // Active
     managed.playPromiseInFlight = false; // No promise in flight
     managed.autoplayBlocked = false; // Not blocked
@@ -3926,7 +4165,13 @@ describe("PreviewMediaPool —: Dispose During Play Promise", () => {
     element.play = () => playPromise as any;
 
     // Trigger requestPlayback (which calls play())
-    (pool as any).requestPlayback(managed, clips[0], { time: 2.5, state: "playing", speed: 1.0, muted: false, volume: 100 }, tracks, true);
+    (pool as any).requestPlayback(
+      managed,
+      clips[0],
+      { time: 2.5, state: "playing", speed: 1.0, muted: false, volume: 100 },
+      tracks,
+      true,
+    );
 
     // Verify play promise is in flight
     expect(managed.playPromiseInFlight).toBe(true);
@@ -3961,8 +4206,14 @@ describe("PreviewMediaPool —: Dispose During Play Promise", () => {
     const element = managed.element;
 
     // Setup element to pass all guards by overriding getters
-    Object.defineProperty(element, "paused", { get: () => true, configurable: true });
-    Object.defineProperty(element, "readyState", { get: () => 4, configurable: true });
+    Object.defineProperty(element, "paused", {
+      get: () => true,
+      configurable: true,
+    });
+    Object.defineProperty(element, "readyState", {
+      get: () => 4,
+      configurable: true,
+    });
     managed.isActive = true; // Active
     managed.playPromiseInFlight = false; // No promise in flight
     managed.autoplayBlocked = false; // Not blocked
@@ -3976,7 +4227,13 @@ describe("PreviewMediaPool —: Dispose During Play Promise", () => {
     element.play = () => playPromise as any;
 
     // Trigger requestPlayback
-    (pool as any).requestPlayback(managed, clips[0], { time: 2.5, state: "playing", speed: 1.0, muted: false, volume: 100 }, tracks, true);
+    (pool as any).requestPlayback(
+      managed,
+      clips[0],
+      { time: 2.5, state: "playing", speed: 1.0, muted: false, volume: 100 },
+      tracks,
+      true,
+    );
 
     expect(managed.playPromiseInFlight).toBe(true);
 
@@ -4163,7 +4420,6 @@ describe("PreviewMediaPool —: RVFC Closure Memory Leak", () => {
     expect(() => pool.dispose()).not.toThrow();
   });
 
-
   it("should initialize rvfcGeneration to 0 on element creation", () => {
     const clips = [createMockClip("clip-1", "media-1", 0, 10)];
     const assets = [createMockAsset("media-1", "/path/to/video.mp4")];
@@ -4186,8 +4442,12 @@ describe("PreviewMediaPool —: RVFC Closure Memory Leak", () => {
 
   it("should prevent memory leak during project switch", () => {
     // Simulate project with multiple clips
-    const clips = Array.from({ length: 5 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2));
-    const assets = Array.from({ length: 5 }, (_, i) => createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`));
+    const clips = Array.from({ length: 5 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2),
+    );
+    const assets = Array.from({ length: 5 }, (_, i) =>
+      createMockAsset(`media-${i}`, `/path/to/video-${i}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Simulate playback with RVFC registration
@@ -4202,14 +4462,18 @@ describe("PreviewMediaPool —: RVFC Closure Memory Leak", () => {
 
     // Get all managed elements
     const managedElements = Array.from((pool as any).videoCache.values());
-    const generationsBeforeDispose = managedElements.map((m: any) => m.rvfcGeneration);
+    const generationsBeforeDispose = managedElements.map(
+      (m: any) => m.rvfcGeneration,
+    );
 
     // Dispose (like closing project)
     pool.dispose();
 
     // All generations should have incremented
     managedElements.forEach((managed: any, index: number) => {
-      expect(managed.rvfcGeneration).toBeGreaterThan(generationsBeforeDispose[index]);
+      expect(managed.rvfcGeneration).toBeGreaterThan(
+        generationsBeforeDispose[index],
+      );
     });
   });
 });
@@ -4308,7 +4572,10 @@ describe("PreviewMediaPool —: Frame-Rate-Aware Boundary Tolerance", () => {
     // In 24fps projects, 16ms tolerance was less than 1 frame (41.67ms)
     // causing black frames at split boundaries
 
-    const clips = [createMockClip("clip-1", "media-1", 0, 5, 0), createMockClip("clip-2", "media-1", 5, 5, 5)];
+    const clips = [
+      createMockClip("clip-1", "media-1", 0, 5, 0),
+      createMockClip("clip-2", "media-1", 5, 5, 5),
+    ];
     const assets = [createMockAsset("media-1", "/path/to/video.mp4")];
     const tracks = [{ id: "track-1", type: "video" }];
 
@@ -4343,8 +4610,12 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
   it("should use normal eviction age (60s) under memory soft limit", () => {
     // With 9 elements × 50MB = 450MB (under 500MB soft limit)
     // Should use normal 60s eviction age
-    const clips = Array.from({ length: 9 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 10, 10, i * 10));
-    const assets = clips.map((c) => createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`));
+    const clips = Array.from({ length: 9 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 10, 10, i * 10),
+    );
+    const assets = clips.map((c) =>
+      createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Create all elements
@@ -4377,8 +4648,12 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
   it("should use aggressive eviction (30s) over memory soft limit", () => {
     // With 11 elements × 50MB = 550MB (over 500MB soft limit, under 800MB hard)
     // Should reduce eviction age to 30s
-    const clips = Array.from({ length: 11 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 10, 10, i * 10));
-    const assets = clips.map((c) => createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`));
+    const clips = Array.from({ length: 11 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 10, 10, i * 10),
+    );
+    const assets = clips.map((c) =>
+      createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Create all elements
@@ -4419,8 +4694,12 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
   it("should use emergency eviction (10s) over memory hard limit", () => {
     // With 17 elements × 50MB = 850MB (over 800MB hard limit)
     // Should reduce eviction age to 10s and ignore timeline protection
-    const clips = Array.from({ length: 17 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 10, 10, i * 10));
-    const assets = clips.map((c) => createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`));
+    const clips = Array.from({ length: 17 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 10, 10, i * 10),
+    );
+    const assets = clips.map((c) =>
+      createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Create all elements
@@ -4461,8 +4740,12 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
 
   it("should prevent memory growth beyond 800MB in large projects", () => {
     // Simulate project with 50+ clips (common in real projects)
-    const clips = Array.from({ length: 50 }, (_, i) => createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2, i * 2));
-    const assets = clips.map((c) => createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`));
+    const clips = Array.from({ length: 50 }, (_, i) =>
+      createMockClip(`clip-${i}`, `media-${i}`, i * 2, 2, i * 2),
+    );
+    const assets = clips.map((c) =>
+      createMockAsset(c.mediaId, `/path/to/video${c.mediaId}.mp4`),
+    );
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Scrub through entire timeline (creates many elements)
@@ -4492,7 +4775,10 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
     // Left clip ends at 5.0. Right starts at 5.0.
     const leftClip = createMockClip("left-clip", "media-1", 0, 5, 0);
     const rightClip = createMockClip("right-clip", "media-2", 5, 5, 0);
-    const assets = [createMockAsset("media-1", "/path/to/video1.mp4"), createMockAsset("media-2", "/path/to/video2.mp4")];
+    const assets = [
+      createMockAsset("media-1", "/path/to/video1.mp4"),
+      createMockAsset("media-2", "/path/to/video2.mp4"),
+    ];
     const tracks = [{ id: "track-1", type: "video" }];
 
     // Trigger sync at time = 5.2.
@@ -4542,12 +4828,21 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
       expect(rightManaged).toBeDefined();
 
       // Configure readyState = 4 so requestPlayback proceeds
-      Object.defineProperty(leftManaged.element, "readyState", { get: () => 4, configurable: true });
-      Object.defineProperty(rightManaged.element, "readyState", { get: () => 4, configurable: true });
+      Object.defineProperty(leftManaged.element, "readyState", {
+        get: () => 4,
+        configurable: true,
+      });
+      Object.defineProperty(rightManaged.element, "readyState", {
+        get: () => 4,
+        configurable: true,
+      });
 
       // Mock paused property and play/pause methods on leftManaged.element
       let leftPaused = true;
-      Object.defineProperty(leftManaged.element, "paused", { get: () => leftPaused, configurable: true });
+      Object.defineProperty(leftManaged.element, "paused", {
+        get: () => leftPaused,
+        configurable: true,
+      });
       leftManaged.element.play = () => {
         leftPaused = false;
         return Promise.resolve();
@@ -4614,7 +4909,10 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
 
       // Simulate audio element reached 10.0s during forward playback
       managedAudio.element.currentTime = 10.0;
-      Object.defineProperty(managedAudio.element, "readyState", { get: () => 4, configurable: true });
+      Object.defineProperty(managedAudio.element, "readyState", {
+        get: () => 4,
+        configurable: true,
+      });
 
       // Step 2: Immediately seek backward to 2.0s while playing
       pool.sync([audioClip], assets, tracks, {
@@ -4668,7 +4966,10 @@ describe("PreviewMediaPool —: Memory-Aware Adaptive Eviction", () => {
       expect(managedAudio).toBeDefined();
 
       managedAudio.element.currentTime = 15.0;
-      Object.defineProperty(managedAudio.element, "readyState", { get: () => 4, configurable: true });
+      Object.defineProperty(managedAudio.element, "readyState", {
+        get: () => 4,
+        configurable: true,
+      });
 
       // Immediate seek backward while paused
       pool.sync([audioClip], assets, tracks, {

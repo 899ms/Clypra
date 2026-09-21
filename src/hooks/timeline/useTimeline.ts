@@ -4,10 +4,25 @@ import { useProjectStore } from "@/store/projectStore";
 import type { Clip, MediaAsset } from "@/types";
 import { createClipFromAsset } from "@/lib/timeline/timelineClip";
 import { autoAdaptSequenceForFirstVisualClip } from "@/lib/timeline/sequenceAutoAspect";
-import { DEFAULT_PLACEMENT_POLICY, resolveDefaultFitModeForAsset } from "@/lib/timeline/placementPolicy";
+import {
+  DEFAULT_PLACEMENT_POLICY,
+  resolveDefaultFitModeForAsset,
+} from "@/lib/timeline/placementPolicy";
 
 export const useTimeline = () => {
-  const { tracks, clips, zoomLevel, scrollLeft, pixelsPerSecond, addClip, removeClip, updateClip, moveClip, setZoom, setScrollLeft } = useTimelineStore();
+  const {
+    tracks,
+    clips,
+    zoomLevel,
+    scrollLeft,
+    pixelsPerSecond,
+    addClip,
+    removeClip,
+    updateClip,
+    moveClip,
+    setZoom,
+    setScrollLeft,
+  } = useTimelineStore();
   const { mediaAssets, project, updateProject } = useProjectStore();
 
   const addClipFromAsset = useCallback(
@@ -42,7 +57,7 @@ export const useTimeline = () => {
     [clips],
   );
 
-  // FIX: Wrap in useCallback to stabilize reference identity
+  // Wrap in useCallback to stabilize reference identity
   // Without this, Track components re-render on ANY mediaAssets change
   const getMediaAsset = useCallback(
     (mediaId: string) => {
@@ -68,6 +83,21 @@ export const useTimeline = () => {
       getClipsForTrack,
       getMediaAsset,
     }),
-    [tracks, clips, zoomLevel, scrollLeft, pixelsPerSecond, addClip, removeClip, updateClip, moveClip, setZoom, setScrollLeft, addClipFromAsset, getClipsForTrack, getMediaAsset],
+    [
+      tracks,
+      clips,
+      zoomLevel,
+      scrollLeft,
+      pixelsPerSecond,
+      addClip,
+      removeClip,
+      updateClip,
+      moveClip,
+      setZoom,
+      setScrollLeft,
+      addClipFromAsset,
+      getClipsForTrack,
+      getMediaAsset,
+    ],
   );
 };

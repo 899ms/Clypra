@@ -106,7 +106,7 @@ export function ClipFilmstripInner({
   stripHeightPx = 40,
   className,
 }: ClipFilmstripProps) {
-  // PERF: Read viewport scroll state only in ClipFilmstrip (not in parent Clip component)
+  // Read viewport scroll state only in ClipFilmstrip (not in parent Clip component)
   // This prevents all clips from re-rendering on scroll - only filmstrips re-render
   const viewportScrollLeft = useTimelineStore((s) => s.scrollLeft);
   const viewportWidth = useTimelineStore((s) => s.viewportWidth);

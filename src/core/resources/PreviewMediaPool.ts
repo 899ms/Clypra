@@ -35,7 +35,11 @@ import { isWebviewOrExternalUrl } from "@/lib/platform/pathConversion";
 import { resolveClipSourceTime } from "../timeline/sourceTime";
 import { resourceTracker } from "@/core/monitoring/ResourceTracker";
 import { useTimelineStore } from "../../store/timelineStore";
-import { PreviewPlaybackScheduler, type MediaAction, type MediaElementState } from "../playback/PreviewPlaybackScheduler";
+import {
+  PreviewPlaybackScheduler,
+  type MediaAction,
+  type MediaElementState,
+} from "../playback/PreviewPlaybackScheduler";
 import { VideoTextureManager } from "../render/VideoTextureManager";
 import { ALL_TRANSITIONS } from "@clypra-studio/engine";
 import { getClipAudioProperties } from "@/types/audio";
@@ -115,7 +119,10 @@ interface ManagedAudio {
  * Identifies the "primary" video clip — the one whose media clock should be
  * trusted for AV sync. Prefers the lowest video track, then the leftmost clip.
  */
-function findPrimaryVideoClip(videoClips: Clip[], tracks: Array<{ id: string; type: string }>): Clip | null {
+function findPrimaryVideoClip(
+  videoClips: Clip[],
+  tracks: Array<{ id: string; type: string }>,
+): Clip | null {
   if (videoClips.length === 0) return null;
   if (videoClips.length === 1) return videoClips[0];
 
@@ -150,7 +157,12 @@ function findPrimaryVideoClip(videoClips: Clip[], tracks: Array<{ id: string; ty
  * - 30fps: 1.5 frames = 50ms tolerance
  * - 60fps: 1.5 frames = 25ms tolerance
  */
-function getClipSourceTime(clip: Clip, clockTime: number, frameRate: number, transitions: TransitionTimelineItem[] = []): number | null {
+function getClipSourceTime(
+  clip: Clip,
+  clockTime: number,
+  frameRate: number,
+  transitions: TransitionTimelineItem[] = [],
+): number | null {
   const clipLocalTime = clockTime - clip.startTime;
 
   //  Frame-rate-aware boundary tolerance (1.5 frames)
@@ -164,7 +176,10 @@ function getClipSourceTime(clip: Clip, clockTime: number, frameRate: number, tra
   });
 
   if (!isInTransition) {
-    if (clipLocalTime < -BOUNDARY_TOLERANCE || clipLocalTime > clip.duration + BOUNDARY_TOLERANCE) {
+    if (
+      clipLocalTime < -BOUNDARY_TOLERANCE ||
+      clipLocalTime > clip.duration + BOUNDARY_TOLERANCE
+    ) {
       return null; // Clip not active
     }
   }
@@ -178,7 +193,10 @@ function getClipSourceTime(clip: Clip, clockTime: number, frameRate: number, tra
   return sourceTime;
 }
 
-function getClipPrewarmSourceTime(clip: Clip, clockTime: number): number | null {
+function getClipPrewarmSourceTime(
+  clip: Clip,
+  clockTime: number,
+): number | null {
   if (clockTime >= clip.startTime) return null;
   return Math.max(0, clip.trimIn || 0);
 }
@@ -198,19 +216,27 @@ export class PreviewMediaPool {
   // Format: cacheKey -> { clipIds: all known clipIds that map to this cache, timestamp: when removed }
   // + SPLIT FIX: Store ALL clipIds (original + splits) to prevent lookup mismatch
   // When a clip is split, both new clips share the same media/trim cache key but have different IDs
-  private recentlyRemovedClips = new Map<string, { clipIds: string[]; timestamp: number }>();
+  private recentlyRemovedClips = new Map<
+    string,
+    { clipIds: string[]; timestamp: number }
+  >();
   private readonly TRANSITION_GRACE_PERIOD_MS = 500; // Keep elements for 500ms after removal
 
   private audios = new Map<string, ManagedAudio>();
   private lastSyncState: PreviewSyncState | null = null;
-  private trackMap = new Map<string, { id: string; type: string; visible?: boolean; muted?: boolean }>();
+  private trackMap = new Map<
+    string,
+    { id: string; type: string; visible?: boolean; muted?: boolean }
+  >();
   private _isDisposed = false;
 
   // Playback controller state (separate from sync)
   private sessionAutoplayBlocked = false;
 
   /** Whether requestVideoFrameCallback is available */
-  private hasRVFC = typeof HTMLVideoElement !== "undefined" && "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+  private hasRVFC =
+    typeof HTMLVideoElement !== "undefined" &&
+    "requestVideoFrameCallback" in HTMLVideoElement.prototype;
 
   // ─── INSTRUMENTATION ────────────────────────────────────────────────────
   private syncCallCount = 0;
@@ -280,7 +306,11 @@ export class PreviewMediaPool {
   private scheduler: PreviewPlaybackScheduler;
   private textureManager: VideoTextureManager;
 
-  constructor(projectId?: string, sessionId?: string, options: PreviewMediaPoolOptions = {}) {
+  constructor(
+    projectId?: string,
+    sessionId?: string,
+    options: PreviewMediaPoolOptions = {},
+  ) {
     this._projectId = projectId ?? null;
     this._sessionId = sessionId ?? null;
     this.audioEnabled = options.audioEnabled ?? true;
@@ -292,7 +322,8 @@ export class PreviewMediaPool {
     this.container = document.createElement("div");
     // Position fixed and practically invisible, but NOT offscreen.
     // Browsers suspend decoding for completely offscreen or display:none elements.
-    this.container.style.cssText = "position:fixed;left:0;top:0;width:256px;height:256px;opacity:0.001;pointer-events:none;z-index:-9999;overflow:hidden;";
+    this.container.style.cssText =
+      "position:fixed;left:0;top:0;width:256px;height:256px;opacity:0.001;pointer-events:none;z-index:-9999;overflow:hidden;";
     document.body.appendChild(this.container);
 
     // ─── RESOURCE TRACKING: Track pool creation ────────────────────────────
@@ -323,7 +354,12 @@ export class PreviewMediaPool {
    * ARCHITECTURAL CHANGE: This method now only reconciles state.
    * It does NOT initiate playback. Playback is controlled separately.
    */
-  sync(clips: Clip[], assets: MediaAsset[], tracks: Array<{ id: string; type: string }>, syncState: PreviewSyncState): void {
+  sync(
+    clips: Clip[],
+    assets: MediaAsset[],
+    tracks: Array<{ id: string; type: string }>,
+    syncState: PreviewSyncState,
+  ): void {
     clips = expandCompoundClips(clips);
     if (this._isDisposed) {
       console.error(`[PreviewMediaPool] Pool is disposed!`);
@@ -345,7 +381,9 @@ export class PreviewMediaPool {
       // ───  Early exit optimization (fast path) ───────────────────
       // Skip expensive reconciliation if nothing meaningful changed
       // Round time to 0.1s precision to avoid rehashing every frame during playback
-      const clipIdsHash = clips.map((c) => `${c.id}:${c.startTime.toFixed(2)}:${c.trimIn.toFixed(2)}`).join(",");
+      const clipIdsHash = clips
+        .map((c) => `${c.id}:${c.startTime.toFixed(2)}:${c.trimIn.toFixed(2)}`)
+        .join(",");
       // BUG-1 fix: Use toFixed(3) (1ms precision) instead of toFixed(1) (100ms).
       // At 30fps one frame = 33ms; the old 100ms granularity caused sync() to return
       // early during rapid back-seeks within the same 100ms window, skipping corrective
@@ -357,17 +395,25 @@ export class PreviewMediaPool {
       // BUG-6 fix: Use the maintained _activeVideosAllSeeded flag instead of allocating a new
       // Array on every call. The flag is invalidated by seeked/loadeddata event handlers and
       // revalidated at the end of each full sync() pass.
-      if (hasVideoElements && quickHash === this._lastQuickHash && this._activeVideosAllSeeded) {
+      if (
+        hasVideoElements &&
+        quickHash === this._lastQuickHash &&
+        this._activeVideosAllSeeded
+      ) {
         // Still run prewarming during playback even when skipping reconciliation
         if (syncState.state === "playing") {
-          this.prewarmUpcomingClips(clips, assets, syncState.time, syncState.frameRate);
+          this.prewarmUpcomingClips(
+            clips,
+            assets,
+            syncState.time,
+            syncState.frameRate,
+          );
         }
 
         return;
       }
       this._lastQuickHash = quickHash;
       // ─────────────────────────────────────────────────────────────────────────
-
 
       // ─── INSTRUMENTATION: Track sync frequency and structural changes ────────
       this.syncCallCount++;
@@ -380,7 +426,10 @@ export class PreviewMediaPool {
       this.trackMap = new Map(tracks.map((track) => [track.id, track]));
 
       // NEW ARCHITECTURE: Build desired state without immediate disposal
-      const desiredVideoBindings = new Map<string, { cacheKey: string; clip: Clip; asset: MediaAsset; isActive: boolean }>();
+      const desiredVideoBindings = new Map<
+        string,
+        { cacheKey: string; clip: Clip; asset: MediaAsset; isActive: boolean }
+      >();
       const desiredAudioKeys = new Set<string>();
 
       // CRITICAL: Detect if this is a full sync (structural change) or partial sync (active window only)
@@ -425,14 +474,26 @@ export class PreviewMediaPool {
         if (track?.visible === false) continue;
 
         if (asset?.type === "video" && clip.kind !== "audio") {
-          const sourcePath = isWebviewOrExternalUrl(asset.path) ? asset.path : convertFileSrc(asset.path);
+          const sourcePath = isWebviewOrExternalUrl(asset.path)
+            ? asset.path
+            : convertFileSrc(asset.path);
 
           const cacheKey = clip.id;
 
-          const sourceTime = getClipSourceTime(clip, syncState.time, syncState.frameRate, activeTransitions);
+          const sourceTime = getClipSourceTime(
+            clip,
+            syncState.time,
+            syncState.frameRate,
+            activeTransitions,
+          );
           const isActive = sourceTime !== null; // Is clip in active playback window?
 
-          desiredVideoBindings.set(clip.id, { cacheKey, clip, asset, isActive });
+          desiredVideoBindings.set(clip.id, {
+            cacheKey,
+            clip,
+            asset,
+            isActive,
+          });
 
           // CRITICAL: Add/update this clip in timeline registry (accumulate during playback)
           this.timelineClipRegistry.set(clip.id, cacheKey);
@@ -449,7 +510,10 @@ export class PreviewMediaPool {
           // Keep its key in the desired set so it is not disposed and recreated
           // on every sync tick.
           if (this.audioEnabled) desiredAudioKeys.add(clip.id);
-        } else if (asset?.type === "audio" || (clip.kind === "audio" && (clip as any).audioPath)) {
+        } else if (
+          asset?.type === "audio" ||
+          (clip.kind === "audio" && (clip as any).audioPath)
+        ) {
           const key = clip.id;
           if (this.audioEnabled) desiredAudioKeys.add(key);
         }
@@ -465,18 +529,29 @@ export class PreviewMediaPool {
       // Update active clip bindings and mark inactive elements
       const newActiveBindings = new Map<string, string>();
 
-      for (const [clipId, { cacheKey, clip, asset, isActive }] of desiredVideoBindings) {
+      for (const [
+        clipId,
+        { cacheKey, clip, asset, isActive },
+      ] of desiredVideoBindings) {
         newActiveBindings.set(clipId, cacheKey);
 
         // Get or create cached element
         let managed = this.videoCache.get(cacheKey);
         if (!managed) {
           const effectivePath = asset.previewPath || asset.path;
-          const sourcePath = isWebviewOrExternalUrl(effectivePath) ? effectivePath : convertFileSrc(effectivePath);
-          managed = this.createVideo(cacheKey, clip.id, clip.mediaId, sourcePath);
+          const sourcePath = isWebviewOrExternalUrl(effectivePath)
+            ? effectivePath
+            : convertFileSrc(effectivePath);
+          managed = this.createVideo(
+            cacheKey,
+            clip.id,
+            clip.mediaId,
+            sourcePath,
+          );
         } else {
           // Element exists - update its binding
-          const wasBoundToDifferentClip = managed.clipId !== clip.id || managed.mediaId !== clip.mediaId;
+          const wasBoundToDifferentClip =
+            managed.clipId !== clip.id || managed.mediaId !== clip.mediaId;
 
           if (wasBoundToDifferentClip) {
             // BUG-2B fix: Update the secondary index when an element is rebound to a new clip ID.
@@ -514,15 +589,34 @@ export class PreviewMediaPool {
             if (!a || a.type !== "video") return false;
             const t = this.trackMap.get(c.trackId);
             if (t?.visible === false) return false;
-            return getClipSourceTime(c, syncState.time, syncState.frameRate, activeTransitions) !== null;
+            return (
+              getClipSourceTime(
+                c,
+                syncState.time,
+                syncState.frameRate,
+                activeTransitions,
+              ) !== null
+            );
           });
-          const primaryVideoClip = findPrimaryVideoClip(activeVisibleVideoClips, tracks);
+          const primaryVideoClip = findPrimaryVideoClip(
+            activeVisibleVideoClips,
+            tracks,
+          );
           const isPrimaryAudibleVideo = primaryVideoClip?.id === clip.id;
 
           //  Pass active video clip count for multi-clip audio-friendly sync
           const activeVideoClipCount = activeVisibleVideoClips.length;
 
-          this.updateVideoElement(managed, clip, syncState, tracks, isPrimaryAudibleVideo, isTrackMuted, activeVideoClipCount, activeTransitions);
+          this.updateVideoElement(
+            managed,
+            clip,
+            syncState,
+            tracks,
+            isPrimaryAudibleVideo,
+            isTrackMuted,
+            activeVideoClipCount,
+            activeTransitions,
+          );
         } else {
           // Inactive element: pause but don't dispose
           // CRITICAL: Also update audio routing so element is ready when it becomes active
@@ -557,7 +651,12 @@ export class PreviewMediaPool {
 
         // If element is in timeline but NOT currently active, pause it
         //  Don't pause if element is currently seeking - can corrupt state
-        if (isInTimeline && !isActive && !managed.element.paused && !managed.element.seeking) {
+        if (
+          isInTimeline &&
+          !isActive &&
+          !managed.element.paused &&
+          !managed.element.seeking
+        ) {
           managed.element.pause();
           if (managed.rvfcHandle !== null && this.hasRVFC) {
             try {
@@ -580,7 +679,10 @@ export class PreviewMediaPool {
         const isInTimeline = timelineCacheKeys.has(cacheKey);
         const recentRemoval = this.recentlyRemovedClips.get(cacheKey);
         const isRecentlyRemoved = recentRemoval !== undefined;
-        const isInTransitionGrace = isRecentlyRemoved && recentRemoval && now - recentRemoval.timestamp < this.TRANSITION_GRACE_PERIOD_MS;
+        const isInTransitionGrace =
+          isRecentlyRemoved &&
+          recentRemoval &&
+          now - recentRemoval.timestamp < this.TRANSITION_GRACE_PERIOD_MS;
 
         // Elements in grace period must respect playback state
         // If user pauses, grace-period elements must also pause (prevents audio bleed)
@@ -592,7 +694,13 @@ export class PreviewMediaPool {
 
         // Elements in grace period during PLAYING must also be paused if not active
         // This prevents audio bleed when seeking backwards during playback
-        if (isInTransitionGrace && syncState.state === "playing" && !isActive && !managed.element.paused && !managed.element.seeking) {
+        if (
+          isInTransitionGrace &&
+          syncState.state === "playing" &&
+          !isActive &&
+          !managed.element.paused &&
+          !managed.element.seeking
+        ) {
           managed.element.pause();
         }
 
@@ -620,7 +728,9 @@ export class PreviewMediaPool {
       }
 
       // Clean up expired recently removed entries (older than grace period)
-      for (const [cacheKey, removal] of Array.from(this.recentlyRemovedClips.entries())) {
+      for (const [cacheKey, removal] of Array.from(
+        this.recentlyRemovedClips.entries(),
+      )) {
         if (now - removal.timestamp > this.TRANSITION_GRACE_PERIOD_MS) {
           this.recentlyRemovedClips.delete(cacheKey);
         }
@@ -631,50 +741,91 @@ export class PreviewMediaPool {
 
       // Create or update legacy HTML audio elements only in browser preview.
       // Native Tauri audio is loaded/mixed by the CPAL timeline authority.
-      if (this.audioEnabled) for (const clip of clips) {
-        const asset = assets.find((a) => a.id === clip.mediaId);
-        const directAudioPath = (clip as any).audioPath as string | undefined;
-        const hasAudio = asset?.type === "audio" || asset?.type === "video" || clip.kind === "audio" || clip.kind === "video" || !!directAudioPath;
-        if (!hasAudio) continue;
-        const track = this.trackMap.get(clip.trackId);
-        if (track?.visible === false) continue;
+      if (this.audioEnabled)
+        for (const clip of clips) {
+          const asset = assets.find((a) => a.id === clip.mediaId);
+          const directAudioPath = (clip as any).audioPath as string | undefined;
+          const hasAudio =
+            asset?.type === "audio" ||
+            asset?.type === "video" ||
+            clip.kind === "audio" ||
+            clip.kind === "video" ||
+            !!directAudioPath;
+          if (!hasAudio) continue;
+          const track = this.trackMap.get(clip.trackId);
+          if (track?.visible === false) continue;
 
-        const rawPath = directAudioPath || asset?.path || (clip as any).path;
-        if (!rawPath) continue;
-        const sourcePath = isWebviewOrExternalUrl(rawPath) ? rawPath : convertFileSrc(rawPath);
-        const key = clip.id;
+          const rawPath = directAudioPath || asset?.path || (clip as any).path;
+          if (!rawPath) continue;
+          const sourcePath = isWebviewOrExternalUrl(rawPath)
+            ? rawPath
+            : convertFileSrc(rawPath);
+          const key = clip.id;
 
-        let managed = this.audios.get(key);
-        if (!managed) {
-          managed = this.createAudio(key, clip.id, clip.mediaId, sourcePath);
-        } else if (managed.sourcePath !== sourcePath) {
-          this.disposeAudio(key, managed);
-          managed = this.createAudio(key, clip.id, clip.mediaId, sourcePath);
+          let managed = this.audios.get(key);
+          if (!managed) {
+            managed = this.createAudio(key, clip.id, clip.mediaId, sourcePath);
+          } else if (managed.sourcePath !== sourcePath) {
+            this.disposeAudio(key, managed);
+            managed = this.createAudio(key, clip.id, clip.mediaId, sourcePath);
+          }
+
+          if (managed) {
+            const isTrackMuted = track?.muted === true;
+            this.updateAudioElement(
+              managed,
+              clip,
+              syncState,
+              isTrackMuted,
+              activeTransitions,
+              fullTracks,
+            );
+          }
         }
-
-        if (managed) {
-          const isTrackMuted = track?.muted === true;
-          this.updateAudioElement(managed, clip, syncState, isTrackMuted, activeTransitions, fullTracks);
-        }
-      }
 
       this.lastSyncState = { ...syncState };
 
       // Lookahead prewarming: Initialize upcoming clips before they become active
       if (syncState.state === "playing") {
-        this.prewarmUpcomingClips(clips, assets, syncState.time, syncState.frameRate);
+        this.prewarmUpcomingClips(
+          clips,
+          assets,
+          syncState.time,
+          syncState.frameRate,
+        );
       }
 
       // ─── SCHEDULER INTEGRATION ────────────────────────────────────────────────
       // Build media states from current video elements
       const schedulerStart = performance.now();
-      const mediaStates = this.buildMediaStates(clips, syncState, tracks, assets, activeTransitions);
+      const mediaStates = this.buildMediaStates(
+        clips,
+        syncState,
+        tracks,
+        assets,
+        activeTransitions,
+      );
 
       // Get actions from scheduler
-      const actions = this.scheduler.reconcile(syncState, mediaStates, clips, assets, Array.from(desiredVideoBindings.values()).filter((v) => v.isActive).length, activeTransitions);
+      const actions = this.scheduler.reconcile(
+        syncState,
+        mediaStates,
+        clips,
+        assets,
+        Array.from(desiredVideoBindings.values()).filter((v) => v.isActive)
+          .length,
+        activeTransitions,
+      );
 
       // Execute actions
-      this.executeSchedulerActions(actions, syncState, clips, tracks, assets, activeTransitions);
+      this.executeSchedulerActions(
+        actions,
+        syncState,
+        clips,
+        tracks,
+        assets,
+        activeTransitions,
+      );
       const schedulerMs = performance.now() - schedulerStart;
 
       // ─── END OF SCHEDULER LOGIC ──────────────────────────────────────────────
@@ -685,11 +836,13 @@ export class PreviewMediaPool {
       this._activeVideosAllSeeded = Array.from(this.videoCache.values()).every(
         (m) =>
           !m.isActive ||
-          (m.hasBeenSeeked && m.element.readyState >= 2 && m.element.videoWidth > 0 && m.element.videoHeight > 0),
+          (m.hasBeenSeeked &&
+            m.element.readyState >= 2 &&
+            m.element.videoWidth > 0 &&
+            m.element.videoHeight > 0),
       );
 
       // ─── END OF ORIGINAL SYNC LOGIC ──────────────────────────────────────────
-
     } finally {
       // Always clear the in-progress flag, even if sync() threw an error
       this._syncInProgress = false;
@@ -713,7 +866,12 @@ export class PreviewMediaPool {
    * Prewarm upcoming clips within lookahead window during playback.
    * Creates and initializes video elements before clips become active to prevent blank frames.
    */
-  private prewarmUpcomingClips(clips: Clip[], assets: MediaAsset[], currentTime: number, frameRate: number): void {
+  private prewarmUpcomingClips(
+    clips: Clip[],
+    assets: MediaAsset[],
+    currentTime: number,
+    frameRate: number,
+  ): void {
     const lookaheadTime = currentTime + this.LOOKAHEAD_WINDOW_SECONDS;
 
     for (const clip of clips) {
@@ -730,14 +888,22 @@ export class PreviewMediaPool {
       const trimIn = clip.trimIn || 0;
       const normalizedTrimIn = Math.round(trimIn * 1000) / 1000;
       const effectivePath = asset.previewPath || asset.path;
-      const sourcePath = isWebviewOrExternalUrl(effectivePath) ? effectivePath : convertFileSrc(effectivePath);
+      const sourcePath = isWebviewOrExternalUrl(effectivePath)
+        ? effectivePath
+        : convertFileSrc(effectivePath);
       const cacheKey = clip.id;
 
       if (this.videoCache.has(cacheKey)) {
         continue;
       }
 
-      this.prewarmVideoElement(cacheKey, clip.id, clip.mediaId, sourcePath, normalizedTrimIn);
+      this.prewarmVideoElement(
+        cacheKey,
+        clip.id,
+        clip.mediaId,
+        sourcePath,
+        normalizedTrimIn,
+      );
     }
   }
 
@@ -745,7 +911,13 @@ export class PreviewMediaPool {
    * Create and prewarm a video element without blocking.
    * Element will load metadata and seek to trimIn position in the background.
    */
-  private prewarmVideoElement(cacheKey: string, clipId: string, mediaId: string, sourcePath: string, trimIn: number): void {
+  private prewarmVideoElement(
+    cacheKey: string,
+    clipId: string,
+    mediaId: string,
+    sourcePath: string,
+    trimIn: number,
+  ): void {
     const managed = this.createVideo(cacheKey, clipId, mediaId, sourcePath);
 
     const element = managed.element;
@@ -861,7 +1033,13 @@ export class PreviewMediaPool {
    * CRITICAL: Include ALL timeline clips (not just active ones) so scheduler
    * can make decisions about prewarming, pausing inactive clips, etc.
    */
-  private buildMediaStates(clips: Clip[], syncState: PreviewSyncState, tracks: Array<{ id: string; type: string }>, assets: MediaAsset[], activeTransitions: TransitionTimelineItem[]): Map<string, MediaElementState> {
+  private buildMediaStates(
+    clips: Clip[],
+    syncState: PreviewSyncState,
+    tracks: Array<{ id: string; type: string }>,
+    assets: MediaAsset[],
+    activeTransitions: TransitionTimelineItem[],
+  ): Map<string, MediaElementState> {
     const states = new Map<string, MediaElementState>();
 
     // Find primary video for audio routing
@@ -870,9 +1048,19 @@ export class PreviewMediaPool {
       if (!a || a.type !== "video") return false;
       const t = this.trackMap.get(c.trackId);
       if (t?.visible === false) return false;
-      return getClipSourceTime(c, syncState.time, syncState.frameRate, activeTransitions) !== null;
+      return (
+        getClipSourceTime(
+          c,
+          syncState.time,
+          syncState.frameRate,
+          activeTransitions,
+        ) !== null
+      );
     });
-    const primaryVideoClip = findPrimaryVideoClip(activeVisibleVideoClips, tracks);
+    const primaryVideoClip = findPrimaryVideoClip(
+      activeVisibleVideoClips,
+      tracks,
+    );
 
     // Include ALL timeline clips, not just active ones
     // The scheduler needs to see inactive clips to generate prewarm/pause actions
@@ -905,7 +1093,14 @@ export class PreviewMediaPool {
 
       const audio = managed.element;
       const clip = clips.find((c) => c.id === clipId);
-      const sourceTime = clip ? getClipSourceTime(clip, syncState.time, syncState.frameRate, activeTransitions) : null;
+      const sourceTime = clip
+        ? getClipSourceTime(
+            clip,
+            syncState.time,
+            syncState.frameRate,
+            activeTransitions,
+          )
+        : null;
       const isActive = sourceTime !== null;
 
       states.set(clipId, {
@@ -932,7 +1127,14 @@ export class PreviewMediaPool {
   /**
    * Execute actions from scheduler.
    */
-  private executeSchedulerActions(actions: MediaAction[], syncState: PreviewSyncState, clips: Clip[], tracks: Array<{ id: string; type: string }>, assets: MediaAsset[], activeTransitions: TransitionTimelineItem[]): void {
+  private executeSchedulerActions(
+    actions: MediaAction[],
+    syncState: PreviewSyncState,
+    clips: Clip[],
+    tracks: Array<{ id: string; type: string }>,
+    assets: MediaAsset[],
+    activeTransitions: TransitionTimelineItem[],
+  ): void {
     for (const action of actions) {
       const managedVideo = this.findManagedVideoByClipId(action.clipId);
       const managedAudio = this.audios.get(action.clipId);
@@ -944,7 +1146,10 @@ export class PreviewMediaPool {
           if (action.time !== undefined) {
             if (managedVideo && managedVideo.element.readyState >= 1) {
               const video = managedVideo.element;
-              const clampedTime = Number.isFinite(video.duration) && video.duration > 0 ? Math.max(0, Math.min(action.time, video.duration - 0.001)) : action.time;
+              const clampedTime =
+                Number.isFinite(video.duration) && video.duration > 0
+                  ? Math.max(0, Math.min(action.time, video.duration - 0.001))
+                  : action.time;
 
               video.currentTime = clampedTime;
               managedVideo.lastHardSeekAtMs = performance.now();
@@ -960,11 +1165,18 @@ export class PreviewMediaPool {
 
             if (managedAudio && managedAudio.element.readyState >= 1) {
               const audio = managedAudio.element;
-              const clampedTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.max(0, Math.min(action.time, audio.duration - 0.001)) : action.time;
+              const clampedTime =
+                Number.isFinite(audio.duration) && audio.duration > 0
+                  ? Math.max(0, Math.min(action.time, audio.duration - 0.001))
+                  : action.time;
 
               const drift = Math.abs(audio.currentTime - clampedTime);
               const isPlaying = !audio.paused && syncState.state === "playing";
-              const isExplicitSeek = action.reason === "transport-jump" || action.reason === "scrubbing" || action.reason === "post-throttling" || action.reason === "clip-enter";
+              const isExplicitSeek =
+                action.reason === "transport-jump" ||
+                action.reason === "scrubbing" ||
+                action.reason === "post-throttling" ||
+                action.reason === "clip-enter";
 
               if (!isPlaying || isExplicitSeek || drift > 1.0) {
                 audio.currentTime = clampedTime;
@@ -986,13 +1198,29 @@ export class PreviewMediaPool {
               if (!a || a.type !== "video") return false;
               const t = this.trackMap.get(c.trackId);
               if (t?.visible === false) return false;
-              return getClipSourceTime(c, syncState.time, syncState.frameRate, activeTransitions) !== null;
+              return (
+                getClipSourceTime(
+                  c,
+                  syncState.time,
+                  syncState.frameRate,
+                  activeTransitions,
+                ) !== null
+              );
             });
-            const primaryVideoClip = findPrimaryVideoClip(activeVisibleVideoClips, tracks);
+            const primaryVideoClip = findPrimaryVideoClip(
+              activeVisibleVideoClips,
+              tracks,
+            );
             const isPrimaryAudibleVideo = primaryVideoClip?.id === clip.id;
 
             if (managedVideo) {
-              this.requestPlayback(managedVideo, clip, syncState, tracks, isPrimaryAudibleVideo);
+              this.requestPlayback(
+                managedVideo,
+                clip,
+                syncState,
+                tracks,
+                isPrimaryAudibleVideo,
+              );
             }
             if (managedAudio) {
               this.requestAudioPlayback(managedAudio, syncState);
@@ -1025,10 +1253,16 @@ export class PreviewMediaPool {
 
         case "setRate":
           if (action.rate !== undefined) {
-            if (managedVideo && Math.abs(managedVideo.element.playbackRate - action.rate) > 0.01) {
+            if (
+              managedVideo &&
+              Math.abs(managedVideo.element.playbackRate - action.rate) > 0.01
+            ) {
               managedVideo.element.playbackRate = action.rate;
             }
-            if (managedAudio && Math.abs(managedAudio.element.playbackRate - action.rate) > 0.01) {
+            if (
+              managedAudio &&
+              Math.abs(managedAudio.element.playbackRate - action.rate) > 0.01
+            ) {
               managedAudio.element.playbackRate = action.rate;
             }
           }
@@ -1144,10 +1378,15 @@ export class PreviewMediaPool {
     if (!this.audioEnabled) return;
     //  Check if we're in an active user gesture context
     // This is more reliable than timestamp-based checking
-    const hasUserActivation = typeof navigator !== "undefined" && navigator.userActivation && navigator.userActivation.isActive;
+    const hasUserActivation =
+      typeof navigator !== "undefined" &&
+      navigator.userActivation &&
+      navigator.userActivation.isActive;
 
     if (!hasUserActivation) {
-      console.warn("[PreviewMediaPool] unlockAudio() called without active user gesture - autoplay unlock may fail");
+      console.warn(
+        "[PreviewMediaPool] unlockAudio() called without active user gesture - autoplay unlock may fail",
+      );
     }
 
     this.sessionAutoplayBlocked = false;
@@ -1200,7 +1439,12 @@ export class PreviewMediaPool {
 
   // ─── Private: Video lifecycle ─────────────────────────────────────────────
 
-  private createVideo(key: string, clipId: string, mediaId: string, sourcePath: string): ManagedVideo {
+  private createVideo(
+    key: string,
+    clipId: string,
+    mediaId: string,
+    sourcePath: string,
+  ): ManagedVideo {
     const video = document.createElement("video");
     video.preload = "auto";
     video.crossOrigin = "anonymous";
@@ -1208,7 +1452,8 @@ export class PreviewMediaPool {
     video.playsInline = true;
     // Browsers aggressively throttle decoding for tiny videos. Use a larger size (256x256)
     // to ensure the hardware decoder remains active.
-    video.style.cssText = "width:256px;height:256px;position:absolute;left:0;top:0;";
+    video.style.cssText =
+      "width:256px;height:256px;position:absolute;left:0;top:0;";
 
     // ─── RESOURCE TRACKING: Track video element creation ──────────────────
     if (this._projectId && this._sessionId) {
@@ -1260,10 +1505,16 @@ export class PreviewMediaPool {
         import("../../store/timelineStore")
           .then(({ useTimelineStore }) => {
             const timelineStore = useTimelineStore.getState();
-            const existingClip = timelineStore.clips.find((c) => c.id === clipId);
+            const existingClip = timelineStore.clips.find(
+              (c) => c.id === clipId,
+            );
             if (existingClip) {
               const currentConform = existingClip.conform;
-              if (!currentConform || !currentConform.sourceWidth || !currentConform.sourceHeight) {
+              if (
+                !currentConform ||
+                !currentConform.sourceWidth ||
+                !currentConform.sourceHeight
+              ) {
                 timelineStore.updateClip(clipId, {
                   conform: {
                     mode: currentConform?.mode || "fit",
@@ -1278,7 +1529,10 @@ export class PreviewMediaPool {
             }
           })
           .catch((err) => {
-            console.error("[PreviewMediaPool] Failed to update clip conform:", err);
+            console.error(
+              "[PreviewMediaPool] Failed to update clip conform:",
+              err,
+            );
           });
       }
     };
@@ -1321,7 +1575,11 @@ export class PreviewMediaPool {
         if (managed.disposing || !video.currentSrc) {
           return;
         }
-        console.error(`❌ [PreviewMediaPool] Video load error: ${key}`, video.error, e);
+        console.error(
+          `❌ [PreviewMediaPool] Video load error: ${key}`,
+          video.error,
+          e,
+        );
       },
       { once: true },
     );
@@ -1354,8 +1612,6 @@ export class PreviewMediaPool {
 
     // Attach to texture manager for frame-driven texture updates
     this.textureManager.attachVideo(clipId, video);
-
-
 
     return managed;
   }
@@ -1399,8 +1655,6 @@ export class PreviewMediaPool {
     // Detach from texture manager
     this.textureManager.detachVideo(managed.clipId, managed.element);
 
-
-
     managed.element.pause();
     managed.element.src = "";
     managed.element.load(); // Force decoder release
@@ -1425,9 +1679,23 @@ export class PreviewMediaPool {
     this._activeVideosAllSeeded = false;
   }
 
-  private updateVideoElement(managed: ManagedVideo, clip: Clip, syncState: PreviewSyncState, tracks: Array<{ id: string; type: string }>, isPrimaryAudibleVideo: boolean, isTrackMuted: boolean, activeVideoClipCount: number = 1, transitions: any[] = []): void {
+  private updateVideoElement(
+    managed: ManagedVideo,
+    clip: Clip,
+    syncState: PreviewSyncState,
+    tracks: Array<{ id: string; type: string }>,
+    isPrimaryAudibleVideo: boolean,
+    isTrackMuted: boolean,
+    activeVideoClipCount: number = 1,
+    transitions: any[] = [],
+  ): void {
     const video = managed.element;
-    const sourceTime = getClipSourceTime(clip, syncState.time, syncState.frameRate, transitions);
+    const sourceTime = getClipSourceTime(
+      clip,
+      syncState.time,
+      syncState.frameRate,
+      transitions,
+    );
 
     // Video elements are frame-only. ManagedAudio owns audible playback so the
     // browser never outputs both the video element and the paired audio element.
@@ -1470,7 +1738,10 @@ export class PreviewMediaPool {
     if (managed.disposing || !video.paused || video.readyState < 1) return;
 
     const playResult = video.play();
-    if (!playResult || typeof (playResult as Promise<void>).then !== "function") {
+    if (
+      !playResult ||
+      typeof (playResult as Promise<void>).then !== "function"
+    ) {
       video.pause();
       return;
     }
@@ -1493,7 +1764,9 @@ export class PreviewMediaPool {
    */
   isVideoFrameReady(clipId: string, video: HTMLVideoElement): boolean {
     const managed = this.findManagedVideoByClipId(clipId);
-    return Boolean(managed && managed.element === video && managed.hasDecodedFrame);
+    return Boolean(
+      managed && managed.element === video && managed.hasDecodedFrame,
+    );
   }
 
   // ─── NEW: Playback Controller (Separated from sync) ────────────────────
@@ -1502,7 +1775,13 @@ export class PreviewMediaPool {
    * Request playback for an element (separated from sync logic).
    * Implements proper state machine with guards and latch.
    */
-  private requestPlayback(managed: ManagedVideo, clip: Clip, syncState: PreviewSyncState, tracks: Array<{ id: string; type: string }>, isPrimaryAudibleVideo: boolean): void {
+  private requestPlayback(
+    managed: ManagedVideo,
+    clip: Clip,
+    syncState: PreviewSyncState,
+    tracks: Array<{ id: string; type: string }>,
+    isPrimaryAudibleVideo: boolean,
+  ): void {
     const video = managed.element;
 
     // Guard 1: Already playing → no-op
@@ -1528,7 +1807,10 @@ export class PreviewMediaPool {
     if (managed.autoplayBlocked) {
       //  Check for active user gesture context instead of time window
       // This is more reliable and handles cases where user waits >1s after unlocking
-      const hasUserActivation = typeof navigator !== "undefined" && navigator.userActivation && navigator.userActivation.isActive;
+      const hasUserActivation =
+        typeof navigator !== "undefined" &&
+        navigator.userActivation &&
+        navigator.userActivation.isActive;
 
       if (hasUserActivation) {
         // We're in a user gesture context, safe to clear block and attempt play
@@ -1559,7 +1841,7 @@ export class PreviewMediaPool {
     managed.playAttempts++;
     managed.lastPlayAttemptMs = now;
     managed.playPromiseInFlight = true;
-    // FIX: Clear cancel flag when starting new play attempt
+    // Clear cancel flag when starting new play attempt
     managed.playCancelRequested = false;
 
     const elementAge = now - managed.createdAt;
@@ -1575,7 +1857,7 @@ export class PreviewMediaPool {
             return; // Element disposed, ignore promise resolution
           }
 
-          // FIX: Check if play was cancelled while promise was pending
+          // Check if play was cancelled while promise was pending
           if (managed.playCancelRequested) {
             managed.playCancelRequested = false;
             return; // Don't update state
@@ -1613,12 +1895,15 @@ export class PreviewMediaPool {
               managed.autoplayBlocked = true;
               this.sessionAutoplayBlocked = true;
 
-              console.error(`[PreviewMediaPool] play() BLOCKED (NotAllowedError) - latched until user gesture:`, {
-                clipId: managed.clipId,
-                elementAge: `${elementAge.toFixed(0)}ms`,
-                attemptNumber: managed.playAttempts,
-                totalAttempts: this.getTotalPlayAttempts(),
-              });
+              console.error(
+                `[PreviewMediaPool] play() BLOCKED (NotAllowedError) - latched until user gesture:`,
+                {
+                  clipId: managed.clipId,
+                  elementAge: `${elementAge.toFixed(0)}ms`,
+                  attemptNumber: managed.playAttempts,
+                  totalAttempts: this.getTotalPlayAttempts(),
+                },
+              );
             }
 
             this.logPlayAttempt({
@@ -1655,7 +1940,11 @@ export class PreviewMediaPool {
    * - Hard limit (800MB): Reduce to 10s, ignore timeline protection
    * Prevents browser crashes on 50+ clip projects during scrubbing.
    */
-  private evictUnusedElements(clips: Clip[], assets: MediaAsset[], syncState: PreviewSyncState): void {
+  private evictUnusedElements(
+    clips: Clip[],
+    assets: MediaAsset[],
+    syncState: PreviewSyncState,
+  ): void {
     const now = performance.now();
     const toEvict: string[] = [];
 
@@ -1667,7 +1956,10 @@ export class PreviewMediaPool {
     if (syncState.state === "playing") {
       const lookaheadTime = syncState.time + this.LOOKAHEAD_WINDOW_SECONDS;
       for (const clip of clips) {
-        if (clip.startTime <= syncState.time || clip.startTime > lookaheadTime) {
+        if (
+          clip.startTime <= syncState.time ||
+          clip.startTime > lookaheadTime
+        ) {
           continue;
         }
         const asset = assets.find((a) => a.id === clip.mediaId);
@@ -1686,7 +1978,8 @@ export class PreviewMediaPool {
     };
 
     //  Estimate current memory usage and adjust eviction aggressiveness
-    const estimatedMemoryMB = this.videoCache.size * this.ESTIMATED_MB_PER_VIDEO;
+    const estimatedMemoryMB =
+      this.videoCache.size * this.ESTIMATED_MB_PER_VIDEO;
     const isOverSoftLimit = estimatedMemoryMB > this.MEMORY_SOFT_LIMIT_MB;
     const isOverHardLimit = estimatedMemoryMB > this.MEMORY_HARD_LIMIT_MB;
 
@@ -1717,10 +2010,14 @@ export class PreviewMediaPool {
     if (this.videoCache.size - toEvict.length > this.MAX_CACHED_VIDEOS) {
       // Only consider unprotected, unlocked elements for eviction
       const unprotectedElements = Array.from(this.videoCache.entries())
-        .filter(([key, managed]) => !protectedCacheKeys.has(key) && !isLockedForRender(managed))
+        .filter(
+          ([key, managed]) =>
+            !protectedCacheKeys.has(key) && !isLockedForRender(managed),
+        )
         .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
 
-      const excess = this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
+      const excess =
+        this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
       for (let i = 0; i < Math.min(excess, unprotectedElements.length); i++) {
         const key = unprotectedElements[i][0];
         if (!toEvict.includes(key)) {
@@ -1733,11 +2030,22 @@ export class PreviewMediaPool {
     // This enforces the hard MAX limit even when all elements are in timeline
     if (this.videoCache.size - toEvict.length > this.MAX_CACHED_VIDEOS) {
       const protectedInactiveElements = Array.from(this.videoCache.entries())
-        .filter(([key, managed]) => protectedCacheKeys.has(key) && !managed.isActive && !upcomingCacheKeys.has(key) && !isLockedForRender(managed))
+        .filter(
+          ([key, managed]) =>
+            protectedCacheKeys.has(key) &&
+            !managed.isActive &&
+            !upcomingCacheKeys.has(key) &&
+            !isLockedForRender(managed),
+        )
         .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
 
-      const remaining = this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
-      for (let i = 0; i < Math.min(remaining, protectedInactiveElements.length); i++) {
+      const remaining =
+        this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
+      for (
+        let i = 0;
+        i < Math.min(remaining, protectedInactiveElements.length);
+        i++
+      ) {
         const key = protectedInactiveElements[i][0];
         if (!toEvict.includes(key)) {
           toEvict.push(key);
@@ -1749,11 +2057,22 @@ export class PreviewMediaPool {
     // We prefer evicting upcoming elements over active elements
     if (this.videoCache.size - toEvict.length > this.MAX_CACHED_VIDEOS) {
       const protectedUpcomingElements = Array.from(this.videoCache.entries())
-        .filter(([key, managed]) => protectedCacheKeys.has(key) && !managed.isActive && upcomingCacheKeys.has(key) && !isLockedForRender(managed))
+        .filter(
+          ([key, managed]) =>
+            protectedCacheKeys.has(key) &&
+            !managed.isActive &&
+            upcomingCacheKeys.has(key) &&
+            !isLockedForRender(managed),
+        )
         .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
 
-      const remaining = this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
-      for (let i = 0; i < Math.min(remaining, protectedUpcomingElements.length); i++) {
+      const remaining =
+        this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
+      for (
+        let i = 0;
+        i < Math.min(remaining, protectedUpcomingElements.length);
+        i++
+      ) {
         const key = protectedUpcomingElements[i][0];
         if (!toEvict.includes(key)) {
           toEvict.push(key);
@@ -1765,11 +2084,21 @@ export class PreviewMediaPool {
     // This should rarely happen but prevents unbounded growth
     if (this.videoCache.size - toEvict.length > this.MAX_CACHED_VIDEOS) {
       const protectedActiveElements = Array.from(this.videoCache.entries())
-        .filter(([key, managed]) => protectedCacheKeys.has(key) && managed.isActive && !isLockedForRender(managed))
+        .filter(
+          ([key, managed]) =>
+            protectedCacheKeys.has(key) &&
+            managed.isActive &&
+            !isLockedForRender(managed),
+        )
         .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
 
-      const remaining = this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
-      for (let i = 0; i < Math.min(remaining, protectedActiveElements.length); i++) {
+      const remaining =
+        this.videoCache.size - toEvict.length - this.MAX_CACHED_VIDEOS;
+      for (
+        let i = 0;
+        i < Math.min(remaining, protectedActiveElements.length);
+        i++
+      ) {
         const key = protectedActiveElements[i][0];
         if (!toEvict.includes(key)) {
           toEvict.push(key);
@@ -1794,7 +2123,12 @@ export class PreviewMediaPool {
 
   // ─── Private: Audio lifecycle ───────────────────────────────────────────
 
-  private createAudio(key: string, clipId: string, mediaId: string, sourcePath: string): ManagedAudio {
+  private createAudio(
+    key: string,
+    clipId: string,
+    mediaId: string,
+    sourcePath: string,
+  ): ManagedAudio {
     const audio = document.createElement("audio");
     audio.preload = "auto";
     audio.crossOrigin = "anonymous";
@@ -1830,13 +2164,19 @@ export class PreviewMediaPool {
     audio.addEventListener(
       "error",
       () => {
-        console.error(`[PreviewMediaPool] Audio load error: ${key}`, audio.error);
+        console.error(
+          `[PreviewMediaPool] Audio load error: ${key}`,
+          audio.error,
+        );
       },
       { once: true },
     );
 
-    const isSpecialUrl = sourcePath.startsWith("blob:") || sourcePath.startsWith("data:");
-    audio.src = isSpecialUrl ? sourcePath : `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}clipId=${clipId}`;
+    const isSpecialUrl =
+      sourcePath.startsWith("blob:") || sourcePath.startsWith("data:");
+    audio.src = isSpecialUrl
+      ? sourcePath
+      : `${sourcePath}${sourcePath.includes("?") ? "&" : "?"}clipId=${clipId}`;
     this.container.appendChild(audio);
     this.audios.set(key, managed);
 
@@ -1868,14 +2208,20 @@ export class PreviewMediaPool {
     }
   }
 
-  private requestAudioPlayback(managed: ManagedAudio, syncState: PreviewSyncState): void {
+  private requestAudioPlayback(
+    managed: ManagedAudio,
+    syncState: PreviewSyncState,
+  ): void {
     const audio = managed.element;
 
     if (!audio.paused) return;
     if (audio.readyState < 3) return;
     if (this.sessionAutoplayBlocked) return;
     if (managed.autoplayBlocked) {
-      const hasUserActivation = typeof navigator !== "undefined" && navigator.userActivation && navigator.userActivation.isActive;
+      const hasUserActivation =
+        typeof navigator !== "undefined" &&
+        navigator.userActivation &&
+        navigator.userActivation.isActive;
       if (hasUserActivation) {
         managed.autoplayBlocked = false;
       } else {
@@ -1909,9 +2255,14 @@ export class PreviewMediaPool {
             if (err.name === "NotAllowedError") {
               managed.autoplayBlocked = true;
               this.sessionAutoplayBlocked = true;
-              console.error(`[PreviewMediaPool] Audio play() BLOCKED (NotAllowedError) - latched until user gesture`);
+              console.error(
+                `[PreviewMediaPool] Audio play() BLOCKED (NotAllowedError) - latched until user gesture`,
+              );
             } else {
-              console.warn(`[PreviewMediaPool] Audio play() failed for ${managed.clipId}-${managed.mediaId}:`, err);
+              console.warn(
+                `[PreviewMediaPool] Audio play() failed for ${managed.clipId}-${managed.mediaId}:`,
+                err,
+              );
             }
           }
         });
@@ -1930,9 +2281,15 @@ export class PreviewMediaPool {
     fullTracks?: Array<{ id: string; muted?: boolean; volume?: number }>,
   ): void {
     const audio = managed.element;
-    const resolvedTransitions = activeTransitions ?? useTimelineStore.getState().transitions;
+    const resolvedTransitions =
+      activeTransitions ?? useTimelineStore.getState().transitions;
     const resolvedTracks = fullTracks ?? useTimelineStore.getState().tracks;
-    const sourceTime = getClipSourceTime(clip, syncState.time, syncState.frameRate, resolvedTransitions);
+    const sourceTime = getClipSourceTime(
+      clip,
+      syncState.time,
+      syncState.frameRate,
+      resolvedTransitions,
+    );
 
     // Combine global preview volume with per-clip and per-track volume
     const clipVolume = clip.volume ?? 1.0;
@@ -1940,7 +2297,12 @@ export class PreviewMediaPool {
     const trackVolume = track?.volume ?? 1.0;
     const combinedVolume = (syncState.volume / 100) * clipVolume * trackVolume;
 
-    const shouldMute = syncState.muted || syncState.volume === 0 || isTrackMuted || clipVolume === 0 || trackVolume === 0;
+    const shouldMute =
+      syncState.muted ||
+      syncState.volume === 0 ||
+      isTrackMuted ||
+      clipVolume === 0 ||
+      trackVolume === 0;
     audio.muted = shouldMute;
     audio.volume = shouldMute ? 0 : Math.max(0, Math.min(1, combinedVolume));
     audio.playbackRate = syncState.speed;
@@ -1962,7 +2324,10 @@ export class PreviewMediaPool {
       // When paused or scrubbing, keep audio currentTime tightly aligned to playhead
       const currentDrift = Math.abs(audio.currentTime - sourceTime);
       if (currentDrift > 0.01 && audio.readyState >= 1) {
-        const clampedTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.max(0, Math.min(sourceTime, audio.duration - 0.001)) : sourceTime;
+        const clampedTime =
+          Number.isFinite(audio.duration) && audio.duration > 0
+            ? Math.max(0, Math.min(sourceTime, audio.duration - 0.001))
+            : sourceTime;
         audio.currentTime = clampedTime;
         managed.lastHardSeekAtMs = performance.now();
         managed.hasBeenSeeked = true;
@@ -2004,7 +2369,17 @@ export class PreviewMediaPool {
     };
   }
 
-  private logPlayAttempt(log: { timestamp: number; elementKey: string; clipId: string; wasPlaying: boolean; promiseInFlight: boolean; elementAge: number; source: string; result: "success" | "rejected" | "pending"; error?: string }): void {
+  private logPlayAttempt(log: {
+    timestamp: number;
+    elementKey: string;
+    clipId: string;
+    wasPlaying: boolean;
+    promiseInFlight: boolean;
+    elementAge: number;
+    source: string;
+    result: "success" | "rejected" | "pending";
+    error?: string;
+  }): void {
     this.playAttemptLog.push(log);
 
     // Keep log bounded
@@ -2044,10 +2419,17 @@ export class PreviewMediaPool {
     );
 
     // Show per-element stats
-    const perElement = new Map<string, { attempts: number; blocked: boolean; state: string; active: boolean }>();
+    const perElement = new Map<
+      string,
+      { attempts: number; blocked: boolean; state: string; active: boolean }
+    >();
     for (const [key, managed] of this.videoCache) {
       // Derive state from element.paused and flags (single source of truth)
-      const state = managed.autoplayBlocked ? "blocked" : managed.element.paused ? "paused" : "playing";
+      const state = managed.autoplayBlocked
+        ? "blocked"
+        : managed.element.paused
+          ? "paused"
+          : "playing";
       perElement.set(key, {
         attempts: managed.playAttempts,
         blocked: managed.autoplayBlocked,
@@ -2093,7 +2475,10 @@ if (typeof window !== "undefined") {
     },
     getTotalAttempts: () => {
       const pools = (window as any).__previewMediaPools || [];
-      return pools.reduce((sum: number, p: any) => sum + (p.getTotalPlayAttempts?.() || 0), 0);
+      return pools.reduce(
+        (sum: number, p: any) => sum + (p.getTotalPlayAttempts?.() || 0),
+        0,
+      );
     },
     printReport: () => {
       const pools = (window as any).__previewMediaPools || [];
@@ -2107,7 +2492,10 @@ if (typeof window !== "undefined") {
     },
     getSyncFrequency: () => {
       const pools = (window as any).__previewMediaPools || [];
-      return pools.reduce((sum: number, p: any) => sum + (p.syncCallCount || 0), 0);
+      return pools.reduce(
+        (sum: number, p: any) => sum + (p.syncCallCount || 0),
+        0,
+      );
     },
   };
 }

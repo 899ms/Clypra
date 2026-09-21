@@ -17,29 +17,40 @@ import { expandCompoundClips } from "./compoundClips";
  * @param tracks - All tracks (for index lookup)
  * @returns CompositorClip with inferred metadata
  */
-export function toCompositorClip(clip: Clip, tracks: readonly Track[]): CompositorClip {
+export function toCompositorClip(
+  clip: Clip,
+  tracks: readonly Track[],
+): CompositorClip {
   const track = tracks.find((t) => t.id === clip.trackId);
 
   // Get track index (for compositing order)
   const trackIndex = tracks.findIndex((t) => t.id === clip.trackId);
 
   // Use explicit clip role when available, otherwise infer from track position.
-  const role = clip.role ?? inferRoleFromTrackPosition(track, trackIndex, tracks);
+  const role =
+    clip.role ?? inferRoleFromTrackPosition(track, trackIndex, tracks);
 
   // Preserve an explicit clip z-index when one has been persisted. Track order is
   // still the cross-track ordering rule; this value only resolves clips that
   // share the same role and track. Falling back to the track index retains the
   // legacy ordering for clips created before z-index was stored on the clip.
   const persistedZIndex = clip.zIndex;
-  const zIndex = typeof persistedZIndex === "number" && Number.isFinite(persistedZIndex)
-    ? persistedZIndex
-    : Math.max(0, trackIndex);
+  const zIndex =
+    typeof persistedZIndex === "number" && Number.isFinite(persistedZIndex)
+      ? persistedZIndex
+      : Math.max(0, trackIndex);
   const evaluationPriority = Number.isFinite(clip.evaluationPriority)
     ? clip.evaluationPriority!
     : 0;
 
   // Resolve kind if missing or incorrect
-  const kind = clip.kind ?? (track?.type === "filter" ? "filter" : clip.id.startsWith("filter-clip-") ? "filter" : undefined);
+  const kind =
+    clip.kind ??
+    (track?.type === "filter"
+      ? "filter"
+      : clip.id.startsWith("filter-clip-")
+        ? "filter"
+        : undefined);
 
   return {
     ...clip,
@@ -54,8 +65,13 @@ export function toCompositorClip(clip: Clip, tracks: readonly Track[]): Composit
 /**
  * Convert multiple legacy clips to compositor clips.
  */
-export function toCompositorClips(clips: Clip[], tracks: Track[]): CompositorClip[] {
-  return expandCompoundClips(clips).map((clip) => toCompositorClip(clip, tracks));
+export function toCompositorClips(
+  clips: Clip[],
+  tracks: Track[],
+): CompositorClip[] {
+  return expandCompoundClips(clips).map((clip) =>
+    toCompositorClip(clip, tracks),
+  );
 }
 
 /**
@@ -68,7 +84,7 @@ function inferRoleFromTrack(track: Track | undefined): ClipRole {
   switch (track.type) {
     case "video":
       // First video track is primary, others are overlays
-      // TODO: This should be more sophisticated
+      // This should be more sophisticated
       return "primary";
     case "audio":
       return "audio";
@@ -91,7 +107,11 @@ function inferRoleFromTrack(track: Track | undefined): ClipRole {
  * The "primary" role should be reserved for explicit background plates
  * or generated mattes that must always sit below everything else.
  */
-export function inferRoleFromTrackPosition(track: Track | undefined, trackIndex: number, tracks: readonly Track[]): ClipRole {
+export function inferRoleFromTrackPosition(
+  track: Track | undefined,
+  trackIndex: number,
+  tracks: readonly Track[],
+): ClipRole {
   if (!track) return "overlay";
 
   if (track.type === "audio") return "audio";

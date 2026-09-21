@@ -87,7 +87,8 @@ describe("sourceTime Property-Based Tests", () => {
       for (let i = 0; i < 50; i++) {
         const clip = generateClip();
         const frameRate = 30;
-        const clockTime = clip.startTime + clip.duration + randomFloat(0.1, 100); // After clip
+        const clockTime =
+          clip.startTime + clip.duration + randomFloat(0.1, 100); // After clip
 
         const result = resolveClipSourceTime(clip, clockTime, {
           clampToRange: true,
@@ -159,7 +160,7 @@ describe("sourceTime Property-Based Tests", () => {
 
   describe("Property: Linear time mapping (no speed parameter)", () => {
     it("should maintain 1:1 time mapping (no speed multiplier in this implementation)", () => {
-      // NOTE: This codebase doesn't support per-clip playback speed
+      // This codebase doesn't support per-clip playback speed
       // The resolveClipSourceTime function uses 1:1 time mapping
       for (let i = 0; i < 100; i++) {
         const clip = generateClip();
@@ -221,7 +222,9 @@ describe("sourceTime Property-Based Tests", () => {
         const clip = generateClip();
         const clockTime = clip.startTime + randomFloat(0, clip.duration);
 
-        const result = resolveClipSourceTime(clip, clockTime, { frameRate: 30 });
+        const result = resolveClipSourceTime(clip, clockTime, {
+          frameRate: 30,
+        });
 
         // Calculate clock time from source time (inverse operation with 1:1 mapping)
         const sourceLocalTime = result.sourceTime - clip.trimIn!;
@@ -235,7 +238,7 @@ describe("sourceTime Property-Based Tests", () => {
 
   describe("Property: Frame boundaries align correctly", () => {
     it("should calculate frame-aligned positions consistently", () => {
-      // NOTE: resolveClipSourceTime doesn't snap to frames internally,
+      // resolveClipSourceTime doesn't snap to frames internally,
       // but frameRate is used for other calculations (like clamping)
       const frameRates = [24, 30, 60];
 
@@ -264,13 +267,20 @@ describe("sourceTime Property-Based Tests", () => {
 
         // Count frames across entire clip
         let frameCount = 0;
-        for (let t = clip.startTime; t < clip.startTime + clip.duration; t += frameDuration) {
+        for (
+          let t = clip.startTime;
+          t < clip.startTime + clip.duration;
+          t += frameDuration
+        ) {
           const result = resolveClipSourceTime(clip, t, {
             frameRate,
             clampToRange: true,
           });
 
-          if (result.sourceTime >= clip.trimIn! && result.sourceTime <= clip.trimOut!) {
+          if (
+            result.sourceTime >= clip.trimIn! &&
+            result.sourceTime <= clip.trimOut!
+          ) {
             frameCount++;
           }
         }
@@ -299,7 +309,11 @@ describe("sourceTime Property-Based Tests", () => {
       for (let i = 0; i < 20; i++) {
         const trimIn = randomFloat(0, 10);
         const trimOut = trimIn + randomFloat(100, 1000); // Large duration
-        const clip = generateClip({ trimIn, trimOut, duration: trimOut - trimIn });
+        const clip = generateClip({
+          trimIn,
+          trimOut,
+          duration: trimOut - trimIn,
+        });
         const clockTime = clip.startTime + randomFloat(0, clip.duration);
 
         const result = resolveClipSourceTime(clip, clockTime, {
@@ -317,7 +331,11 @@ describe("sourceTime Property-Based Tests", () => {
       for (let i = 0; i < 20; i++) {
         const trimIn = randomFloat(0, 10);
         const trimOut = trimIn + randomFloat(0.1, 1); // Small duration
-        const clip = generateClip({ trimIn, trimOut, duration: trimOut - trimIn });
+        const clip = generateClip({
+          trimIn,
+          trimOut,
+          duration: trimOut - trimIn,
+        });
         const clockTime = clip.startTime + randomFloat(0, clip.duration);
 
         const result = resolveClipSourceTime(clip, clockTime, {
@@ -358,8 +376,12 @@ describe("sourceTime Property-Based Tests", () => {
         const clip = generateClip();
         const clockTime = clip.startTime + randomFloat(0, clip.duration);
 
-        const result1 = resolveClipSourceTime(clip, clockTime, { frameRate: 30 });
-        const result2 = resolveClipSourceTime(clip, clockTime, { frameRate: 30 });
+        const result1 = resolveClipSourceTime(clip, clockTime, {
+          frameRate: 30,
+        });
+        const result2 = resolveClipSourceTime(clip, clockTime, {
+          frameRate: 30,
+        });
 
         expect(result1.sourceTime).toBe(result2.sourceTime);
         expect(result1.localTime).toBe(result2.localTime);

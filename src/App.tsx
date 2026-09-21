@@ -501,7 +501,7 @@ const App = () => {
         const { useTimelineStore } = await import("./store/timelineStore");
         const timelineState = useTimelineStore.getState();
 
-        // NOTE: swatch property has been removed from Clip type
+        // swatch property has been removed from Clip type
         // Heal any legacy/bugged filter clips on the timeline that are missing their swatch
         /*
         const filterClips = timelineState.clips.filter((c) => c.kind === "filter");

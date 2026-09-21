@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getFilmstripRenderWindow, getFilmstripTileSlots } from "../filmstripLayout";
+import {
+  getFilmstripRenderWindow,
+  getFilmstripTileSlots,
+} from "../filmstripLayout";
 import { SpatialTier } from "../../renderEngine/types";
 
 describe("getFilmstripRenderWindow", () => {
@@ -120,14 +123,20 @@ describe("getFilmstripTileSlots", () => {
 
     expect(slots.length).toBeGreaterThan(0);
 
-    // Invariant: leftPx = slotIndex × tileWidthPx - renderWindowLeftPx
+    // leftPx = slotIndex × tileWidthPx - renderWindowLeftPx
     slots.forEach((slot, index) => {
-      expect(slot.leftPx).toBeCloseTo(index * tileWidthPx - renderWindowLeftPx, 4);
+      expect(slot.leftPx).toBeCloseTo(
+        index * tileWidthPx - renderWindowLeftPx,
+        4,
+      );
     });
 
     // And no gaps between consecutive slots
     for (let i = 0; i < slots.length - 1; i++) {
-      expect(slots[i].leftPx + slots[i].widthPx).toBeCloseTo(slots[i + 1].leftPx, 4);
+      expect(slots[i].leftPx + slots[i].widthPx).toBeCloseTo(
+        slots[i + 1].leftPx,
+        4,
+      );
     }
   });
 
@@ -156,4 +165,3 @@ describe("getFilmstripTileSlots", () => {
     expect(tile0?.leftPx).toBe(-20);
   });
 });
-

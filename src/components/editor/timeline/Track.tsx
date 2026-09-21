@@ -171,7 +171,7 @@ const TrackInner: React.FC<TrackProps> = ({
     if (!isOver) setMediaDropPreview(null);
   }, [isOver]);
 
-  // FIX: clips are now pre-filtered by Timeline, so trackClips === clips
+  // clips are now pre-filtered by Timeline, so trackClips === clips
   // No need to filter again - this was causing unnecessary re-computation
   const trackClips = clips;
 

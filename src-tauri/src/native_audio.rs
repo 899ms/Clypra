@@ -1414,7 +1414,7 @@ impl NativeAudioClock {
 
 /// Real-time safe audio output stream builder.
 ///
-/// Invariant: The stream callback performs ZERO heap allocations and acquires no
+/// The stream callback performs ZERO heap allocations and acquires no
 /// blocking mutexes. It advances `position_ticks` atomically based on the exact
 /// hardware sample count.
 fn build_audio_stream<T>(

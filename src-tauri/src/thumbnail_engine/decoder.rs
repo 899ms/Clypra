@@ -1597,7 +1597,7 @@ impl VideoDecoder {
         if frame.format() != ffmpeg::format::Pixel::D3D11 {
             return None;
         }
-        // SAFETY: `frame.as_ptr()` is a valid, non-null AVFrame* and the
+        // `frame.as_ptr()` is a valid, non-null AVFrame* and the
         // hardware context is still live because the frame is in scope.
         unsafe { crate::wgpu_compositor::dxgi_import::extract_shared_handle(frame.as_ptr()) }
     }
