@@ -135,6 +135,7 @@ struct QueuedNativeFrame {
 /// not a cache-capacity limit: the cache can retain decoded frames, but the
 /// playback queue must stay close to the audio clock.
 const MAX_LOOKAHEAD_RESIDENCY_US: u64 = 100_000;
+const MAX_LOOKAHEAD_EXPIRATION_US: u64 = 250_000;
 const MIN_LOOKAHEAD_FRAMES: usize = 2;
 
 fn native_presentation_timing(
@@ -395,7 +396,7 @@ impl NativePreviewFrameQueue {
             .iter()
             .filter(|&(_, frame)| {
                 queue_residency_us(frame.ready_at, presentation_started)
-                    > MAX_LOOKAHEAD_RESIDENCY_US
+                    > MAX_LOOKAHEAD_EXPIRATION_US
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -998,7 +999,7 @@ fn to_video_project_request(
         .map(|layer| {
             Ok(NativeProjectVideoLayer {
                 layer_id: layer.layer_id.clone(),
-                video_path: layer.video_path.clone(),
+                video_path: crate::commands::media::normalize_file_path(&layer.video_path),
                 time_secs: frame_time_seconds(layer.source_time)?,
                 x: layer.x * scale_x,
                 y: layer.y * scale_y,
@@ -1576,6 +1577,7 @@ pub async fn render_native_preview_frame(
         return Err("time_secs must be a finite non-negative number".to_string());
     }
 
+    let video_path = crate::commands::media::normalize_file_path(&video_path);
     let decoder = get_preview_decoder(&video_path).await?;
     let (y_plane, uv_plane, width, height, color) = {
         let mut guard = decoder.lock().await;
@@ -4050,7 +4052,7 @@ mod tests {
         merge_color_metadata, parse_blend_mode, project_layer_transform, queue_residency_us,
         validate_project_request, validate_video_project_request, NativeDecodeTimings,
         NativePreviewFrameQueue, NativeProjectFrameRequest, NativeVideoProjectFrameRequest,
-        QueuedNativeFrame, MAX_LOOKAHEAD_RESIDENCY_US,
+        QueuedNativeFrame, MAX_LOOKAHEAD_EXPIRATION_US,
     };
     use crate::native_core::TextLayerSnapshot;
     use crate::thumbnail_engine::decoder::VideoColorMetadata;
@@ -4344,7 +4346,7 @@ mod tests {
         ));
 
         queue.discard_expired(
-            now + std::time::Duration::from_micros(MAX_LOOKAHEAD_RESIDENCY_US + 1),
+            now + std::time::Duration::from_micros(MAX_LOOKAHEAD_EXPIRATION_US + 1),
         );
         assert!(queue.is_empty());
     }

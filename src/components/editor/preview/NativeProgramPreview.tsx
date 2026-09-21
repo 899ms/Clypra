@@ -2548,16 +2548,24 @@ export const NativeProgramPreview: React.FC = () => {
         const playbackTargetStillCurrent = () => {
           const current = renderStateRef.current;
           const isDragging = Boolean(dragPreviewClipId);
-          return (
-            (isDragging ||
-              dragPreviewRevision === dragPreviewRevisionAtStart) &&
-            (!isPlaying ||
-              (current.project?.id === state.project?.id &&
-                current.epoch === state.epoch &&
-                current.clock.state === "playing" &&
-                getFrameIndexAtTime(current.clock.time, frameRate) ===
-                  frameIndex))
-          );
+          if (
+            !isDragging &&
+            dragPreviewRevision !== dragPreviewRevisionAtStart
+          ) {
+            return false;
+          }
+          if (!isPlaying) {
+            return true;
+          }
+          if (
+            current.project?.id !== state.project?.id ||
+            current.epoch !== state.epoch ||
+            current.clock.state !== "playing"
+          ) {
+            return false;
+          }
+          const currentFrame = getFrameIndexAtTime(current.clock.time, frameRate);
+          return Math.abs(currentFrame - frameIndex) <= 1;
         };
         if (!playbackTargetStillCurrent()) {
           forceRenderNeeded = true;
