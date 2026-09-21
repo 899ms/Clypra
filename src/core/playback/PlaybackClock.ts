@@ -42,6 +42,11 @@ export class PlaybackClock {
   private _duration: number = 0;
   private _frameRate: number = 30;
   private _isSeeking: boolean = false;
+  /** Wall-clock ms when the most recent seek() call started (for timeout safety valve). */
+  private _seekStartedAtMs: number = 0;
+  /** BUG-5 fix: Maximum time allowed in seeking state before auto-resolving.
+   * Prevents permanent freeze when completeSeek() is never called (e.g. dropped IPC). */
+  private static readonly SEEK_TIMEOUT_MS = 500;
 
   // RAF loop
   private _rafId: number | null = null;
@@ -448,12 +453,14 @@ export class PlaybackClock {
 
     if (!shouldKeepPlaying) {
       this._isSeeking = true;
+      this._seekStartedAtMs = performance.now();
       this._notifyListeners();
       return;
     }
 
     // Seamless seek-while-playing: Keep playing forward from target time
     this._isSeeking = true;
+    this._seekStartedAtMs = performance.now();
     if (this._nativeClockAuthority) {
       this._nativeClockPosition = {
         time: this._time,
@@ -522,16 +529,27 @@ export class PlaybackClock {
     if (this._state !== "playing") return;
 
     if (this._isSeeking) {
-      // While seeking, do not advance time, just notify listeners and keep RAF loop alive
+      // BUG-5 fix: Safety valve — if seeking state outlasts SEEK_TIMEOUT_MS, auto-resolve.
+      // Prevents permanent freeze when completeSeek() is never called (e.g. dropped IPC
+      // response during rapid split+seek, or an abandoned native frame request).
       const now = Date.now();
-      if (now - this._lastNotifyTime > this._notifyThrottleMs) {
-        this._notifyListeners();
-        this._lastNotifyTime = now;
+      if (now - this._seekStartedAtMs > PlaybackClock.SEEK_TIMEOUT_MS) {
+        console.warn(
+          `[PlaybackClock] Seek timeout after ${PlaybackClock.SEEK_TIMEOUT_MS}ms — auto-resolving _isSeeking to prevent freeze.`,
+        );
+        this.completeSeek();
+        // Fall through to the normal tick path below.
+      } else {
+        // Still within timeout window — keep RAF alive without advancing time.
+        if (now - this._lastNotifyTime > this._notifyThrottleMs) {
+          this._notifyListeners();
+          this._lastNotifyTime = now;
+        }
+        this._rafId = requestAnimationFrame(() =>
+          this._tickWithGeneration(generation),
+        );
+        return;
       }
-      this._rafId = requestAnimationFrame(() =>
-        this._tickWithGeneration(generation),
-      );
-      return;
     }
 
     // Native samples drive the clock during Tauri program playback. Browser
