@@ -35,6 +35,7 @@ import {
   seekUserLatency,
   startSyncMetricsFlushLoop,
 } from "@/lib/playback/syncMetrics";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 
 // ── Tauri runtime guard ───────────────────────────────────────────────────────
 // Evaluated lazily at call time, not at module-load time. The module-level
@@ -72,7 +73,10 @@ export type PerfLogKind =
   | "ai-inference"
   | "filmstrip-rollup"
   | "frontend-av-sync"
-  | "timeline-edit";
+  | "timeline-edit"
+  | "worker-rollup"
+  | "animation-eval"
+  | "worker-error";
 
 export interface PerfLogEntry {
   kind: PerfLogKind;
@@ -120,6 +124,7 @@ class PerfLogService {
   private syncPollTimer: ReturnType<typeof setInterval> | null = null;
   private diagnosticsUnlisten: (() => void) | null = null;
   private playbackStartupUnlisten: (() => void) | null = null;
+  private workerErrorUnlisten: (() => void) | null = null;
   private flushInFlight: Promise<void> | null = null;
   private closeInFlight: Promise<void> | null = null;
   /** Peak process RSS observed since the current session opened (MB). */
@@ -165,6 +170,21 @@ class PerfLogService {
       // Start the dev-console loop (non-destructive snapshot; NDJSON forwarding
       // uses takeAndReset() inside flushFrontendSyncMetrics on the poll timer).
       startSyncMetricsFlushLoop(SYNC_POLL_INTERVAL_MS);
+
+      // Listen to worker error events from WorkerPerfCollector
+      if (this.workerErrorUnlisten) {
+        this.workerErrorUnlisten();
+        this.workerErrorUnlisten = null;
+      }
+      this.workerErrorUnlisten = workerPerfCollector.onError((event) => {
+        if (!this.sessionId) return;
+        this.enqueue({
+          kind: "worker-error",
+          sessionId: this.sessionId,
+          timestampEpochMs: Date.now(),
+          payload: event,
+        });
+      });
 
       // Write a session-open marker so log consumers can correlate the
       // hardware context with subsequent entries without re-parsing the whole file.
@@ -430,6 +450,22 @@ class PerfLogService {
       });
     }
 
+    // Flush the final worker & animation telemetry window so the partial interval is not lost.
+    const finalWorkerRollup = workerPerfCollector.flush();
+    if (finalWorkerRollup && finalWorkerRollup.totalOperations > 0) {
+      this.queue.push({
+        kind: "worker-rollup",
+        sessionId,
+        timestampEpochMs: Date.now(),
+        payload: finalWorkerRollup,
+      });
+    }
+
+    if (this.workerErrorUnlisten) {
+      this.workerErrorUnlisten();
+      this.workerErrorUnlisten = null;
+    }
+
     // Null sessionId AFTER capturing it so flushQueue doesn't bail early.
     // We own the close from this point forward.
     this.sessionId = null;
@@ -558,6 +594,7 @@ class PerfLogService {
       void this.pollProcessMemory();
       this.flushFilmstripSummary();
       this.flushFrontendSyncMetrics();
+      this.flushWorkerSummary();
     }, SYNC_POLL_INTERVAL_MS);
   }
 
@@ -675,6 +712,23 @@ class PerfLogService {
         playheadPaintJitter: paintJitter,
         seekUserLatency: seekLatency,
       },
+    });
+  }
+
+  /**
+   * Drains the worker & animation performance collector into a single worker-rollup entry.
+   *
+   * Called every flush interval. Skips when no worker or animation operations have occurred.
+   */
+  private flushWorkerSummary(): void {
+    if (!this.sessionId) return;
+    const summary = workerPerfCollector.flush();
+    if (!summary || summary.totalOperations === 0) return;
+    this.enqueue({
+      kind: "worker-rollup",
+      sessionId: this.sessionId,
+      timestampEpochMs: Date.now(),
+      payload: summary,
     });
   }
 

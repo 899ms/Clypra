@@ -161,6 +161,8 @@ class ResourceTracker {
 
 export const resourceTracker = new ResourceTracker();
 
+import { workerPerfCollector } from "./WorkerPerfCollector";
+
 /**
  * Install diagnostics onto `window.__clypra_diagnostics`.
  * Safe to call multiple times (idempotent).
@@ -172,5 +174,6 @@ export function installDiagnostics(): void {
   (window as any).__clypra_diagnostics = {
     ...existing,
     resources: resourceTracker,
+    workerPerf: workerPerfCollector,
   };
 }

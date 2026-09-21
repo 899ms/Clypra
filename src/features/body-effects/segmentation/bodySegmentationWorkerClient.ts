@@ -2,6 +2,7 @@ import { bodyMaskCache } from "./maskCache";
 import { getBodySegmentationConfig } from "./segmentationConfig";
 import type { BodySegmentationOptions, BodySegmentationRequest, BodySegmentationResponse } from "./types";
 import { telemetryCollector } from "@/services/telemetryCollector";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 
 const REQUEST_TIMEOUT_MS = 900;
 const MASK_CADENCE_INTERVAL_S = 0.1;
@@ -128,6 +129,13 @@ function getWorker(): Worker | null {
         }
 
         bodyMaskCache.set(response.cacheKey, finalMask);
+        workerPerfCollector.record({
+          domain: "BodySegmentationWorker",
+          operation: "segment",
+          durationMs,
+          overBudget: durationMs > 33.33,
+          metadata: { runtimeUsed: response.runtimeUsed, target: item.target },
+        });
         item.resolve(finalMask);
       } else {
         telemetryCollector.recordAIInferenceSpan(
@@ -140,6 +148,13 @@ function getWorker(): Worker | null {
           item.target,
         );
 
+        workerPerfCollector.recordError(
+          "BodySegmentationWorker",
+          response.error || "Inference failed",
+          "segment",
+          { runtimeUsed: response.runtimeUsed, target: item.target },
+        );
+
         if (response.error) {
           console.warn(`[BodySegmentation] ${response.error}`);
         }
@@ -148,6 +163,10 @@ function getWorker(): Worker | null {
     };
     worker.onerror = (event) => {
       console.warn("[BodySegmentation] Worker error:", event.message);
+      workerPerfCollector.recordError(
+        "BodySegmentationWorker",
+        event.message || "Worker runtime error",
+      );
       flushPending();
       worker?.terminate();
       worker = null;

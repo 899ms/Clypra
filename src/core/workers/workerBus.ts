@@ -68,6 +68,7 @@
  */
 
 import type { WorkerDisposeMessage, WorkerErrorResponse } from '@/workers/types';
+import { workerPerfCollector } from '@/core/monitoring/WorkerPerfCollector';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ export class WorkerBus<
   private restartCount = 0;
 
   /**
-   * Pending request map: id → { resolve, reject }.
+   * Pending request map: id → { resolve, reject, startTime, operation }.
    * Populated by send(), drained by handleMessage() and dispose().
    */
   private readonly pending = new Map<
@@ -121,6 +122,8 @@ export class WorkerBus<
     {
       resolve: (response: TResponse) => void;
       reject: (err: Error) => void;
+      startTime: number;
+      operation: string;
     }
   >();
 
@@ -177,18 +180,23 @@ export class WorkerBus<
 
     const id = String(++WorkerBus._nextId);
     const message = { ...payload, id };
+    const operation = (payload as any).type ?? 'UNKNOWN';
 
     return new Promise<TResult>((resolve, reject) => {
       this.pending.set(id, {
         resolve: resolve as (r: TResponse) => void,
         reject,
+        startTime: performance.now(),
+        operation,
       });
       try {
         this.worker!.postMessage(message, transferables);
         this._status = 'running';
       } catch (err) {
         this.pending.delete(id);
-        reject(err instanceof Error ? err : new Error(String(err)));
+        const error = err instanceof Error ? err : new Error(String(err));
+        workerPerfCollector.recordError(this.name, error.message, operation);
+        reject(error);
       }
     });
   }
@@ -271,11 +279,13 @@ export class WorkerBus<
         const callbacks = this.pending.get(errorMsg.id);
         if (callbacks) {
           this.pending.delete(errorMsg.id);
+          workerPerfCollector.recordError(this.name, errText, callbacks.operation);
           callbacks.reject(new Error(`[WorkerBus:${this.name}] ${errText}`));
         }
       } else {
         // Broadcast: reject ALL pending requests
         console.error(`[WorkerBus:${this.name}] Broadcast worker error: ${errText}`);
+        workerPerfCollector.recordError(this.name, errText, 'BROADCAST');
         for (const [, { reject }] of this.pending) {
           reject(new Error(`[WorkerBus:${this.name}] ${errText}`));
         }
@@ -302,6 +312,31 @@ export class WorkerBus<
 
     this.pending.delete(id);
     if (this.pending.size === 0) this._status = 'idle';
+
+    const durationMs = Math.max(0, performance.now() - callbacks.startTime);
+    const workerDurationMs: number | undefined =
+      typeof (msg as any).evalMs === 'number'
+        ? (msg as any).evalMs
+        : typeof (msg as any).diffMs === 'number'
+          ? (msg as any).diffMs
+          : typeof (msg as any).serializeMs === 'number'
+            ? (msg as any).serializeMs
+            : typeof (msg as any).analysisMs === 'number'
+              ? (msg as any).analysisMs
+              : typeof (msg as any).parseMs === 'number'
+                ? (msg as any).parseMs
+                : typeof (msg as any).layoutMs === 'number'
+                  ? (msg as any).layoutMs
+                  : undefined;
+
+    workerPerfCollector.record({
+      domain: this.name,
+      operation: callbacks.operation ?? (msg as any).type ?? 'RESPONSE',
+      durationMs,
+      workerDurationMs,
+      overBudget: durationMs > 16.67,
+    });
+
     callbacks.resolve(msg as TResponse);
   }
 
@@ -311,6 +346,7 @@ export class WorkerBus<
       event,
     );
     this._status = 'error';
+    workerPerfCollector.recordError(this.name, event.message || 'Worker crash');
 
     // Reject all pending promises
     for (const [, { reject }] of this.pending) {

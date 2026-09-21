@@ -36,6 +36,7 @@ import {
   type TextRenderTracePhase,
   traceTextRenderCacheHit,
 } from "@/core/render/textRenderTrace";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 import { resolveTemplateControlValues } from "@/lib/text/templateControls";
 import type { NativeTextRasterAsset } from "@/components/editor/preview/nativeTextPreview";
 import {
@@ -179,6 +180,8 @@ export class TemplateRasterizerWorkerClient {
         workerRasterMs: number;
       }) => void;
       reject: (err: Error) => void;
+      startTime?: number;
+      operation?: string;
     }
   >();
   /**
@@ -207,6 +210,10 @@ export class TemplateRasterizerWorkerClient {
       this.worker.onmessage = this.handleMessage.bind(this);
       this.worker.onerror = (e) => {
         console.error("[TemplateRasterizerWorkerClient] Worker error:", e);
+        workerPerfCollector.recordError(
+          "TemplateRasterizerWorker",
+          e.message || "Worker error",
+        );
         for (const [, { reject }] of this.pending) {
           reject(new Error("Worker error: " + e.message));
         }
@@ -222,6 +229,11 @@ export class TemplateRasterizerWorkerClient {
         "[TemplateRasterizerWorkerClient] Failed to initialize worker, fallback will be used:",
         err,
       );
+      workerPerfCollector.recordError(
+        "TemplateRasterizerWorker",
+        err instanceof Error ? err.message : String(err),
+        "INITIALIZATION",
+      );
       this.worker = null;
     }
   }
@@ -231,7 +243,16 @@ export class TemplateRasterizerWorkerClient {
     const callbacks = this.pending.get(msg.id);
     if (!callbacks) return;
     this.pending.delete(msg.id);
+    const durationMs = performance.now() - (callbacks.startTime ?? performance.now());
+
     if (msg.type === "FRAME_READY") {
+      workerPerfCollector.record({
+        domain: "TemplateRasterizerWorker",
+        operation: callbacks.operation ?? "FRAME_READY",
+        durationMs,
+        workerDurationMs: msg.workerRasterMs,
+        overBudget: durationMs > 16.67,
+      });
       callbacks.resolve({
         bitmap: msg.bitmap,
         offsetX: msg.offsetX,
@@ -244,6 +265,11 @@ export class TemplateRasterizerWorkerClient {
       console.error(
         `[TemplateRasterizerWorkerClient] Worker returned error for frame ${msg.id}:`,
         msg.error,
+      );
+      workerPerfCollector.recordError(
+        "TemplateRasterizerWorker",
+        msg.error || "Worker error",
+        callbacks.operation,
       );
       callbacks.reject(new Error(msg.error));
     }
@@ -464,7 +490,12 @@ export class TemplateRasterizerWorkerClient {
         return;
       }
       const id = String(++nextRequestId);
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        startTime: performance.now(),
+        operation: (params as any).type ?? "RENDER",
+      });
       this.worker.postMessage({ ...params, id });
     });
   }

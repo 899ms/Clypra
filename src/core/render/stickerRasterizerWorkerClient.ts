@@ -20,6 +20,7 @@ import {
   telemetryCollector,
   type TelemetryStickerPhase,
 } from "@/services/telemetryCollector";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 import type {
   WorkerStickerInboundMessage,
   WorkerStickerOutboundMessage,
@@ -102,6 +103,10 @@ export class StickerRasterizerWorkerClient {
       this.worker.onerror = (error) => {
         console.error("[StickerRasterizerWorkerClient] Worker error:", error);
         this.workerFailed = true;
+        workerPerfCollector.recordError(
+          "StickerRasterizerWorker",
+          error.message || "Worker error occurred",
+        );
         telemetryCollector.recordFallbackEvent(
           "sticker-worker-offscreen",
           "sticker-main-thread-raster",
@@ -116,6 +121,11 @@ export class StickerRasterizerWorkerClient {
       );
       this.worker = null;
       this.workerFailed = true;
+      workerPerfCollector.recordError(
+        "StickerRasterizerWorker",
+        err instanceof Error ? err.message : String(err),
+        "INITIALIZATION",
+      );
       telemetryCollector.recordFallbackEvent(
         "sticker-worker-offscreen",
         "sticker-main-thread-raster",
@@ -139,6 +149,15 @@ export class StickerRasterizerWorkerClient {
         const first = this.registeredFrames.values().next().value;
         if (first) this.registeredFrames.delete(first);
       }
+
+      workerPerfCollector.record({
+        domain: "StickerRasterizerWorker",
+        operation: "STICKER_FRAME_READY",
+        durationMs: totalMs,
+        workerDurationMs: msg.workerRasterMs,
+        itemsCount: msg.width * msg.height,
+        overBudget: totalMs > 16.67,
+      });
 
       telemetryCollector.recordStickerRender({
         format: "lottie",
@@ -171,6 +190,11 @@ export class StickerRasterizerWorkerClient {
       const pending = this.pendingRequests.get(msg.id);
       if (!pending) return;
       this.pendingRequests.delete(msg.id);
+      workerPerfCollector.recordError(
+        "StickerRasterizerWorker",
+        msg.error || "Failed to render frame",
+        "STICKER_FRAME_FAILED",
+      );
       console.warn(
         `[StickerRasterizerWorkerClient] Worker failed to render frame, falling back to main-thread:`,
         msg.error,

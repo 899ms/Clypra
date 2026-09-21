@@ -58,6 +58,7 @@ import {
 } from "./cache";
 import { evaluateProperty, evaluateVisualPropertyKeyframes } from "./animation";
 import { applyLoopMotion, evaluateSpatialPosition } from "@/core/animation";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 import { resolveClipSourceTime } from "../timeline/sourceTime";
 import { calculateTextAnimationState } from "@/lib/text/textAnimation";
 import { normalizeFilterIntensity } from "../render/filterIR";
@@ -88,6 +89,12 @@ export function evaluateTimelineScene(
   project: Project | null,
   transitions: TransitionTimelineItem[] = [],
 ): EvaluatedScene {
+  const evalStartMs = performance.now();
+  let keyframeEvaluationsCount = 0;
+  let spatialEvaluationsCount = 0;
+  let springEvaluationsCount = 0;
+  let responsiveRetimesCount = 0;
+
   clips = expandCompoundClips(clips);
   // Convert to compositor clips (adds roles, priorities)
   const compositorClips = toCompositorClips(clips, tracks);
@@ -183,6 +190,26 @@ export function evaluateTimelineScene(
       (vkf?.x?.some((k) => k.spatialIn || k.spatialOut) ||
        vkf?.y?.some((k) => (k as any).spatialIn || (k as any).spatialOut))
     );
+
+    if (vkf) {
+      if (vkf.x?.length) {
+        keyframeEvaluationsCount++;
+        if (vkf.x.some((k) => k.spring)) springEvaluationsCount++;
+        if (vkf.x.some((k) => k.anchor)) responsiveRetimesCount++;
+      }
+      if (vkf.y?.length) {
+        keyframeEvaluationsCount++;
+        if (vkf.y.some((k) => k.spring)) springEvaluationsCount++;
+        if (vkf.y.some((k) => k.anchor)) responsiveRetimesCount++;
+      }
+      if (vkf.width?.length) keyframeEvaluationsCount++;
+      if (vkf.height?.length) keyframeEvaluationsCount++;
+      if (vkf.rotation?.length) keyframeEvaluationsCount++;
+      if (vkf.opacity?.length) keyframeEvaluationsCount++;
+    }
+    if (hasSpatialCurvature) {
+      spatialEvaluationsCount++;
+    }
 
     let evalX: number;
     let evalY: number;
@@ -796,6 +823,18 @@ export function evaluateTimelineScene(
       }
     : undefined;
 
+  const evalDurationMs = performance.now() - evalStartMs;
+  workerPerfCollector.recordAnimationEval({
+    durationMs: evalDurationMs,
+    activeClips: activeClips.length,
+    visualLayers: visualLayers.length,
+    keyframeEvaluations: keyframeEvaluationsCount,
+    spatialEvaluations: spatialEvaluationsCount,
+    springEvaluations: springEvaluationsCount,
+    responsiveRetimes: responsiveRetimesCount,
+    culledLayers: 0,
+  });
+
   return {
     visualLayers,
     audioLayers,
@@ -963,6 +1002,7 @@ export function cullOccludedVisualLayers(
   transitionWindows: ActiveTransitionWindow[] = [],
 ): EvaluatedVisualLayer[] {
   if (visualLayers.length <= 1) return [...visualLayers];
+  const startMs = performance.now();
 
   // 1. Top-down full-frame occlusion check:
   // If an opaque layer covers the full canvas, all layers beneath it are discarded.
@@ -982,18 +1022,33 @@ export function cullOccludedVisualLayers(
     }
   }
 
-  if (remaining.length <= 1) return remaining;
-
-  // 2. Relative layer-over-layer occlusion check:
-  // Discard any bottom layer that is completely covered by an opaque foreground layer.
-  return remaining.filter((layer, index) => {
-    for (let j = index + 1; j < remaining.length; j++) {
-      if (doesLayerOccludeLayer(remaining[j], layer, transitionWindows)) {
-        return false;
+  let finalLayers = remaining;
+  if (remaining.length > 1) {
+    // 2. Relative layer-over-layer occlusion check:
+    // Discard any bottom layer that is completely covered by an opaque foreground layer.
+    finalLayers = remaining.filter((layer, index) => {
+      for (let j = index + 1; j < remaining.length; j++) {
+        if (doesLayerOccludeLayer(remaining[j], layer, transitionWindows)) {
+          return false;
+        }
       }
-    }
-    return true;
-  });
+      return true;
+    });
+  }
+
+  const culledCount = visualLayers.length - finalLayers.length;
+  if (culledCount > 0) {
+    const durationMs = performance.now() - startMs;
+    workerPerfCollector.record({
+      domain: "compositor:occlusion",
+      operation: "cullOccludedVisualLayers",
+      durationMs,
+      itemsCount: culledCount,
+      overBudget: durationMs > 5,
+    });
+  }
+
+  return finalLayers;
 }
 
 function normalizeEffectIntensity(value: unknown): number {

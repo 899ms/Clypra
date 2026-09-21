@@ -6,6 +6,7 @@
  */
 
 import { WorkerBus, getSharedDomainWorkerBus } from "./workerBus";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 import type {
   TimelineSnapWorkerRequest,
   TimelineSnapWorkerResponse,
@@ -149,14 +150,22 @@ export class TimelineSnapWorkerClient {
     snapRadiusSeconds: number,
     playheadTime: number,
   ): SnapResult {
+    const startMs = performance.now();
     if (!snapEnabled) {
-      return {
+      const result: SnapResult = {
         type: "SNAP_RESULT",
         id: "fallback",
         snappedTime: proposedStartTime,
         snapGuides: [],
         collidingClipIds: this.findCollisions(draggedClipId, trackId, proposedStartTime),
       };
+      workerPerfCollector.record({
+        domain: "ComputeWorker:TimelineSnap",
+        operation: "SNAP_QUERY_FALLBACK",
+        durationMs: performance.now() - startMs,
+        overBudget: false,
+      });
+      return result;
     }
 
     let closestDistance = snapRadiusSeconds;
@@ -203,6 +212,14 @@ export class TimelineSnapWorkerClient {
       }
     }
 
+    const durationMs = performance.now() - startMs;
+    workerPerfCollector.record({
+      domain: "ComputeWorker:TimelineSnap",
+      operation: "SNAP_QUERY_FALLBACK",
+      durationMs,
+      overBudget: durationMs > 16.67,
+    });
+
     return {
       type: "SNAP_RESULT",
       id: "fallback",
@@ -239,6 +256,7 @@ export class TimelineSnapWorkerClient {
     deltaSeconds: number,
     lockedTrackIds: string[],
   ): RippleResult {
+    const startMs = performance.now();
     const anchor = this.fallbackClips.find((c) => c.clipId === anchorClipId);
     if (!anchor || deltaSeconds === 0) {
       return { type: "RIPPLE_RESULT", id: "fallback", clipDeltas: [] };
@@ -256,6 +274,15 @@ export class TimelineSnapWorkerClient {
         clipDeltas.push({ clipId: clip.clipId, deltaSeconds });
       }
     }
+
+    const durationMs = performance.now() - startMs;
+    workerPerfCollector.record({
+      domain: "ComputeWorker:TimelineSnap",
+      operation: "RIPPLE_COMPUTE_FALLBACK",
+      durationMs,
+      itemsCount: clipDeltas.length,
+      overBudget: durationMs > 16.67,
+    });
 
     return { type: "RIPPLE_RESULT", id: "fallback", clipDeltas };
   }
