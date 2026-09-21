@@ -2396,7 +2396,8 @@ export const NativeProgramPreview: React.FC = () => {
         // Lane 1: Low-resolution proxy scrub lane (capped <= 480px, proxy/quarter quality)
         // Lane 2: Full-resolution settled lane (full quality, full dimensions)
         let effectiveRenderTarget = renderTarget;
-        if (isScrubbing) {
+        const isCoarseSeek = Boolean(latestSeekIntent?.allowKeyframeApprox && !isSettling);
+        if (isScrubbing || isCoarseSeek) {
           const maxScrubDim = 480;
           const scrubScale = Math.min(
             1,
@@ -2423,7 +2424,7 @@ export const NativeProgramPreview: React.FC = () => {
                 isPlaying && latestSeekIntent.mode !== "scrub"
                   ? ("playback" as const)
                   : latestSeekIntent.mode,
-              quality: isScrubbing
+              quality: isScrubbing || isCoarseSeek
                 ? effectiveRenderTarget.quality
                 : isSettling
                   ? ("full" as const)

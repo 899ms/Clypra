@@ -133,7 +133,7 @@ const ClipInner: React.FC<ClipProps> = ({
   const selectClip = useUIStore((s) => s.selectClip);
   const toggleClipSelection = useUIStore((s) => s.toggleClipSelection);
   const isKeyframeExpanded = useUIStore((s) =>
-    s.expandedKeyframeClipIds.includes(clip.id),
+    s.expandedKeyframeClipIds?.includes(clip.id) ?? false,
   );
   const toggleKeyframeLane = useUIStore((s) => s.toggleKeyframeLane);
   // PERF-4 fix: granular selectors prevent all clips re-rendering on every scroll/clip change

@@ -44,8 +44,10 @@ const mockUpdateClip = vi.fn();
 
 const uiStoreState = {
   selectedClipIds: [] as string[],
+  expandedKeyframeClipIds: [] as string[],
   selectClip: mockSelectClip,
   toggleClipSelection: mockToggleClipSelection,
+  toggleKeyframeLane: vi.fn(),
 };
 
 vi.mock("@/store/uiStore", () => {

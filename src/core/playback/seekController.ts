@@ -91,7 +91,11 @@ export class SeekController {
     }
 
     const quality = input.quality ?? (
-      input.mode === "scrub" ? qualityForScrubVelocity(velocity) : "full"
+      input.mode === "scrub"
+        ? qualityForScrubVelocity(velocity)
+        : allowKeyframeApprox
+          ? "quarter"
+          : "full"
     );
     const source = input.source ?? (input.mode === "scrub" ? "scrub" : "seek");
 

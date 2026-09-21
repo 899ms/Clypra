@@ -79,6 +79,7 @@ describe("SeekController", () => {
 
       const coarseIntent = controller.request({ time: 10, mode: "seek", source: "timeline-click-seek" });
       expect(coarseIntent.allowKeyframeApprox).toBe(true);
+      expect(coarseIntent.quality).toBe("quarter");
       expect(coarseIntent.isSettling).toBe(false);
       expect(listener).toHaveBeenCalledTimes(1);
 

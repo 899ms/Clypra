@@ -844,7 +844,7 @@ impl VideoDecoder {
     }
 
     unsafe extern "C" fn get_hw_format(
-        ctx: *mut ffmpeg::ffi::AVCodecContext,
+        #[allow(unused_variables)] ctx: *mut ffmpeg::ffi::AVCodecContext,
         pix_fmts: *const ffmpeg::ffi::AVPixelFormat,
     ) -> ffmpeg::ffi::AVPixelFormat {
         if pix_fmts.is_null() {
