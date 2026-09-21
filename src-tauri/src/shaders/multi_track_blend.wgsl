@@ -83,6 +83,9 @@ struct LayerUniforms {
     color_grade: ColorGradeUniforms,
     chroma_key: ChromaKeyUniforms,
     body_effect: BodyEffectUniforms,
+    /// [displacement_x, displacement_y, sample_count, enabled(0=off, 1=on)]
+    /// displacement is in UV-space units (0..1 range maps to texture extents)
+    motion_blur: vec4<f32>,
 };
 
 struct BodyEffectUniforms {
@@ -348,6 +351,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var sample_color = textureSampleLevel(t_diffuse, s_diffuse, sample_uv, 0.0);
     if (layer.color_grade.blur_strength > 0.0 && layer.color_grade.blur_radius > 0.0) {
         sample_color = sample_blurred_color(sample_uv, layer.color_grade.blur_radius);
+    }
+
+    // 1b. Cinematic Shutter Motion Blur
+    // Accumulates N samples along the velocity displacement vector with
+    // trapezoidal shutter weighting (linear ramp in, constant, ramp out).
+    if (layer.motion_blur.w > 0.5) {
+        let blur_dx = layer.motion_blur.x;
+        let blur_dy = layer.motion_blur.y;
+        let n_samples = clamp(i32(layer.motion_blur.z), 4, 32);
+
+        var blur_accum = vec4<f32>(0.0);
+        var weight_sum = 0.0;
+
+        for (var k = 0; k < n_samples; k = k + 1) {
+            let t = (f32(k) + 0.5) / f32(n_samples) - 0.5; // [-0.5, +0.5]
+            // Trapezoidal shutter: flat center, tapered ends
+            let w = 1.0 - smoothstep(0.35, 0.5, abs(t));
+            let offset_uv = vec2<f32>(t * blur_dx, t * blur_dy);
+            let s_uv = clamp(sample_uv + offset_uv, vec2<f32>(0.0), vec2<f32>(1.0));
+            blur_accum += textureSampleLevel(t_diffuse, s_diffuse, s_uv, 0.0) * w;
+            weight_sum += w;
+        }
+
+        if (weight_sum > 0.001) {
+            sample_color = blur_accum / weight_sum;
+        }
     }
     if (layer.color_grade.chromatic_params.w > 0.5 && layer.color_grade.chromatic_params.x > 0.0) {
         sample_color = apply_chromatic_aberration(

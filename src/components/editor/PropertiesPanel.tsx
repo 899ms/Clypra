@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ChevronLeft,
   Sliders,
+  Zap,
 } from "lucide-react";
 import { useUIStore } from "@/store/uiStore";
 import { useTimelineStore } from "@/store/timelineStore";
@@ -34,6 +35,7 @@ import { usePresetStore } from "@/store/presetStore";
 import { EmptyPropertiesState } from "./properties/EmptyPropertiesState";
 import { TextStyleSection } from "./properties/TextStyleSection";
 import { TransformSection } from "./properties/TransformSection";
+import { MotionPresetSection } from "./properties/MotionPresetSection";
 import { AudioSection } from "./properties/AudioSection";
 import { TextAnimationControls } from "./properties/TextAnimationControls";
 import { EffectsFiltersSection } from "./properties/EffectsFiltersSection";
@@ -114,6 +116,24 @@ export function buildClipPropertyTransform(
       : undefined;
     newTransform.stickerSettings = newTransform.stickerSettings
       ? JSON.parse(JSON.stringify(newTransform.stickerSettings))
+      : undefined;
+  }
+
+  if ("motion" in newTransform) {
+    oldTransform.motion = clip.motion
+      ? JSON.parse(JSON.stringify(clip.motion))
+      : undefined;
+    newTransform.motion = newTransform.motion
+      ? JSON.parse(JSON.stringify(newTransform.motion))
+      : undefined;
+  }
+
+  if ("visualKeyframes" in newTransform) {
+    oldTransform.visualKeyframes = clip.visualKeyframes
+      ? JSON.parse(JSON.stringify(clip.visualKeyframes))
+      : undefined;
+    newTransform.visualKeyframes = newTransform.visualKeyframes
+      ? JSON.parse(JSON.stringify(newTransform.visualKeyframes))
       : undefined;
   }
 
@@ -927,6 +947,15 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                   <Layout className="w-3.5 h-3.5" />
                 </button>
               )}
+              {isVisualClip && (
+                <button
+                  onClick={onToggleCollapse}
+                  title="Motion & Animation"
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-text-muted hover:text-accent hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                </button>
+              )}
               {hasAudioTrack && (
                 <button
                   onClick={onToggleCollapse}
@@ -1027,6 +1056,16 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               handleUpdate={handleUpdate}
               handleUpdateMultiple={handleUpdateMultiple}
               handleApplyFit={handleApplyFit}
+              canvasWidth={canvasWidth}
+              canvasHeight={canvasHeight}
+            />
+          )}
+
+          {/* Motion & Animation Presets (Build-In, Build-Out, Loop) */}
+          {isVisualClip && (
+            <MotionPresetSection
+              selectedClip={selectedClip}
+              handleUpdateMultiple={handleUpdateMultiple}
               canvasWidth={canvasWidth}
               canvasHeight={canvasHeight}
             />

@@ -28,6 +28,7 @@ import {
 import { useViewportState } from "@/hooks/useViewportController";
 import { PreviewTransport } from "./PreviewTransport";
 import { TransformOverlayMemoized as TransformOverlay } from "../transform/TransformOverlay";
+import { ConnectedSpatialMotionPath } from "./SpatialMotionPath";
 import { SafeOverlay } from "../viewport/SafeOverlay";
 import {
   useViewportKeyboardShortcuts,
@@ -4043,6 +4044,15 @@ export const NativeProgramPreview: React.FC = () => {
                 />
 
                 <ConnectedTransformOverlay
+                  canvasWidth={canvasWidth}
+                  canvasHeight={canvasHeight}
+                  scale={scale}
+                  viewport={viewport}
+                  displayOffset={{ x: offsetX, y: offsetY }}
+                  displayWidth={displayWidth}
+                  displayHeight={displayHeight}
+                />
+                <ConnectedSpatialMotionPath
                   canvasWidth={canvasWidth}
                   canvasHeight={canvasHeight}
                   scale={scale}

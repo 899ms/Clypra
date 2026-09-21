@@ -11,6 +11,7 @@ import { useAddToTimeline } from "@/hooks/useAddToTimeline";
 import { usePanelResize } from "@/hooks/usePanelResize";
 import { useSettingsStore } from "@/store/settingsStore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { CurveEditorModal } from "./curves/CurveEditorModal";
 
 const SafeMediaPanel: React.FC<React.ComponentProps<typeof EnhancedMediaPanel>> = (props) => (
   <ErrorBoundary name="Media Library">
@@ -933,6 +934,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
           <SafeTimeline />
         </div>
       </div>
+      <CurveEditorModal />
     </div>
   );
 };

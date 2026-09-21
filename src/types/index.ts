@@ -452,6 +452,12 @@ export interface Clip {
   visualKeyframes?: Partial<
     Record<VisualPropertyKey, VisualPropertyKeyframe[]>
   >;
+  /** One-click kinetic motion preset configuration (In, Out, Loop) */
+  motion?: import("./motion").ClipMotionConfig;
+  /** Cinematic GPU shutter motion blur configuration */
+  motionBlur?: ClipMotionBlurConfig;
+  /** Optional override to force show or hide spatial motion path on canvas preview */
+  showMotionPath?: boolean;
   audioPath?: string;
   /** Source clip identity for generated detach-audio clips. */
   detachedFromClipId?: string;
@@ -460,6 +466,8 @@ export interface Clip {
   /** Optional preview image used by the compact parent timeline block. */
   compoundPreview?: string;
 }
+
+export * from "./motion";
 
 export interface StickerSettings {
   speed: number;
@@ -472,6 +480,14 @@ export type EasingType = KeyframeEasing;
 
 export interface VisualPropertyKeyframe extends Keyframe<number> {
   easing?: EasingType;
+}
+
+export interface ClipMotionBlurConfig {
+  enabled: boolean;
+  /** Shutter angle in degrees (e.g. 180 standard, 360 full frame exposure) */
+  shutterAngle?: number;
+  /** Number of directional blur accumulation samples (8, 16, 32) */
+  samples?: number;
 }
 
 export type VisualPropertyKey =

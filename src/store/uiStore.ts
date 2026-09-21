@@ -58,6 +58,21 @@ interface UIStore {
     | "about"
     | null;
 
+  expandedKeyframeClipIds: string[];
+  activeCurveEditor: {
+    clipId: string;
+    property: string;
+    keyframeIndex?: number;
+  } | null;
+
+  toggleKeyframeLane: (clipId: string) => void;
+  openCurveEditor: (
+    clipId: string,
+    property: string,
+    keyframeIndex?: number,
+  ) => void;
+  closeCurveEditor: () => void;
+
   previewMode: "program" | "source";
   sourceAsset:
     | (Omit<MediaAsset, "type"> & {
@@ -116,6 +131,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showSettingsModal: false,
   showTransferModal: false,
   settingsInitialTab: null,
+  expandedKeyframeClipIds: [],
+  activeCurveEditor: null,
 
   previewMode: "program",
   sourceAsset: null,
@@ -226,6 +243,26 @@ export const useUIStore = create<UIStore>((set, get) => ({
     set({
       showSettingsModal: true,
       settingsInitialTab: tab || null,
+    });
+  },
+
+  toggleKeyframeLane: (clipId) => {
+    set((state) => ({
+      expandedKeyframeClipIds: state.expandedKeyframeClipIds.includes(clipId)
+        ? state.expandedKeyframeClipIds.filter((id) => id !== clipId)
+        : [...state.expandedKeyframeClipIds, clipId],
+    }));
+  },
+
+  openCurveEditor: (clipId, property, keyframeIndex) => {
+    set({
+      activeCurveEditor: { clipId, property, keyframeIndex },
+    });
+  },
+
+  closeCurveEditor: () => {
+    set({
+      activeCurveEditor: null,
     });
   },
 

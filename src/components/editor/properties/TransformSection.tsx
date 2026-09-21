@@ -8,7 +8,13 @@ import {
   Lock,
   Unlock,
   Crosshair,
+  TrendingUp,
+  Route,
+  Aperture,
 } from "lucide-react";
+import { useTimelineStore } from "@/store/timelineStore";
+import { useUIStore } from "@/store/uiStore";
+import { getPlaybackClock } from "@/hooks/usePlaybackClock";
 import type { Clip } from "@/types";
 import { type ClipFitModeExtended } from "@/lib/timeline/timelineClip";
 import { PropertySlider } from "./primitives/PropertySlider";
@@ -62,6 +68,15 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
     (selectedClip.visualKeyframes?.rotation?.length || 0) > 0;
   const isOpacityKeyframed =
     (selectedClip.visualKeyframes?.opacity?.length || 0) > 0;
+  const hasPositionKeyframes =
+    (selectedClip.visualKeyframes?.x?.length || 0) >= 2 ||
+    (selectedClip.visualKeyframes?.y?.length || 0) >= 2;
+
+  const isKeyframeExpanded = useUIStore((s) =>
+    s.expandedKeyframeClipIds.includes(selectedClip.id),
+  );
+  const toggleKeyframeLane = useUIStore((s) => s.toggleKeyframeLane);
+  const openCurveEditor = useUIStore((s) => s.openCurveEditor);
 
   const handleToggleVisualKeyframe = useCallback(
     (
@@ -69,9 +84,13 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
       value: number,
     ) => {
       const currentKfs = selectedClip.visualKeyframes?.[prop] || [];
-      const localTime = 0;
+      const currentTime = getPlaybackClock().time;
+      const localTime = Math.max(
+        0,
+        Math.min(selectedClip.duration, currentTime - selectedClip.startTime),
+      );
       const existingIdx = currentKfs.findIndex(
-        (kf) => Math.abs(kf.time - localTime) < 0.05,
+        (kf) => Math.abs(kf.time - localTime) < 0.08,
       );
 
       let nextKfs: any[];
@@ -82,7 +101,7 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
           ...currentKfs,
           {
             id: `kf-${Date.now()}`,
-            time: localTime,
+            time: Math.round(localTime * 100) / 100,
             value,
             easing: "easeInOut",
           },
@@ -94,7 +113,12 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
         [prop]: nextKfs,
       });
     },
-    [selectedClip.visualKeyframes, handleUpdate],
+    [
+      selectedClip.visualKeyframes,
+      selectedClip.duration,
+      selectedClip.startTime,
+      handleUpdate,
+    ],
   );
 
   const handleCenterOnCanvas = useCallback(() => {
@@ -287,14 +311,49 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
               <span className="text-[10px] font-medium text-text-muted select-none">
                 Position
               </span>
-              <button
-                onClick={handleCenterOnCanvas}
-                className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] text-text-muted hover:text-accent hover:bg-accent/10 rounded transition-all cursor-pointer"
-                title="Center on canvas"
-              >
-                <Crosshair className="w-3 h-3" />
-                Center
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleKeyframeLane(selectedClip.id)}
+                  className={`flex items-center gap-1 px-1.5 py-0.5 text-[9px] rounded transition-all cursor-pointer ${
+                    isKeyframeExpanded
+                      ? "bg-accent text-white"
+                      : "text-text-muted hover:text-accent hover:bg-accent/10"
+                  }`}
+                  title="Toggle Timeline Keyframe Lanes"
+                >
+                  <span>◆</span>
+                  <span>Lanes</span>
+                </button>
+                {hasPositionKeyframes && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleUpdate(
+                        "showMotionPath",
+                        selectedClip.showMotionPath === false ? undefined : false,
+                      )
+                    }
+                    className={`flex items-center gap-1 px-1.5 py-0.5 text-[9px] rounded transition-all cursor-pointer ${
+                      selectedClip.showMotionPath === false
+                        ? "text-text-muted hover:text-accent hover:bg-accent/10"
+                        : "text-accent bg-accent/10"
+                    }`}
+                    title={selectedClip.showMotionPath === false ? "Show motion path" : "Hide motion path"}
+                  >
+                    <Route className="w-3 h-3" />
+                    Path
+                  </button>
+                )}
+                <button
+                  onClick={handleCenterOnCanvas}
+                  className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] text-text-muted hover:text-accent hover:bg-accent/10 rounded transition-all cursor-pointer"
+                  title="Center on canvas"
+                >
+                  <Crosshair className="w-3 h-3" />
+                  Center
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -388,6 +447,16 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
                 }
               />
             </div>
+            {isRotationKeyframed && (
+              <button
+                type="button"
+                onClick={() => openCurveEditor(selectedClip.id, "rotation")}
+                className="p-1 text-accent hover:text-accent/80 hover:bg-accent/10 rounded transition-all cursor-pointer mb-0.5"
+                title="Open Speed & Curve Editor for Rotation"
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+              </button>
+            )}
             {selectedClip.rotation !== 0 && (
               <button
                 onClick={() => handleUpdate("rotation", 0)}
@@ -400,19 +469,33 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
           </div>
 
           {/* Opacity */}
-          <PropertySlider
-            label="Opacity"
-            value={opacityPercent}
-            min={0}
-            max={100}
-            step={1}
-            suffix="%"
-            onChange={(v) => handleUpdate("opacity", v / 100)}
-            keyframeActive={isOpacityKeyframed}
-            onToggleKeyframe={() =>
-              handleToggleVisualKeyframe("opacity", opacityPercent / 100)
-            }
-          />
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <PropertySlider
+                label="Opacity"
+                value={opacityPercent}
+                min={0}
+                max={100}
+                step={1}
+                suffix="%"
+                onChange={(v) => handleUpdate("opacity", v / 100)}
+                keyframeActive={isOpacityKeyframed}
+                onToggleKeyframe={() =>
+                  handleToggleVisualKeyframe("opacity", opacityPercent / 100)
+                }
+              />
+            </div>
+            {isOpacityKeyframed && (
+              <button
+                type="button"
+                onClick={() => openCurveEditor(selectedClip.id, "opacity")}
+                className="p-1 text-accent hover:text-accent/80 hover:bg-accent/10 rounded transition-all cursor-pointer mb-0.5"
+                title="Open Speed & Curve Editor for Opacity"
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
 
           {/* Blend Mode */}
           <PropertySelect
@@ -452,6 +535,81 @@ export const TransformSection: React.FC<TransformSectionProps> = ({
                 Vertical
               </button>
             </div>
+          </div>
+
+          {/* Cinematic Motion Blur */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-medium text-text-muted select-none flex items-center gap-1.5">
+                <Aperture className="w-3 h-3" />
+                Cinematic Motion Blur
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  handleUpdate("motionBlur", {
+                    ...selectedClip.motionBlur,
+                    enabled: !selectedClip.motionBlur?.enabled,
+                  })
+                }
+                className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${
+                  selectedClip.motionBlur?.enabled
+                    ? "bg-accent"
+                    : "bg-surface-raised border border-border/60"
+                }`}
+                title="Toggle cinematic motion blur"
+              >
+                <span
+                  className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+                    selectedClip.motionBlur?.enabled ? "translate-x-4" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+            {selectedClip.motionBlur?.enabled && (
+              <div className="space-y-2 pl-1">
+                <PropertySlider
+                  label="Shutter Angle"
+                  value={selectedClip.motionBlur?.shutterAngle ?? 180}
+                  min={0}
+                  max={360}
+                  step={5}
+                  suffix="°"
+                  onChange={(v) =>
+                    handleUpdate("motionBlur", {
+                      ...selectedClip.motionBlur,
+                      enabled: true,
+                      shutterAngle: v,
+                    })
+                  }
+                />
+                <div>
+                  <span className="text-[9px] text-text-muted/60 block mb-1 select-none">Quality</span>
+                  <div className="flex gap-1.5">
+                    {[8, 16, 32].map((q) => (
+                      <button
+                        key={q}
+                        type="button"
+                        onClick={() =>
+                          handleUpdate("motionBlur", {
+                            ...selectedClip.motionBlur,
+                            enabled: true,
+                            samples: q,
+                          })
+                        }
+                        className={`flex-1 py-1 text-[9px] font-medium rounded-md border transition-all cursor-pointer ${
+                          (selectedClip.motionBlur?.samples ?? 16) === q
+                            ? "bg-accent/15 text-accent border-accent/30"
+                            : "bg-surface-raised text-text-muted border-border/60 hover:text-text-primary"
+                        }`}
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </PropertySection>

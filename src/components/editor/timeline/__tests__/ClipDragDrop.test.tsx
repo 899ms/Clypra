@@ -26,6 +26,9 @@ vi.mock("@/store/uiStore", () => ({
       selectedTrackId: null,
       selectClip: mockSelectClip,
       toggleClipSelection: vi.fn(),
+      expandedKeyframeClipIds: [],
+      toggleKeyframeLane: vi.fn(),
+      openCurveEditor: vi.fn(),
     };
     return selector ? selector(state) : state;
   }),

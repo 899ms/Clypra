@@ -216,7 +216,7 @@ impl Default for ColorGradeUniforms {
     }
 }
 
-/// GPU Uniform layout matching multi_track_blend.wgsl (608 bytes).
+/// GPU Uniform layout matching multi_track_blend.wgsl.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct LayerUniforms {
@@ -229,6 +229,9 @@ pub struct LayerUniforms {
     pub color_grade: ColorGradeUniforms, // 320 bytes
     pub chroma_key: ChromaKeyUniforms,   // 48 bytes
     pub body_effect: BodyEffectUniforms, // 32 bytes
+    /// Motion blur: [displacement_x, displacement_y, sample_count, enabled(0/1)]
+    /// displacement in UV-space units; enabled=1.0 activates the blur pass.
+    pub motion_blur: [f32; 4],           // 16 bytes
 }
 
 /// A single renderable layer on the timeline.
@@ -976,6 +979,10 @@ impl MultiTrackCompositor {
                 color_grade,
                 chroma_key: layer.chroma_key,
                 body_effect: layer.body_effect,
+                // Motion blur: [dx_uv, dy_uv, sample_count, enabled]
+                // Zeroed by default; callers set this from the evaluated per-frame
+                // velocity vector when clip.motionBlur.enabled is true.
+                motion_blur: [0.0, 0.0, 16.0, 0.0],
             };
 
             self.uniform_pool
