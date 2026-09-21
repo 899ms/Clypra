@@ -35,88 +35,48 @@ import type {
   WorkerErrorResponse,
 } from "./types";
 import { VISUAL_PROP_INDEX, VOLUME_PROP_INDEX } from "./types";
+import { getCurveEvaluator, solveCubicBezier, resolveResponsiveKeyframes } from "@/core/animation";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Keyframe Bézier Curve & Animation Evaluation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function sampleCurveX(t: number, x1: number, x2: number): number {
-  return ((1 - 3 * x2 + 3 * x1) * t + (3 * x2 - 6 * x1)) * t * t + 3 * x1 * t;
-}
-
-function sampleCurveY(t: number, y1: number, y2: number): number {
-  return ((1 - 3 * y2 + 3 * y1) * t + (3 * y2 - 6 * y1)) * t * t + 3 * y1 * t;
-}
-
-function sampleCurveDerivativeX(t: number, x1: number, x2: number): number {
-  return (3 * (1 - 3 * x2 + 3 * x1) * t + 2 * (3 * x2 - 6 * x1)) * t + 3 * x1;
-}
-
-function solveCubicBezier(
-  progress: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-): number {
-  if (progress <= 0) return 0;
-  if (progress >= 1) return 1;
-
-  // Newton-Raphson iteration
-  let t = progress;
-  for (let i = 0; i < 8; i++) {
-    const x = sampleCurveX(t, x1, x2) - progress;
-    if (Math.abs(x) < 1e-5) return sampleCurveY(t, y1, y2);
-    const d = sampleCurveDerivativeX(t, x1, x2);
-    if (Math.abs(d) < 1e-5) break;
-    t -= x / d;
-  }
-
-  // Fallback to binary subdivision
-  let t0 = 0.0;
-  let t1 = 1.0;
-  t = progress;
-
-  for (let i = 0; i < 12; i++) {
-    const x = sampleCurveX(t, x1, x2);
-    if (Math.abs(x - progress) < 1e-5) break;
-    if (progress > x) t0 = t;
-    else t1 = t;
-    t = (t1 + t0) * 0.5;
-  }
-
-  return sampleCurveY(t, y1, y2);
-}
-
 function interpolateVisualKeyframes(
   keyframes: SerializedVisualKeyframe[],
   clipRelativeTime: number,
+  clipDuration?: number,
 ): number | null {
   if (keyframes.length === 0) return null;
-  if (keyframes.length === 1) return keyframes[0].value;
 
-  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
-  if (clipRelativeTime <= sorted[0].time) return sorted[0].value;
-  if (clipRelativeTime >= sorted[sorted.length - 1].time) {
-    return sorted[sorted.length - 1].value;
+  const resolved = resolveResponsiveKeyframes(keyframes, clipDuration);
+  if (resolved.length === 0) return null;
+  if (resolved.length === 1) return resolved[0].value;
+
+  if (clipRelativeTime <= resolved[0].resolvedTime) return resolved[0].value;
+  if (clipRelativeTime >= resolved[resolved.length - 1].resolvedTime) {
+    return resolved[resolved.length - 1].value;
   }
 
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const k0 = sorted[i];
-    const k1 = sorted[i + 1];
+  for (let i = 0; i < resolved.length - 1; i++) {
+    const k0 = resolved[i];
+    const k1 = resolved[i + 1];
 
-    if (clipRelativeTime >= k0.time && clipRelativeTime <= k1.time) {
-      const span = k1.time - k0.time;
+    if (clipRelativeTime >= k0.resolvedTime && clipRelativeTime <= k1.resolvedTime) {
+      const span = k1.resolvedTime - k0.resolvedTime;
       if (span <= 1e-5) return k0.value;
-      const progress = (clipRelativeTime - k0.time) / span;
+      const progress = (clipRelativeTime - k0.resolvedTime) / span;
 
-      if (k0.easing) {
+      let eased = progress;
+      if (k0.spring) {
+        eased = getCurveEvaluator("spring", undefined, k0.spring)(progress);
+      } else if (k0.easing) {
         const [x1, y1, x2, y2] = k0.easing;
-        const eased = solveCubicBezier(progress, x1, y1, x2, y2);
-        return k0.value + eased * (k1.value - k0.value);
-      } else {
-        return k0.value + progress * (k1.value - k0.value);
+        eased = solveCubicBezier(x1, y1, x2, y2, progress);
+      } else if (k0.easingName) {
+        eased = getCurveEvaluator(k0.easingName)(progress);
       }
+
+      return k0.value + eased * (k1.value - k0.value);
     }
   }
 
@@ -176,7 +136,7 @@ function handleKeyframeEvaluate(msg: KeyframeEvalRequest): void {
       }
 
       for (const [prop, kfs] of byProp) {
-        const val = interpolateVisualKeyframes(kfs, clipRelativeTime);
+        const val = interpolateVisualKeyframes(kfs, clipRelativeTime, clip.duration);
         if (val !== null) {
           triplets.push(clipIdx, prop, val);
         }

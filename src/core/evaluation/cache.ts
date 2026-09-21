@@ -330,6 +330,9 @@ export function computeClipVersion(clips: Array<Record<string, any>>, transition
         fastPropSig(c.shadow),
         fastPropSig(c.background),
         fastPropSig(c.customization),
+        fastPropSig(c.motion),
+        fastPropSig(c.visualKeyframes),
+        fastPropSig(c.keyframes),
         c.effectStackVersion ?? "",
       ].join(":"),
     )

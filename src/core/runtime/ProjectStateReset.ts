@@ -223,6 +223,8 @@ export async function resetAllProjectState(options: ResetOptions = {}): Promise<
         sourceTextPreset: null,
         sourceInPoint: null,
         sourceOutPoint: null,
+        expandedKeyframeClipIds: [],
+        activeCurveEditor: null,
       });
 
       resetSubsystems.push("UIStore");
