@@ -591,7 +591,7 @@ pub(crate) async fn prepare_native_preview_pipelines(
 
     #[cfg(not(target_os = "windows"))]
     if !session.has_compositor(width, height, target_format) {
-        session.warmup_gpu_pipelines(width, height, target_format);
+        session.warmup_native_surface_pipelines(width, height, target_format);
     }
     Ok(())
 }
@@ -3143,7 +3143,7 @@ pub(crate) async fn present_native_frame_internal(
             frame.decode_timings,
             frame.scheduler_wait_us,
             Some(frame.ready_at),
-            frame.queued_at,
+            presentation_started,
             true,
         ),
         None => {

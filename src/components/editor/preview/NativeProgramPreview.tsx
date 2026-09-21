@@ -222,6 +222,27 @@ function capWebViewRenderTarget(target: {
   };
 }
 
+const MAX_READBACK_WIDTH = 1920;
+const MAX_READBACK_HEIGHT = 1080;
+
+function clampReadbackRequest(request: NativeFrameRequest): NativeFrameRequest {
+  if (
+    request.outputWidth <= MAX_READBACK_WIDTH &&
+    request.outputHeight <= MAX_READBACK_HEIGHT
+  ) {
+    return request;
+  }
+  const scale = Math.min(
+    MAX_READBACK_WIDTH / request.outputWidth,
+    MAX_READBACK_HEIGHT / request.outputHeight,
+  );
+  return {
+    ...request,
+    outputWidth: Math.max(1, Math.round(request.outputWidth * scale)),
+    outputHeight: Math.max(1, Math.round(request.outputHeight * scale)),
+  };
+}
+
 interface ConnectedProgramTransportProps {
   duration: number;
   frameRate: number;
@@ -1902,13 +1923,14 @@ export const NativeProgramPreview: React.FC = () => {
     const nativePreviewScheduler = new NativePreviewFrameScheduler({
       maxCacheEntries: 12,
       maxInFlight: 1,
-      load: async (request, signal) => {
+      load: async (rawRequest, signal) => {
         if (signal?.aborted) {
           throw new DOMException(
             "Native preview request cancelled",
             "AbortError",
           );
         }
+        const request = clampReadbackRequest(rawRequest);
         const requestKey = getNativeFrameRequestKey(request);
         const frontendSpan = nativePerfCollector.isEnabled()
           ? nativePerfCollector.begin(request, {
@@ -2873,9 +2895,16 @@ export const NativeProgramPreview: React.FC = () => {
           lastNativePlaybackRequestKey = "";
           void hideNativeSurfaceWhenIdle().catch(() => undefined);
         }
+        const clampedNativeRequestKey = nativeRequest
+          ? getNativeFrameRequestKey(clampReadbackRequest(nativeRequest))
+          : "";
         const cachedNativeFrame =
           nativeRequestKey !== ""
-            ? nativePreviewScheduler.getCached(nativeRequestKey)
+            ? (nativePreviewScheduler.getCached(nativeRequestKey) ??
+               (clampedNativeRequestKey !== "" &&
+               clampedNativeRequestKey !== nativeRequestKey
+                 ? nativePreviewScheduler.getCached(clampedNativeRequestKey)
+                 : null))
             : null;
         const nativePausedReadbackPath = nativePausedPath;
         const nativeFrameNeedsRetry =
@@ -3345,13 +3374,23 @@ export const NativeProgramPreview: React.FC = () => {
                     demandDelayUs,
                   );
                 }
+                const readbackRequest = clampReadbackRequest(requestSource.request);
+                const readbackRequestKey =
+                  readbackRequest === requestSource.request
+                    ? requestKey
+                    : getNativeFrameRequestKey(readbackRequest);
+                const readbackSource: NativePreviewRequestSource = {
+                  ...requestSource,
+                  requestKey: readbackRequestKey,
+                  request: readbackRequest,
+                };
                 nativePlaybackInFlight = nativePreviewScheduler
-                  .requestVisible(requestSource)
+                  .requestVisible(readbackSource)
                   .then((frame) => {
                     const frontendSpan =
-                      nativeFrontendPerfSpans.get(requestKey);
+                      nativeFrontendPerfSpans.get(readbackRequestKey);
                     frontendSpan?.finish();
-                    nativeFrontendPerfSpans.delete(requestKey);
+                    nativeFrontendPerfSpans.delete(readbackRequestKey);
                     const current = renderStateRef.current;
                     if (
                       isActive &&
@@ -3368,14 +3407,14 @@ export const NativeProgramPreview: React.FC = () => {
                   })
                   .catch((error) => {
                     const frontendSpan =
-                      nativeFrontendPerfSpans.get(requestKey);
+                      nativeFrontendPerfSpans.get(readbackRequestKey);
                     frontendSpan?.finish({
                       stale: true,
                       cancelled:
                         error instanceof DOMException &&
                         error.name === "AbortError",
                     });
-                    nativeFrontendPerfSpans.delete(requestKey);
+                    nativeFrontendPerfSpans.delete(readbackRequestKey);
                     nativeContinuousFailureStreak += 1;
                     lastNativePlaybackRequestKey = "";
                     if (nativeContinuousFailureStreak >= 3) {
@@ -3468,11 +3507,16 @@ export const NativeProgramPreview: React.FC = () => {
               requestForRender &&
               !nativeDirectSurfacePath
             ) {
+              const readbackRequest = clampReadbackRequest(requestForRender);
+              const readbackRequestKey =
+                readbackRequest === requestForRender
+                  ? nativeRequestKey
+                  : getNativeFrameRequestKey(readbackRequest);
               try {
                 const visibleSource: NativePreviewRequestSource = {
-                  requestKey: nativeRequestKey,
+                  requestKey: readbackRequestKey,
                   frameIndex,
-                  request: requestForRender,
+                  request: readbackRequest,
                   generation: targetGeneration,
                 };
                 if (latestSeekIntent?.scrubSpanId) {
@@ -3494,9 +3538,9 @@ export const NativeProgramPreview: React.FC = () => {
                 // response to the current program canvas.
                 if (!targetStillCurrent()) {
                   const frontendSpan =
-                    nativeFrontendPerfSpans.get(nativeRequestKey);
+                    nativeFrontendPerfSpans.get(readbackRequestKey);
                   frontendSpan?.finish({ stale: true });
-                  nativeFrontendPerfSpans.delete(nativeRequestKey);
+                  nativeFrontendPerfSpans.delete(readbackRequestKey);
                   forceRenderNeeded = true;
                   return;
                 }
@@ -3515,9 +3559,9 @@ export const NativeProgramPreview: React.FC = () => {
                   // must not trip the renderer circuit breaker or show a
                   // native-only failure toast for an obsolete frame.
                   const frontendSpan =
-                    nativeFrontendPerfSpans.get(nativeRequestKey);
+                    nativeFrontendPerfSpans.get(readbackRequestKey);
                   frontendSpan?.finish({ stale: true });
-                  nativeFrontendPerfSpans.delete(nativeRequestKey);
+                  nativeFrontendPerfSpans.delete(readbackRequestKey);
                   nativeRetryAt = 0;
                   forceRenderNeeded = true;
                   return;
@@ -3534,14 +3578,14 @@ export const NativeProgramPreview: React.FC = () => {
                   nativeBlockedKey = nativeRequestKey;
                 }
                 const frontendSpan =
-                  nativeFrontendPerfSpans.get(nativeRequestKey);
+                  nativeFrontendPerfSpans.get(readbackRequestKey);
                 frontendSpan?.finish({
                   stale,
                   cancelled:
                     error instanceof DOMException &&
                     error.name === "AbortError",
                 });
-                nativeFrontendPerfSpans.delete(nativeRequestKey);
+                nativeFrontendPerfSpans.delete(readbackRequestKey);
                 nativeRetryAt = performance.now() + 250;
                 if (nativeOnlyMode) {
                   toast.error(
