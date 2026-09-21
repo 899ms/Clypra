@@ -199,6 +199,9 @@ jobs:
         shell: pwsh
         run: .\scripts\setup-sidecars.ps1 -Target ${{ matrix.target }} -Force
 
+      - name: Verify bundled media runtime
+        run: node scripts/verify-sidecars.mjs --target ${{ matrix.target }}
+
       - name: Run Vitest Suite
         run: npx vitest run
 

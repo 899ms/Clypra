@@ -2,7 +2,6 @@ use crate::commands::export::augmented_path;
 use crate::models::{MediaMetadata, VideoMetadata};
 use crate::thumbnail_engine::decoder::{get_decoder, VideoStreamMetadata};
 use base64::Engine;
-use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -318,28 +317,11 @@ async fn get_audio_duration(path: &str) -> Result<f64, String> {
 
 #[tauri::command]
 pub async fn extract_poster_frame(path: String, time: f64) -> Result<String, String> {
-    use image::codecs::png::PngEncoder;
-
     eprintln!(
         "[extract_poster_frame] Extracting frame at {}s from {}",
         time, path
     );
-
-    let decoder = get_decoder(&path).await?;
-
-    let rgba_bytes = {
-        let mut guard = decoder.lock().await;
-        guard.decode_frame(time, 160, 90)?
-    };
-
-    let mut png_data = Vec::new();
-    let encoder = PngEncoder::new(&mut png_data);
-    encoder
-        .write_image(&rgba_bytes, 160, 90, image::ExtendedColorType::Rgba8)
-        .map_err(|e| format!("PNG encoding failed: {}", e))?;
-
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
-    Ok(format!("data:image/png;base64,{}", encoded))
+    crate::commands::thumbnail::extract_poster_frame_command(path, time.max(1.0), 1.0).await
 }
 
 #[tauri::command]
@@ -444,6 +426,77 @@ pub async fn extract_audio_track(path: String) -> Result<String, String> {
 /// Returns a WebKit-compatible MP4 preview video path for a given media file.
 /// If the video is already in a native container (.mp4, .mov, .m4v, .webm), the original path is returned.
 /// If the video is in an unsupported container (.mkv, .avi, .flv, .wmv, etc.) or fails playback,
+async fn probe_video_codec(path: &str) -> Option<String> {
+    let output = crate::commands::binary_resolver::create_async_command("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if output.status.success() {
+        let codec = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+        if !codec.is_empty() {
+            return Some(codec);
+        }
+    }
+    None
+}
+
+fn is_browser_playable_video(codec: Option<&str>, ext: &str) -> bool {
+    let Some(codec) = codec else {
+        return matches!(ext, "mp4" | "mov" | "m4v" | "webm");
+    };
+
+    match codec {
+        "h264" | "avc1" => matches!(ext, "mp4" | "mov" | "m4v"),
+        "hevc" | "hvc1" => matches!(ext, "mp4" | "mov" | "m4v"),
+        "prores" => ext == "mov",
+        "vp8" | "vp9" => ext == "webm",
+        "av1" | "av01" => {
+            #[cfg(target_os = "macos")]
+            {
+                crate::thumbnail_engine::decoder::VideoDecoder::macos_supports_hw_av1()
+                    && matches!(ext, "mp4" | "mov" | "webm")
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn can_stream_copy_video(codec: Option<&str>) -> bool {
+    let Some(codec) = codec else {
+        return true;
+    };
+    match codec {
+        "h264" | "avc1" | "hevc" | "hvc1" => true,
+        "av1" | "av01" => {
+            #[cfg(target_os = "macos")]
+            {
+                crate::thumbnail_engine::decoder::VideoDecoder::macos_supports_hw_av1()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 /// this generates a fast stream-copied or lightweight proxy MP4 in the app cache directory.
 #[tauri::command]
 pub async fn get_or_create_preview_video(
@@ -463,12 +516,10 @@ pub async fn get_or_create_preview_video(
         .unwrap_or("")
         .to_lowercase();
 
-    let needs_remux = matches!(
-        ext.as_str(),
-        "mkv" | "avi" | "flv" | "wmv" | "ts" | "mts" | "m2ts" | "vob" | "3gp" | "ogv"
-    );
+    let probed_codec = probe_video_codec(&path).await;
+    let codec_ref = probed_codec.as_deref();
 
-    if !needs_remux && matches!(ext.as_str(), "mp4" | "mov" | "m4v" | "webm") {
+    if is_browser_playable_video(codec_ref, &ext) {
         return Ok(path);
     }
 
@@ -505,74 +556,81 @@ pub async fn get_or_create_preview_video(
 
     let out_str = output_path.to_string_lossy().to_string();
 
-    // Stage 1: Ultra-fast stream remux (-c:v copy -c:a copy -sn -tag:v hvc1 -movflags +faststart)
-    let stage1_status = crate::commands::binary_resolver::create_async_command("ffmpeg")
-        .args([
-            "-y",
-            "-i",
-            &path,
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-sn",
-            "-tag:v",
-            "hvc1",
-            "-movflags",
-            "+faststart",
-            &out_str,
-        ])
-        .output()
-        .await;
+    if can_stream_copy_video(codec_ref) {
+        // Stage 1: Ultra-fast stream remux (-c:v copy -c:a copy -sn -tag:v hvc1 -movflags +faststart)
+        let stage1_status = crate::commands::binary_resolver::create_async_command("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &path,
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-sn",
+                "-tag:v",
+                "hvc1",
+                "-movflags",
+                "+faststart",
+                &out_str,
+            ])
+            .output()
+            .await;
 
-    if let Ok(ref output) = stage1_status {
-        if output.status.success() && output_path.exists() {
-            if let Ok(m) = std::fs::metadata(&output_path) {
-                if m.len() > 1024 {
-                    eprintln!(
-                        "🦀 [get_or_create_preview_video] Stage 1 (stream copy) succeeded for {}",
-                        path
-                    );
-                    return Ok(out_str);
+        if let Ok(ref output) = stage1_status {
+            if output.status.success() && output_path.exists() {
+                if let Ok(m) = std::fs::metadata(&output_path) {
+                    if m.len() > 1024 {
+                        eprintln!(
+                            "🦀 [get_or_create_preview_video] Stage 1 (stream copy) succeeded for {}",
+                            path
+                        );
+                        return Ok(out_str);
+                    }
                 }
             }
         }
-    }
 
-    // Stage 2: Audio re-encode fallback (-c:v copy -c:a aac -b:a 192k -sn)
-    let stage2_status = crate::commands::binary_resolver::create_async_command("ffmpeg")
-        .args([
-            "-y",
-            "-i",
-            &path,
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-sn",
-            "-tag:v",
-            "hvc1",
-            "-movflags",
-            "+faststart",
-            &out_str,
-        ])
-        .output()
-        .await;
+        // Stage 2: Audio re-encode fallback (-c:v copy -c:a aac -b:a 192k -sn)
+        let stage2_status = crate::commands::binary_resolver::create_async_command("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &path,
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-sn",
+                "-tag:v",
+                "hvc1",
+                "-movflags",
+                "+faststart",
+                &out_str,
+            ])
+            .output()
+            .await;
 
-    if let Ok(ref output) = stage2_status {
-        if output.status.success() && output_path.exists() {
-            if let Ok(m) = std::fs::metadata(&output_path) {
-                if m.len() > 1024 {
-                    eprintln!("🦀 [get_or_create_preview_video] Stage 2 (video copy + aac) succeeded for {}", path);
-                    return Ok(out_str);
+        if let Ok(ref output) = stage2_status {
+            if output.status.success() && output_path.exists() {
+                if let Ok(m) = std::fs::metadata(&output_path) {
+                    if m.len() > 1024 {
+                        eprintln!("🦀 [get_or_create_preview_video] Stage 2 (video copy + aac) succeeded for {}", path);
+                        return Ok(out_str);
+                    }
                 }
             }
         }
+    } else {
+        eprintln!(
+            "🦀 [get_or_create_preview_video] Video codec {:?} cannot be stream copied for browser preview; jumping to Stage 3 transcode for {}",
+            codec_ref, path
+        );
     }
 
-    // Stage 3: Fast proxy transcode (-c:v libx264 -preset ultrafast -crf 24 -c:a aac -sn)
+    // Stage 3: Fast proxy transcode (-c:v libx264 -preset ultrafast -crf 24 -pix_fmt yuv420p -c:a aac -sn)
     let stage3_status = crate::commands::binary_resolver::create_async_command("ffmpeg")
         .args([
             "-y",
@@ -584,6 +642,8 @@ pub async fn get_or_create_preview_video(
             "ultrafast",
             "-crf",
             "24",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-b:a",
@@ -930,7 +990,7 @@ fn compute_waveform_buckets(samples: &[f32], num_buckets: usize) -> Vec<Waveform
 
 #[cfg(test)]
 mod tests {
-    use super::decode_image_rgba_bytes;
+    use super::*;
 
     #[test]
     fn native_still_image_decode_preserves_alpha_and_exact_dimensions() {
@@ -947,4 +1007,44 @@ mod tests {
         assert_eq!(rgba.len(), 37 * 23 * 4);
         assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] < 255));
     }
+
+    #[test]
+    fn test_browser_video_playability_rules() {
+        assert!(is_browser_playable_video(Some("h264"), "mp4"));
+        assert!(is_browser_playable_video(Some("avc1"), "mp4"));
+        assert!(is_browser_playable_video(Some("hevc"), "mov"));
+        assert!(is_browser_playable_video(Some("prores"), "mov"));
+        assert!(is_browser_playable_video(Some("vp9"), "webm"));
+
+        // Non-web codecs
+        assert!(!is_browser_playable_video(Some("mpeg4"), "mp4"));
+        assert!(!is_browser_playable_video(Some("wmv3"), "wmv"));
+        assert!(!is_browser_playable_video(Some("flv1"), "flv"));
+
+        #[cfg(target_os = "macos")]
+        {
+            if !crate::thumbnail_engine::decoder::VideoDecoder::macos_supports_hw_av1() {
+                assert!(!is_browser_playable_video(Some("av1"), "mp4"));
+                assert!(!can_stream_copy_video(Some("av1")));
+            }
+        }
+        assert!(can_stream_copy_video(Some("h264")));
+        assert!(can_stream_copy_video(Some("hevc")));
+        assert!(!can_stream_copy_video(Some("mpeg4")));
+    }
+
+    #[tokio::test]
+    async fn test_probe_video_codec_on_av1_asset() {
+        let path = "/Users/AIEraDev/Documents/clypra-testing-assets/54M views · 868K reactions ｜ Guest arrivals at the Guinness World Record Attempt and Birthday Party of @djprettyplay last night ｜ Oga Yenne TV [974631751768961].mp4";
+        if std::path::Path::new(path).exists() {
+            let codec = probe_video_codec(path).await;
+            assert_eq!(codec.as_deref(), Some("av1"));
+            #[cfg(target_os = "macos")]
+            if !crate::thumbnail_engine::decoder::VideoDecoder::macos_supports_hw_av1() {
+                assert!(!is_browser_playable_video(codec.as_deref(), "mp4"));
+                assert!(!can_stream_copy_video(codec.as_deref()));
+            }
+        }
+    }
 }
+

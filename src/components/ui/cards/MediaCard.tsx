@@ -7,6 +7,7 @@ import { useDrag } from "react-dnd";
 import { Film, Plus, AlertTriangle } from "lucide-react";
 
 import { useUIStore } from "@/store/uiStore";
+import { useProjectStore } from "@/store/projectStore";
 import { formatTime } from "@/lib/utils/timeFormatting";
 import { MediaCardWaveform } from "./MediaCardWaveform";
 
@@ -51,6 +52,47 @@ export const MediaCard: React.FC<MediaCardProps> = ({
     onClick(); // Keep selection state
     previewAsset(asset); // Switch to source preview + auto-pause program
   };
+
+  // Self-heal: If video asset is missing a posterFrame, lazily extract it in background
+  React.useEffect(() => {
+    if (
+      asset.type === "video" &&
+      !asset.posterFrame &&
+      !asset.isMissing &&
+      asset.path
+    ) {
+      let isMounted = true;
+      platform
+        .extractPosterFrame(
+          asset.path,
+          asset.duration || 1.0,
+          typeof window !== "undefined" ? window.devicePixelRatio || 1.0 : 1.0,
+        )
+        .then((posterFrame) => {
+          if (isMounted && posterFrame) {
+            useProjectStore
+              .getState()
+              .updateMediaAsset(asset.id, { posterFrame });
+          }
+        })
+        .catch((err) => {
+          console.warn(
+            `[MediaCard] Failed to lazy extract poster for ${asset.name}:`,
+            err,
+          );
+        });
+      return () => {
+        isMounted = false;
+      };
+    }
+  }, [
+    asset.id,
+    asset.type,
+    asset.posterFrame,
+    asset.isMissing,
+    asset.path,
+    asset.duration,
+  ]);
 
   const isImage =
     asset.type === "image" ||

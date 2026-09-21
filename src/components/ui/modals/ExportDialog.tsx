@@ -138,6 +138,17 @@ const countGraphemes = (str: string): number => {
   return Array.from(graphemeSegmenter.segment(str)).length;
 };
 
+// Clean version helper to format internal FFmpeg runtime strings into consumer-ready versions
+function cleanEngineVersion(ver?: string): string {
+  if (!ver) return "";
+  return ver
+    .replace(/^ffmpeg\s+version\s*/i, "")
+    .replace(/^ffmpeg\s*/i, "")
+    .split(/\s*Copyright/i)[0]
+    .replace(/^v/i, "")
+    .trim();
+}
+
 // ─── Main Export Dialog ──────────────────────────────────────────────────
 
 export const ExportDialog: React.FC<ExportDialogProps> = ({
@@ -730,14 +741,14 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
             );
           })}
 
-          {/* FFmpeg status — bottom of sidebar */}
+          {/* Media Engine status — bottom of sidebar */}
           {!platform.isCapacitor() && (
             <div className="hidden md:block mt-auto pt-3 border-t border-white/6">
               {ffmpegAvailable === null && (
                 <div className="flex items-center gap-2 px-1">
                   <div className="w-2 h-2 rounded-full bg-text-muted/30 animate-pulse" />
                   <span className="text-[10px] text-text-muted">
-                    Checking FFmpeg…
+                    Checking export engine…
                   </span>
                 </div>
               )}
@@ -746,9 +757,15 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                   <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_4px_--theme(--color-emerald-500/50)]" />
                   <span
                     className="text-[10px] text-text-muted truncate"
-                    title={ffmpegVersion}
+                    title={
+                      cleanEngineVersion(ffmpegVersion)
+                        ? `Clypra Media Engine (Bundled · v${cleanEngineVersion(ffmpegVersion)})`
+                        : "Clypra Media Engine (Bundled)"
+                    }
                   >
-                    {ffmpegVersion || "FFmpeg ready"}
+                    {cleanEngineVersion(ffmpegVersion)
+                      ? `Export engine ready (v${cleanEngineVersion(ffmpegVersion)})`
+                      : "Export engine ready"}
                   </span>
                 </div>
               )}

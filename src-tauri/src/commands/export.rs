@@ -1501,36 +1501,30 @@ pub async fn cancel_video_export(session_id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Check if FFmpeg is available on the system.
+/// Check whether Clypra's short-lived media worker can be launched.
+///
+/// Packaged builds use the target-specific FFmpeg sidecar, not a user PATH
+/// installation. PATH remains a development-only fallback.
 #[tauri::command]
 pub async fn check_ffmpeg_available() -> Result<bool, String> {
-    let output = crate::commands::binary_resolver::create_async_command("ffmpeg")
-        .arg("-version")
-        .output()
-        .await;
-
-    match output {
-        Ok(output) => Ok(output.status.success()),
-        Err(_) => Ok(false),
-    }
+    Ok(crate::media_runtime::MediaRuntime::status().await.available)
 }
 
-/// Get FFmpeg version information.
+/// Get the version of Clypra's managed FFmpeg worker.
 #[tauri::command]
 pub async fn get_ffmpeg_version() -> Result<String, String> {
-    let output = crate::commands::binary_resolver::create_async_command("ffmpeg")
-        .arg("-version")
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run FFmpeg: {}", e))?;
+    let status = crate::media_runtime::MediaRuntime::status().await;
+    status.ffmpeg_version.ok_or_else(|| {
+        status
+            .diagnostic
+            .unwrap_or_else(|| "Clypra media runtime is unavailable".to_string())
+    })
+}
 
-    if output.status.success() {
-        let version = String::from_utf8_lossy(&output.stdout);
-        let first_line = version.lines().next().unwrap_or("Unknown");
-        Ok(first_line.to_string())
-    } else {
-        Err("FFmpeg not available".to_string())
-    }
+/// Return diagnostics for Clypra's bundled FFmpeg and FFprobe runtime.
+#[tauri::command]
+pub async fn get_media_runtime_status() -> crate::media_runtime::MediaRuntimeStatus {
+    crate::media_runtime::MediaRuntime::status().await
 }
 
 /// Track A — Native GPU/Rasterizer Rectangle Smoke Test Spike
