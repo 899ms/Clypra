@@ -360,4 +360,169 @@ describe("Production Telemetry Collector in Clypra Desktop", () => {
       maxAudioClips: 2,
     });
   });
+
+  it("throttles high-frequency over-budget frame anomalies while tracking throttled counts in rollup", () => {
+    // Emit 25 over-budget frames (e.g. 66.4 ms / 66,400 us like in the pathological session)
+    for (let i = 0; i < 25; i++) {
+      telemetryCollector.recordRenderSpan(
+        { decodeUs: 50000, composeUs: 15000, totalTimeUs: 66400 },
+        0, // 0 dropped frames
+        1,
+        { codec: "hevc", resolutionBucket: "4k", nominalFps: 60 },
+        "playback",
+      );
+    }
+
+    // Individual sample events are capped at MAX_LATENCY_ANOMALIES_PER_MINUTE (10)
+    expect(telemetryCollector.getQueueLength()).toBe(10);
+    // Suppressed frames are counted in the accumulator (25 - 10 = 15)
+    expect(telemetryCollector.getThrottledAnomaliesCount()).toBe(15);
+
+    // Force flush the rollup
+    telemetryCollector.flushRollupIfPending();
+
+    // The rollup event is appended to the queue
+    const queue = (telemetryCollector as any).queue;
+    const rollupEvent = queue[queue.length - 1];
+    expect(rollupEvent.sampleKind).toBe("window-rollup");
+    expect(rollupEvent.workload.totalFrames).toBe(25);
+    expect(rollupEvent.workload.throttledAnomaliesCount).toBe(15);
+    expect(rollupEvent.workload.stageTimings.totalTimeUs).toBeGreaterThanOrEqual(66400);
+  });
+
+  it("permits peak outliers that significantly exceed previous peak latency even after quota is filled", () => {
+    // Fill the latency anomaly quota with 10 frames at 25,000 us
+    for (let i = 0; i < 10; i++) {
+      telemetryCollector.recordRenderSpan(
+        { totalTimeUs: 25000 },
+        0,
+        1,
+        {},
+        "playback",
+      );
+    }
+    expect(telemetryCollector.getQueueLength()).toBe(10);
+
+    // A slightly worse frame (26,000 us, < 25% higher) is throttled
+    telemetryCollector.recordRenderSpan(
+      { totalTimeUs: 26000 },
+      0,
+      1,
+      {},
+      "playback",
+    );
+    expect(telemetryCollector.getQueueLength()).toBe(10);
+
+    // A significant peak outlier (40,000 us, > 25% higher than 25,000 us) is permitted
+    telemetryCollector.recordRenderSpan(
+      { totalTimeUs: 40000 },
+      0,
+      1,
+      {},
+      "playback",
+    );
+    expect(telemetryCollector.getQueueLength()).toBe(11);
+    const lastEvent = (telemetryCollector as any).queue[10];
+    expect(lastEvent.workload.stageTimings.totalTimeUs).toBe(40000);
+  });
+
+  it("maintains separate quota for dropped frames even after latency quota is exhausted", () => {
+    // Fill the latency-only anomaly quota
+    for (let i = 0; i < 10; i++) {
+      telemetryCollector.recordRenderSpan(
+        { totalTimeUs: 25000 },
+        0,
+        1,
+        {},
+        "playback",
+      );
+    }
+    expect(telemetryCollector.getQueueLength()).toBe(10);
+
+    // An eleventh latency-only anomaly is throttled
+    telemetryCollector.recordRenderSpan(
+      { totalTimeUs: 25000 },
+      0,
+      1,
+      {},
+      "playback",
+    );
+    expect(telemetryCollector.getQueueLength()).toBe(10);
+
+    // A frame with a dropped frame has its own quota and is sampled
+    telemetryCollector.recordRenderSpan(
+      { totalTimeUs: 20000 },
+      1, // 1 dropped frame
+      1,
+      {},
+      "playback",
+    );
+    expect(telemetryCollector.getQueueLength()).toBe(11);
+    const dropEvent = (telemetryCollector as any).queue[10];
+    expect(dropEvent.workload.droppedFrames).toBe(1);
+  });
+
+  it("throttles continuous intermediate scrub drag interactions but preserves settled scrub", () => {
+    // 1st intermediate scrub interaction is emitted
+    telemetryCollector.recordPreviewInteraction({
+      interaction: {
+        id: "scrub-int-1",
+        name: "scrub",
+        outcome: "superseded",
+      },
+      totalTimeUs: 50000,
+    });
+    expect(telemetryCollector.getQueueLength()).toBe(1);
+
+    // Immediate 2nd intermediate scrub interaction (<500ms) is throttled
+    telemetryCollector.recordPreviewInteraction({
+      interaction: {
+        id: "scrub-int-2",
+        name: "scrub",
+        outcome: "superseded",
+      },
+      totalTimeUs: 55000,
+    });
+    expect(telemetryCollector.getQueueLength()).toBe(1);
+
+    // Settled scrub interaction (outcome: "completed") is always emitted
+    telemetryCollector.recordPreviewInteraction({
+      interaction: {
+        id: "scrub-int-3",
+        name: "scrub",
+        outcome: "completed",
+      },
+      totalTimeUs: 60000,
+    });
+    expect(telemetryCollector.getQueueLength()).toBe(2);
+  });
+
+  it("bypasses throttling in qualification benchmark scenario", () => {
+    // Emit 20 frames with qualification scenario and forceSample
+    for (let i = 0; i < 20; i++) {
+      telemetryCollector.recordRenderSpan(
+        { totalTimeUs: 50000 },
+        0,
+        1,
+        {},
+        "playback",
+        undefined,
+        0,
+        0,
+        {
+          previewContext: {
+            view: "native",
+            surface: "native-surface",
+            runtimeEnvironment: "production",
+            scenario: "qualification",
+          },
+          forceSample: true,
+        },
+      );
+    }
+
+    // All 20 are enqueued without throttling
+    expect(telemetryCollector.getQueueLength()).toBe(20);
+  });
 });
+
