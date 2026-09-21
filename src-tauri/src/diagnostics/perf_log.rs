@@ -20,6 +20,8 @@
 //!   native frame cache.
 
 use dashmap::DashMap;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -265,8 +267,24 @@ pub async fn upload_perf_log_session(
         "entryCount": entries.len(),
         "entries": entries,
     });
+    let json = serde_json::to_vec(&body)
+        .map_err(|e| format!("Failed to serialize perf-log upload body: {e}"))?;
+    let uncompressed_bytes = json.len();
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(&json)
+        .map_err(|e| format!("Failed to gzip perf-log upload body: {e}"))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| format!("Failed to finish perf-log gzip stream: {e}"))?;
+    let compressed_bytes = compressed.len();
 
-    let mut request = client.post(&url).json(&body);
+    let mut request = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Content-Encoding", "gzip")
+        .header("X-Clypra-Perf-Uncompressed-Bytes", uncompressed_bytes.to_string())
+        .body(compressed);
 
     if !api_key.is_empty() {
         request = request
@@ -277,12 +295,18 @@ pub async fn upload_perf_log_session(
     let response = request
         .send()
         .await
-        .map_err(|e| format!("Upload request failed: {e}"))?;
+        .map_err(|e| format!(
+            "Upload request failed after gzip compression (entries={}, raw_bytes={}, gzip_bytes={}): {e}",
+            entries.len(), uncompressed_bytes, compressed_bytes
+        ))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Upload rejected — HTTP {status}: {body}"));
+        return Err(format!(
+            "Upload rejected — HTTP {status} (entries={}, raw_bytes={}, gzip_bytes={}): {body}",
+            entries.len(), uncompressed_bytes, compressed_bytes
+        ));
     }
 
     // Mark as uploaded by renaming extension so next launch doesn't re-upload it.
@@ -330,11 +354,13 @@ pub async fn upload_pending_perf_logs(
 
     let mut uploaded_count = 0usize;
     for file_path in pending {
-        if upload_perf_log_session(file_path, api_base_url.clone(), api_key.clone())
-            .await
-            .is_ok()
-        {
-            uploaded_count += 1;
+        match upload_perf_log_session(file_path.clone(), api_base_url.clone(), api_key.clone()).await {
+            Ok(_) => {
+                uploaded_count += 1;
+            }
+            Err(e) => {
+                eprintln!("[perf_log] Pending session upload failed for '{file_path}': {e}");
+            }
         }
     }
 
@@ -444,4 +470,80 @@ pub fn purge_perf_logs(app: tauri::AppHandle, max_age_days: Option<u32>) -> Resu
     }
 
     Ok(deleted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    #[test]
+    fn test_gzip_compression_roundtrip() {
+        let sample_data = serde_json::json!({
+            "entryCount": 2,
+            "entries": [
+                {
+                    "kind": "frontend-rollup",
+                    "sessionId": "test-session-123",
+                    "timestampEpochMs": 1789960202118u64,
+                    "payload": {
+                        "fps": 60.0,
+                        "droppedFrames": 0,
+                        "view": "native"
+                    }
+                },
+                {
+                    "kind": "native-diagnostic",
+                    "sessionId": "test-session-123",
+                    "timestampEpochMs": 1789960202120u64,
+                    "payload": {
+                        "message": "sync complete",
+                        "durationUs": 142
+                    }
+                }
+            ]
+        });
+
+        let json_bytes = serde_json::to_vec(&sample_data).expect("serialize json");
+        let uncompressed_len = json_bytes.len();
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&json_bytes).expect("write gzip");
+        let compressed = encoder.finish().expect("finish gzip");
+
+        assert!(!compressed.is_empty());
+
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).expect("decompress gzip");
+
+        assert_eq!(decompressed.len(), uncompressed_len);
+        let recovered: serde_json::Value =
+            serde_json::from_slice(&decompressed).expect("parse recovered json");
+        assert_eq!(recovered, sample_data);
+    }
+
+    #[test]
+    fn test_ndjson_line_parsing() {
+        let ndjson = r#"{"kind":"session-open","sessionId":"s1","timestampEpochMs":100,"payload":{}}
+{"kind":"frontend-rollup","sessionId":"s1","timestampEpochMs":200,"payload":{"fps":60}}
+
+{"kind":"session-close","sessionId":"s1","timestampEpochMs":300,"payload":{}}
+"#;
+
+        let entries: Vec<serde_json::Value> = ndjson
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap_or(serde_json::Value::Null)
+            })
+            .filter(|v| !v.is_null())
+            .collect();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0]["kind"], "session-open");
+        assert_eq!(entries[1]["kind"], "frontend-rollup");
+        assert_eq!(entries[2]["kind"], "session-close");
+    }
 }

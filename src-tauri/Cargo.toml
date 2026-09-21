@@ -42,6 +42,7 @@ once_cell = "1"
 uuid = { version = "1", features = ["v4"] }
 unicode-segmentation = "1"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
+flate2 = "1"
 futures-util = "0.3"
 axum = { version = "0.7", features = ["multipart"] }
 tower = "0.4"

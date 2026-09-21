@@ -967,6 +967,7 @@ dependencies = [
  "dashmap",
  "ffmpeg-next",
  "ffmpeg-sys-next",
+ "flate2",
  "futures-util",
  "image",
  "libc",
