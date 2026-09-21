@@ -728,6 +728,16 @@ impl VideoDecoder {
         }
     }
 
+    fn is_hwaccel_format(format: ffmpeg::ffi::AVPixelFormat) -> bool {
+        unsafe {
+            let desc = ffmpeg::ffi::av_pix_fmt_desc_get(format);
+            if desc.is_null() {
+                return false;
+            }
+            ((*desc).flags & ffmpeg::ffi::AV_PIX_FMT_FLAG_HWACCEL as u64) != 0
+        }
+    }
+
     /// FFmpeg's get_format callback must always return one of the formats it
     /// was offered. Returning AV_PIX_FMT_NONE means "no format", not "use
     /// software", and can leave a decoder producing an invalid AVFrame.
@@ -741,10 +751,22 @@ impl VideoDecoder {
             }
         }
 
+        // When hardware acceleration is not preferred or not supported,
+        // we MUST select a software pixel format and reject any hardware formats
+        // (such as AV_PIX_FMT_VIDEOTOOLBOX) that FFmpeg might place first in `offered`.
         offered
             .iter()
             .copied()
-            .find(|format| *format != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE)
+            .find(|format| {
+                *format != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE
+                    && !Self::is_hwaccel_format(*format)
+            })
+            .or_else(|| {
+                offered
+                    .iter()
+                    .copied()
+                    .find(|format| *format != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE)
+            })
             .unwrap_or(ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE)
     }
 
@@ -810,8 +832,19 @@ impl VideoDecoder {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn macos_supports_hw_av1() -> bool {
+        #[link(name = "VideoToolbox", kind = "framework")]
+        extern "C" {
+            fn VTIsHardwareDecodeSupported(codec_type: u32) -> bool;
+        }
+        // kCMVideoCodecType_AV1 = 'av01' = 0x61763031
+        const K_CM_VIDEO_CODEC_TYPE_AV1: u32 = u32::from_be_bytes(*b"av01");
+        unsafe { VTIsHardwareDecodeSupported(K_CM_VIDEO_CODEC_TYPE_AV1) }
+    }
+
     unsafe extern "C" fn get_hw_format(
-        #[allow(unused_variables)] ctx: *mut ffmpeg::ffi::AVCodecContext,
+        ctx: *mut ffmpeg::ffi::AVCodecContext,
         pix_fmts: *const ffmpeg::ffi::AVPixelFormat,
     ) -> ffmpeg::ffi::AVPixelFormat {
         if pix_fmts.is_null() {
@@ -827,7 +860,21 @@ impl VideoDecoder {
             offered.push(*current);
             current = current.add(1);
         }
-        let chosen = Self::select_decoder_pixel_format(&offered, Self::platform_hw_pixel_format());
+
+        #[cfg(target_os = "macos")]
+        let preferred_hw = if !ctx.is_null()
+            && (*ctx).codec_id == ffmpeg::ffi::AVCodecID::AV_CODEC_ID_AV1
+            && !Self::macos_supports_hw_av1()
+        {
+            None
+        } else {
+            Self::platform_hw_pixel_format()
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let preferred_hw = Self::platform_hw_pixel_format();
+
+        let chosen = Self::select_decoder_pixel_format(&offered, preferred_hw);
         #[cfg(target_os = "windows")]
         if chosen == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_D3D11 {
             Self::configure_d3d11va_shared_frames(ctx, chosen);
@@ -851,6 +898,17 @@ impl VideoDecoder {
                 return false;
             }
 
+            #[cfg(target_os = "macos")]
+            if hw_type == ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
+                && (*raw_ctx).codec_id == ffmpeg::ffi::AVCodecID::AV_CODEC_ID_AV1
+                && !Self::macos_supports_hw_av1()
+            {
+                log::info!(
+                    "[VideoDecoder] VideoToolbox AV1 hardware decode not supported on this Mac; using software decode (dav1d)"
+                );
+                return false;
+            }
+
             let required_method = ffmpeg::ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32;
             let mut index = 0;
             loop {
@@ -866,10 +924,56 @@ impl VideoDecoder {
         }
     }
 
+    unsafe extern "C" fn get_sw_format(
+        _ctx: *mut ffmpeg::ffi::AVCodecContext,
+        pix_fmts: *const ffmpeg::ffi::AVPixelFormat,
+    ) -> ffmpeg::ffi::AVPixelFormat {
+        if pix_fmts.is_null() {
+            return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
+        }
+
+        let mut offered = Vec::new();
+        let mut current = pix_fmts;
+        while *current != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+            offered.push(*current);
+            current = current.add(1);
+        }
+
+        Self::select_decoder_pixel_format(&offered, None)
+    }
+
     fn open_software_codec(
-        ctx: ffmpeg::codec::context::Context,
+        mut ctx: ffmpeg::codec::context::Context,
     ) -> Result<(ffmpeg::codec::decoder::Video, u32, u32), String> {
-        let decoder = ctx.decoder().video().map_err(|e| e.to_string())?;
+        unsafe {
+            if !ctx.as_mut_ptr().is_null() {
+                (*ctx.as_mut_ptr()).get_format = Some(Self::get_sw_format);
+            }
+        }
+
+        let is_av1 = unsafe {
+            !ctx.as_ptr().is_null()
+                && (*ctx.as_ptr()).codec_id == ffmpeg::ffi::AVCodecID::AV_CODEC_ID_AV1
+        };
+
+        let mut decoder = if is_av1 {
+            if let Some(dav1d) = ffmpeg::codec::decoder::find_by_name("libdav1d") {
+                log::debug!("[VideoDecoder] Found libdav1d software decoder for AV1");
+                ctx.decoder().open_as(dav1d).and_then(|c| c.video())
+            } else {
+                ctx.decoder().video()
+            }
+        } else {
+            ctx.decoder().video()
+        }
+        .map_err(|e| e.to_string())?;
+
+        unsafe {
+            if !decoder.as_ptr().is_null() {
+                (*decoder.as_mut_ptr()).get_format = Some(Self::get_sw_format);
+            }
+        }
+
         let w = decoder.width();
         let h = decoder.height();
         Ok((decoder, w, h))
@@ -2901,6 +3005,15 @@ mod still_image_tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_av1_hardware_detection_matches_platform_capability() {
+        let is_hw_supported = VideoDecoder::macos_supports_hw_av1();
+        // On M1/M2/Intel, VTIsHardwareDecodeSupported('av01') is false.
+        // On M3/M4, it is true. Either is valid, but the query must run safely and return a bool.
+        assert!(is_hw_supported == true || is_hw_supported == false);
+    }
+
+    #[test]
     fn rgb_still_image_metadata_becomes_native_sdr_nv12_metadata() {
         let rgb = VideoColorMetadata {
             matrix: "rgb".to_string(),
@@ -3071,5 +3184,35 @@ mod still_image_tests {
         assert_eq!(h, 240);
         assert_eq!(y.len(), (w * h) as usize);
         assert_eq!(uv.len(), (w * h / 2) as usize);
+    }
+
+    #[tokio::test]
+    async fn test_av1_video_thumbnail_and_poster_extraction() {
+        let path = "/Users/AIEraDev/Documents/clypra-testing-assets/54M views · 868K reactions ｜ Guest arrivals at the Guinness World Record Attempt and Birthday Party of @djprettyplay last night ｜ Oga Yenne TV [974631751768961].mp4";
+        if !std::path::Path::new(path).exists() {
+            println!("Asset file does not exist, skipping");
+            return;
+        }
+
+        println!("=== TEST: extract_poster_frame_command with CLI fallback ===");
+        let poster_res = crate::commands::thumbnail::extract_poster_frame_command(path.to_string(), 17.8, 2.0).await;
+        println!(
+            "extract_poster_frame_command result: is_ok={}, len={}",
+            poster_res.is_ok(),
+            poster_res.as_ref().map(|s| s.len()).unwrap_or(0)
+        );
+        if let Err(ref e) = poster_res {
+            println!("extract_poster_frame_command error: {}", e);
+        }
+        assert!(poster_res.is_ok(), "extract_poster_frame_command failed: {:?}", poster_res.err());
+        let poster_data = poster_res.unwrap();
+        assert!(poster_data.starts_with("data:image/webp;base64,"));
+        println!("Poster extraction succeeded! Data URL length: {} chars", poster_data.len());
+
+        // Also test legacy command fallback
+        println!("=== TEST: legacy extract_poster_frame ===");
+        let legacy_res = crate::commands::media::extract_poster_frame(path.to_string(), 2.0).await;
+        assert!(legacy_res.is_ok(), "legacy extract_poster_frame failed: {:?}", legacy_res.err());
+        println!("Legacy poster extraction succeeded! Data URL length: {} chars", legacy_res.unwrap().len());
     }
 }

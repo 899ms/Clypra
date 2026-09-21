@@ -14,6 +14,7 @@ pub mod commands;
 pub mod diagnostics;
 pub mod golden_harness;
 pub mod models;
+pub mod media_runtime;
 pub mod native_audio;
 pub mod native_core;
 pub mod preview_golden;
@@ -472,6 +473,7 @@ pub fn run() {
             cancel_native_timeline_export,
             check_ffmpeg_available,
             get_ffmpeg_version,
+            get_media_runtime_status,
             export_creator_thumbnail,
             // Whisper model management & local AI caption commands
             download_whisper_model,
