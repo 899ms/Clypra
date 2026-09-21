@@ -1,8 +1,17 @@
+import {
+  getCurveEvaluator,
+  solveCubicBezier as robustSolveCubicBezier,
+  resolveResponsiveKeyframes,
+} from "@/core/animation";
+import type { KeyframeEasing, KeyframeSpringConfig, KeyframeTimeAnchor } from "@/types";
+
 export interface Keyframe<T> {
-  time: number; // Normalized time offset (0.0 to 1.0) within clip duration
+  time: number; // Normalized time offset within clip duration or seconds from anchor
   value: T;
-  easing: "linear" | "ease-in" | "ease-out" | "ease-in-out" | "cubic-bezier";
+  anchor?: KeyframeTimeAnchor;
+  easing: KeyframeEasing | (string & {});
   controlPoints?: [number, number, number, number]; // [x1, y1, x2, y2] for custom cubic bezier curves
+  spring?: KeyframeSpringConfig;
 }
 
 export interface KeyframedProperty<T> {
@@ -13,21 +22,10 @@ export interface KeyframedProperty<T> {
 export interface NumericKeyframe {
   time: number;
   value: number;
-  easing?:
-    | "linear"
-    | "easeIn"
-    | "easeOut"
-    | "easeInOut"
-    | "ease-in"
-    | "ease-out"
-    | "ease-in-out"
-    | "bezier"
-    | "cubic-bezier"
-    | "exponential"
-    | "logarithmic"
-    | "hold"
-    | (string & {});
+  anchor?: KeyframeTimeAnchor;
+  easing?: KeyframeEasing | (string & {});
   controlPoints?: [number, number, number, number];
+  spring?: KeyframeSpringConfig;
 }
 
 /**
@@ -43,20 +41,31 @@ export function evaluateNumericKeyframes(
     presorted?: boolean;
     easingSide?: "left" | "right";
     bezierFallback?: "linear" | "smoothstep";
+    clipDuration?: number;
   } = {},
 ): number {
   if (!keyframes?.length) return defaultValue;
-  const sorted = options.presorted ? keyframes : [...keyframes].sort((a, b) => a.time - b.time);
-  if (time <= sorted[0].time) return sorted[0].value;
-  if (time >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value;
+  const resolved =
+    options.clipDuration != null && options.clipDuration > 0
+      ? resolveResponsiveKeyframes(keyframes, options.clipDuration)
+      : options.presorted
+        ? keyframes.map((k) => ({ ...k, resolvedTime: k.time }))
+        : [...keyframes]
+            .map((k) => ({ ...k, resolvedTime: k.time }))
+            .sort((a, b) => a.resolvedTime - b.resolvedTime);
 
-  for (let index = 0; index < sorted.length - 1; index += 1) {
-    const left = sorted[index];
-    const right = sorted[index + 1];
-    if (time < left.time || time > right.time) continue;
+  if (time <= resolved[0].resolvedTime) return resolved[0].value;
+  if (time >= resolved[resolved.length - 1].resolvedTime)
+    return resolved[resolved.length - 1].value;
 
-    const range = right.time - left.time;
-    const progress = range <= 0 ? 0 : Math.max(0, Math.min(1, (time - left.time) / range));
+  for (let index = 0; index < resolved.length - 1; index += 1) {
+    const left = resolved[index];
+    const right = resolved[index + 1];
+    if (time < left.resolvedTime || time > right.resolvedTime) continue;
+
+    const range = right.resolvedTime - left.resolvedTime;
+    const progress =
+      range <= 0 ? 0 : Math.max(0, Math.min(1, (time - left.resolvedTime) / range));
     const easingFrame = options.easingSide === "right" ? right : left;
     const easing = easingFrame.easing ?? "linear";
 
@@ -68,21 +77,16 @@ export function evaluateNumericKeyframes(
 
     let easedProgress: number;
     if (easing === "bezier" && !easingFrame.controlPoints) {
-      easedProgress = options.bezierFallback === "smoothstep"
-        ? progress * progress * (3 - 2 * progress)
-        : progress;
+      easedProgress =
+        options.bezierFallback === "smoothstep"
+          ? progress * progress * (3 - 2 * progress)
+          : progress;
     } else {
-      const normalizedEasing = easing === "easeIn"
-        ? "ease-in"
-        : easing === "easeOut"
-          ? "ease-out"
-          : easing === "easeInOut"
-            ? "ease-in-out"
-            : easing;
       easedProgress = getEasingProgress(
-        normalizedEasing as Keyframe<number>["easing"],
+        easing,
         progress,
         easingFrame.controlPoints,
+        easingFrame.spring,
       );
     }
 
@@ -105,7 +109,7 @@ export function isKeyframed<T>(prop: any): prop is KeyframedProperty<T> {
 }
 
 /**
- * Solves cubic bezier curves using Newton-Raphson numerical approximation.
+ * Solves cubic bezier curves using Newton-Raphson numerical approximation with bisection fallback.
  */
 export function solveCubicBezier(
   x1: number,
@@ -114,59 +118,19 @@ export function solveCubicBezier(
   y2: number,
   t: number
 ): number {
-  if (t === 0 || t === 1) return t;
-
-  let x = t;
-  // Use up to 8 iterations of Newton-Raphson solver
-  for (let i = 0; i < 8; i++) {
-    const currX = sampleBezierCurve(x1, x2, x) - t;
-    if (Math.abs(currX) < 1e-6) break;
-    const dX = sampleBezierDerivative(x1, x2, x);
-    if (Math.abs(dX) < 1e-6) break;
-    x -= currX / dX;
-  }
-  return sampleBezierCurve(y1, y2, x);
-}
-
-function sampleBezierCurve(p1: number, p2: number, t: number): number {
-  return 3 * t * (1 - t) * (1 - t) * p1 + 3 * t * t * (1 - t) * p2 + t * t * t;
-}
-
-function sampleBezierDerivative(p1: number, p2: number, t: number): number {
-  return 3 * (1 - t) * (1 - t) * p1 + 6 * t * (1 - t) * (p2 - p1) + 3 * t * t * (1 - p2);
+  return robustSolveCubicBezier(x1, y1, x2, y2, t);
 }
 
 /**
- * Maps standard easing keywords to progress coefficients.
+ * Maps standard easing keywords, kinetic curves, and spring configs to progress coefficients.
  */
 export function getEasingProgress(
-  easing: Keyframe<any>["easing"],
+  easing: Keyframe<any>["easing"] | string | undefined,
   t: number,
-  controlPoints?: [number, number, number, number]
+  controlPoints?: [number, number, number, number],
+  spring?: KeyframeSpringConfig
 ): number {
-  switch (easing) {
-    case "linear":
-      return t;
-    case "ease-in":
-      return solveCubicBezier(0.42, 0.0, 1.0, 1.0, t);
-    case "ease-out":
-      return solveCubicBezier(0.0, 0.0, 0.58, 1.0, t);
-    case "ease-in-out":
-      return solveCubicBezier(0.42, 0.0, 0.58, 1.0, t);
-    case "cubic-bezier":
-      if (controlPoints && controlPoints.length === 4) {
-        return solveCubicBezier(
-          controlPoints[0],
-          controlPoints[1],
-          controlPoints[2],
-          controlPoints[3],
-          t
-        );
-      }
-      return t;
-    default:
-      return t;
-  }
+  return getCurveEvaluator(easing ?? "linear", controlPoints, spring)(t);
 }
 
 /**
@@ -260,35 +224,35 @@ export function evaluateProperty<T>(
 
   const { keyframes, defaultValue } = property;
 
-  // Handle edge cases of keyframe count
-  if (keyframes.length === 0) return defaultValue;
-  if (keyframes.length === 1) return keyframes[0].value;
+  // Resolve responsive keyframes relative to clip duration
+  const resolved = resolveResponsiveKeyframes(keyframes, clipDuration);
 
-  // Sort keyframes by time offset just to be robust
-  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  // Handle edge cases of keyframe count
+  if (resolved.length === 0) return defaultValue;
+  if (resolved.length === 1) return resolved[0].value;
 
   // Bounds checks
-  if (timeOffset <= sorted[0].time) return sorted[0].value;
-  if (timeOffset >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value;
+  if (timeOffset <= resolved[0].resolvedTime) return resolved[0].value;
+  if (timeOffset >= resolved[resolved.length - 1].resolvedTime) return resolved[resolved.length - 1].value;
 
   // Find surrounding keyframes
-  let left = sorted[0];
-  let right = sorted[sorted.length - 1];
+  let left = resolved[0];
+  let right = resolved[resolved.length - 1];
 
-  for (let i = 0; i < sorted.length - 1; i++) {
-    if (timeOffset >= sorted[i].time && timeOffset <= sorted[i + 1].time) {
-      left = sorted[i];
-      right = sorted[i + 1];
+  for (let i = 0; i < resolved.length - 1; i++) {
+    if (timeOffset >= resolved[i].resolvedTime && timeOffset <= resolved[i + 1].resolvedTime) {
+      left = resolved[i];
+      right = resolved[i + 1];
       break;
     }
   }
 
   // Calculate local progress between left and right keyframes
-  const range = right.time - left.time;
-  const progress = range === 0 ? 0 : (timeOffset - left.time) / range;
+  const range = right.resolvedTime - left.resolvedTime;
+  const progress = range === 0 ? 0 : (timeOffset - left.resolvedTime) / range;
 
   // Apply easing to the progress
-  const easedProgress = getEasingProgress(left.easing, progress, left.controlPoints);
+  const easedProgress = getEasingProgress(left.easing, progress, left.controlPoints, left.spring);
 
   // Interpolate based on type
   if (typeof left.value === "number" && typeof right.value === "number") {
@@ -322,11 +286,13 @@ import type { VisualPropertyKeyframe } from "@/types";
 export function evaluateVisualPropertyKeyframes(
   keyframes: VisualPropertyKeyframe[] | undefined,
   timeOffset: number,
-  defaultValue: number
+  defaultValue: number,
+  clipDuration?: number
 ): number {
   return evaluateNumericKeyframes(keyframes, timeOffset, defaultValue, {
     easingSide: "left",
     bezierFallback: "linear",
+    clipDuration,
   });
 }
 

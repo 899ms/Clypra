@@ -6,6 +6,7 @@
  */
 
 import { WorkerBus, getSharedDomainWorkerBus } from "./workerBus";
+import { getCurveEvaluator, solveCubicBezier, resolveResponsiveKeyframes } from "@/core/animation";
 import type {
   KeyframeEvalRequest,
   KeyframeEvalResult,
@@ -134,21 +135,30 @@ export class KeyframeEvalWorkerClient {
         }
 
         for (const [prop, kfs] of propGroups) {
-          const sorted = [...kfs].sort((a, b) => a.time - b.time);
-          let val = sorted[0].value;
+          const resolved = resolveResponsiveKeyframes(kfs, clip.duration);
+          let val = resolved[0].value;
 
-          if (clipRelativeTime <= sorted[0].time) {
-            val = sorted[0].value;
-          } else if (clipRelativeTime >= sorted[sorted.length - 1].time) {
-            val = sorted[sorted.length - 1].value;
+          if (clipRelativeTime <= resolved[0].resolvedTime) {
+            val = resolved[0].value;
+          } else if (clipRelativeTime >= resolved[resolved.length - 1].resolvedTime) {
+            val = resolved[resolved.length - 1].value;
           } else {
-            for (let i = 0; i < sorted.length - 1; i++) {
-              const k0 = sorted[i];
-              const k1 = sorted[i + 1];
-              if (clipRelativeTime >= k0.time && clipRelativeTime <= k1.time) {
-                const span = k1.time - k0.time;
-                const progress = span > 0 ? (clipRelativeTime - k0.time) / span : 0;
-                val = k0.value + progress * (k1.value - k0.value);
+            for (let i = 0; i < resolved.length - 1; i++) {
+              const k0 = resolved[i];
+              const k1 = resolved[i + 1];
+              if (clipRelativeTime >= k0.resolvedTime && clipRelativeTime <= k1.resolvedTime) {
+                const span = k1.resolvedTime - k0.resolvedTime;
+                const progress = span > 0 ? (clipRelativeTime - k0.resolvedTime) / span : 0;
+                let eased = progress;
+                if (k0.spring) {
+                  eased = getCurveEvaluator("spring", undefined, k0.spring)(progress);
+                } else if (k0.easing) {
+                  const [x1, y1, x2, y2] = k0.easing;
+                  eased = solveCubicBezier(x1, y1, x2, y2, progress);
+                } else if (k0.easingName) {
+                  eased = getCurveEvaluator(k0.easingName)(progress);
+                }
+                val = k0.value + eased * (k1.value - k0.value);
                 break;
               }
             }

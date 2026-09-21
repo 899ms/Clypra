@@ -224,6 +224,17 @@ export interface SerializedVisualKeyframe {
   value: number;
   /** Bezier control points for easing: [x1, y1, x2, y2] or undefined for linear. */
   easing?: [number, number, number, number];
+  /** Named easing preset (e.g. 'easeOutBack', 'springSnappy') */
+  easingName?: string;
+  /** Custom spring dynamics parameters */
+  spring?: {
+    stiffness: number;
+    damping: number;
+    mass: number;
+    initialVelocity?: number;
+  };
+  /** Responsive time anchor ("start" | "end" | "absolute") */
+  anchor?: "start" | "end" | "absolute";
 }
 
 export interface SerializedVolumeKeyframe {
