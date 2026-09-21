@@ -454,6 +454,7 @@ export class PlaybackClock {
     if (!shouldKeepPlaying) {
       this._isSeeking = true;
       this._seekStartedAtMs = performance.now();
+      this._nativeClockPosition = null;
       this._notifyListeners();
       return;
     }
@@ -461,7 +462,7 @@ export class PlaybackClock {
     // Seamless seek-while-playing: Keep playing forward from target time
     this._isSeeking = true;
     this._seekStartedAtMs = performance.now();
-    if (this._nativeClockAuthority) {
+    if (this._nativeClockAuthority || this._nativeClockPosition) {
       this._nativeClockPosition = {
         time: this._time,
         receivedAtMs: performance.now(),
@@ -532,8 +533,8 @@ export class PlaybackClock {
       // BUG-5 fix: Safety valve — if seeking state outlasts SEEK_TIMEOUT_MS, auto-resolve.
       // Prevents permanent freeze when completeSeek() is never called (e.g. dropped IPC
       // response during rapid split+seek, or an abandoned native frame request).
-      const now = Date.now();
-      if (now - this._seekStartedAtMs > PlaybackClock.SEEK_TIMEOUT_MS) {
+      const nowMs = performance.now();
+      if (nowMs - this._seekStartedAtMs > PlaybackClock.SEEK_TIMEOUT_MS) {
         console.warn(
           `[PlaybackClock] Seek timeout after ${PlaybackClock.SEEK_TIMEOUT_MS}ms — auto-resolving _isSeeking to prevent freeze.`,
         );
@@ -541,9 +542,10 @@ export class PlaybackClock {
         // Fall through to the normal tick path below.
       } else {
         // Still within timeout window — keep RAF alive without advancing time.
-        if (now - this._lastNotifyTime > this._notifyThrottleMs) {
+        const wallNow = Date.now();
+        if (wallNow - this._lastNotifyTime > this._notifyThrottleMs) {
           this._notifyListeners();
-          this._lastNotifyTime = now;
+          this._lastNotifyTime = wallNow;
         }
         this._rafId = requestAnimationFrame(() =>
           this._tickWithGeneration(generation),
