@@ -18,7 +18,13 @@ export class TransportAuthority {
   private _switchListeners = new Set<AuthorityContextSwitchListener>();
   private _stateListeners = new Set<AuthorityStateListener>();
   private _ctxUnsubscribe: (() => void) | null = null;
-  private _wasPlayingBeforeScrub: boolean = false;
+  /**
+   * BUG-4 fix: Reference-counted pause latch for scrubbing.
+   * Replaces the single `_wasPlayingBeforeScrub` boolean which was corrupted by
+   * overlapping beginScrub/endScrub calls (e.g. rapid back-seeks or pointer events
+   * arriving out of order). The clock is only resumed when depth drops back to zero.
+   */
+  private _scrubPauseDepth: number = 0;
 
   registerContext(context: PlaybackContext): void {
     if (this.contexts.has(context.type)) {
@@ -111,9 +117,12 @@ export class TransportAuthority {
   }
 
   beginScrub(time: number, source: string = "playhead"): void {
-    this._wasPlayingBeforeScrub = this.getState() === "playing";
-    if (this._wasPlayingBeforeScrub) {
+    const isPlaying = this.getState() === "playing";
+    if (isPlaying) {
+      // Only pause and increment depth when we were actually playing.
+      // This keeps the depth counter truthful: one increment per actual pause.
       this.pause();
+      this._scrubPauseDepth++;
     }
     this.seekController.beginScrub({ time, source });
     this.activeContext?.seek(time);
@@ -127,9 +136,12 @@ export class TransportAuthority {
   endScrub(time: number): void {
     this.seekController.endScrub({ time });
     this.activeContext?.seek(time);
-    if (this._wasPlayingBeforeScrub) {
-      this._wasPlayingBeforeScrub = false;
-      this.play();
+    if (this._scrubPauseDepth > 0) {
+      this._scrubPauseDepth--;
+      if (this._scrubPauseDepth === 0) {
+        // All nested scrub gestures have ended — resume playback.
+        this.play();
+      }
     }
   }
 
@@ -194,6 +206,7 @@ export class TransportAuthority {
     }
     this._switchListeners.clear();
     this._stateListeners.clear();
+    this._scrubPauseDepth = 0;
     this.contexts.forEach((ctx) => ctx.dispose());
     this.contexts.clear();
     this.activeContext = null;

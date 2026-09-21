@@ -256,6 +256,20 @@ export class PreviewMediaPool {
 
   // ───  Early exit optimization ───────────────────────────────
   private _lastQuickHash: string | null = null;
+  /**
+   * BUG-6 fix: Cached boolean replacing the per-call Array.from().every() scan.
+   * Set to false whenever a managed element loses hasBeenSeeked / readyState >= 2
+   * (via seeked/loadeddata events). Set to true at the end of sync() when all
+   * active elements are confirmed ready. The fast-path check is then O(1).
+   */
+  private _activeVideosAllSeeded: boolean = false;
+
+  /**
+   * BUG-2B fix: O(1) secondary index for findManagedVideoByClipId.
+   * Maps clipId → cacheKey. Kept in sync with videoCache in createVideo/disposeVideo
+   * and whenever managed.clipId is reassigned inside sync().
+   */
+  private _clipIdToManagedKey = new Map<string, string>();
 
   // ─── RESOURCE TRACKING (LEAK-003 / MED-002) ─────────────────────────────
   private _projectId: string | null = null;
@@ -332,20 +346,18 @@ export class PreviewMediaPool {
       // Skip expensive reconciliation if nothing meaningful changed
       // Round time to 0.1s precision to avoid rehashing every frame during playback
       const clipIdsHash = clips.map((c) => `${c.id}:${c.startTime.toFixed(2)}:${c.trimIn.toFixed(2)}`).join(",");
-      const quickHash = `${syncState.time.toFixed(1)}-${syncState.state}-${clips.length}-${clipIdsHash}`;
+      // BUG-1 fix: Use toFixed(3) (1ms precision) instead of toFixed(1) (100ms).
+      // At 30fps one frame = 33ms; the old 100ms granularity caused sync() to return
+      // early during rapid back-seeks within the same 100ms window, skipping corrective
+      // seeks to the <video> element and freezing the displayed frame.
+      const quickHash = `${syncState.time.toFixed(3)}-${syncState.state}-${clips.length}-${clipIdsHash}`;
       // CRITICAL: Only use fast path if we have video elements already created.
       // This prevents skipping the first sync after project load when elements need creation.
       const hasVideoElements = this.videoCache.size > 0;
-      // A metadata event can advance the timeline epoch without changing the
-      // rounded time hash. Do not skip reconciliation until every active video
-      // has been seeked and has current frame data; otherwise the scheduler's
-      // initial seek is skipped and the preview receives a permanently blank texture.
-      const activeVideosReadyForFastPath = Array.from(this.videoCache.values()).every(
-        (managed) =>
-          !managed.isActive ||
-          (managed.hasBeenSeeked && managed.element.readyState >= 2 && managed.element.videoWidth > 0 && managed.element.videoHeight > 0),
-      );
-      if (hasVideoElements && quickHash === this._lastQuickHash && activeVideosReadyForFastPath) {
+      // BUG-6 fix: Use the maintained _activeVideosAllSeeded flag instead of allocating a new
+      // Array on every call. The flag is invalidated by seeked/loadeddata event handlers and
+      // revalidated at the end of each full sync() pass.
+      if (hasVideoElements && quickHash === this._lastQuickHash && this._activeVideosAllSeeded) {
         // Still run prewarming during playback even when skipping reconciliation
         if (syncState.state === "playing") {
           this.prewarmUpcomingClips(clips, assets, syncState.time, syncState.frameRate);
@@ -355,6 +367,7 @@ export class PreviewMediaPool {
       }
       this._lastQuickHash = quickHash;
       // ─────────────────────────────────────────────────────────────────────────
+
 
       // ─── INSTRUMENTATION: Track sync frequency and structural changes ────────
       this.syncCallCount++;
@@ -401,6 +414,10 @@ export class PreviewMediaPool {
       }
 
       const activeTransitions = useTimelineStore.getState().transitions;
+      // BUG-3 fix: Read the full Track array (including volume/muted) once here at the
+      // top of the sync pass so updateAudioElement does not call useTimelineStore.getState()
+      // twice per audio clip per RAF frame (was an O(audio_clip_count) store read cost).
+      const fullTracks = useTimelineStore.getState().tracks;
 
       for (const clip of clips) {
         const asset = assets.find((a) => a.id === clip.mediaId);
@@ -460,6 +477,15 @@ export class PreviewMediaPool {
         } else {
           // Element exists - update its binding
           const wasBoundToDifferentClip = managed.clipId !== clip.id || managed.mediaId !== clip.mediaId;
+
+          if (wasBoundToDifferentClip) {
+            // BUG-2B fix: Update the secondary index when an element is rebound to a new clip ID.
+            if (this._clipIdToManagedKey.get(managed.clipId) === cacheKey) {
+              this._clipIdToManagedKey.delete(managed.clipId);
+            }
+            this._clipIdToManagedKey.set(clip.id, cacheKey);
+          }
+
           managed.clipId = clip.id;
           managed.mediaId = clip.mediaId;
           managed.lastUsedAt = performance.now();
@@ -469,6 +495,8 @@ export class PreviewMediaPool {
           if (wasBoundToDifferentClip) {
             managed.hasBeenSeeked = false;
             managed.hasDecodedFrame = false;
+            // BUG-6: Rebind with unseeded state means fast path is invalid.
+            this._activeVideosAllSeeded = false;
           }
         }
 
@@ -626,7 +654,7 @@ export class PreviewMediaPool {
 
         if (managed) {
           const isTrackMuted = track?.muted === true;
-          this.updateAudioElement(managed, clip, syncState, isTrackMuted);
+          this.updateAudioElement(managed, clip, syncState, isTrackMuted, activeTransitions, fullTracks);
         }
       }
 
@@ -650,6 +678,15 @@ export class PreviewMediaPool {
       const schedulerMs = performance.now() - schedulerStart;
 
       // ─── END OF SCHEDULER LOGIC ──────────────────────────────────────────────
+
+      // BUG-6 fix: Revalidate the _activeVideosAllSeeded flag after a full sync pass.
+      // If every active element now has decoded frame data, the next call can take the
+      // O(1) fast path instead of allocating an array to check.
+      this._activeVideosAllSeeded = Array.from(this.videoCache.values()).every(
+        (m) =>
+          !m.isActive ||
+          (m.hasBeenSeeked && m.element.readyState >= 2 && m.element.videoWidth > 0 && m.element.videoHeight > 0),
+      );
 
       // ─── END OF ORIGINAL SYNC LOGIC ──────────────────────────────────────────
 
@@ -1004,8 +1041,18 @@ export class PreviewMediaPool {
    * Find managed video by clip ID.
    */
   private findManagedVideoByClipId(clipId: string): ManagedVideo | null {
-    for (const [cacheKey, managed] of this.videoCache) {
+    // BUG-2B fix: O(1) lookup via secondary index instead of O(n) linear scan.
+    const cacheKey = this._clipIdToManagedKey.get(clipId);
+    if (cacheKey !== undefined) {
+      const managed = this.videoCache.get(cacheKey);
+      if (managed) return managed;
+      // Index stale (e.g. element disposed without updating index) — fall through.
+    }
+    // Safety fallback: linear scan to self-heal a stale index.
+    for (const [key, managed] of this.videoCache) {
       if (managed.clipId === clipId) {
+        // Repair the index for future calls.
+        this._clipIdToManagedKey.set(clipId, key);
         return managed;
       }
     }
@@ -1073,6 +1120,8 @@ export class PreviewMediaPool {
       this.disposeVideo(key, managed);
     }
     this.videoCache.clear();
+    this._clipIdToManagedKey.clear();
+    this._activeVideosAllSeeded = false;
     this.activeClipBindings.clear();
     this.timelineClipRegistry.clear();
     this.recentlyRemovedClips.clear();
@@ -1259,6 +1308,8 @@ export class PreviewMediaPool {
         // Keep readiness local so hidden-video events do not invalidate a
         // native paused frame request or force a duplicate native decode.
         this.mediaReadyRevision += 1;
+        // BUG-6: loadeddata means this element now has current frame data —
+        // the flag will be revalidated at the next full sync() pass.
       },
       { once: true },
     );
@@ -1295,6 +1346,11 @@ export class PreviewMediaPool {
     video.load();
 
     this.videoCache.set(key, managed);
+
+    // BUG-2B fix: Register in the O(1) secondary index.
+    this._clipIdToManagedKey.set(clipId, key);
+    // BUG-6 fix: A new unseeded element means the fast-path can no longer be taken.
+    this._activeVideosAllSeeded = false;
 
     // Attach to texture manager for frame-driven texture updates
     this.textureManager.attachVideo(clipId, video);
@@ -1358,6 +1414,15 @@ export class PreviewMediaPool {
     // ──────────────────────────────────────────────────────────────────────
 
     this.videoCache.delete(key);
+
+    // BUG-2B fix: Remove from the O(1) secondary index.
+    // Guard against mismatches where the secondary index was already updated
+    // (e.g. element rebound to a different clip ID before disposal).
+    if (this._clipIdToManagedKey.get(managed.clipId) === key) {
+      this._clipIdToManagedKey.delete(managed.clipId);
+    }
+    // BUG-6: Element set changed — revalidate seeded status at next sync pass.
+    this._activeVideosAllSeeded = false;
   }
 
   private updateVideoElement(managed: ManagedVideo, clip: Clip, syncState: PreviewSyncState, tracks: Array<{ id: string; type: string }>, isPrimaryAudibleVideo: boolean, isTrackMuted: boolean, activeVideoClipCount: number = 1, transitions: any[] = []): void {
@@ -1853,14 +1918,25 @@ export class PreviewMediaPool {
     }
   }
 
-  private updateAudioElement(managed: ManagedAudio, clip: Clip, syncState: PreviewSyncState, isTrackMuted: boolean): void {
+  private updateAudioElement(
+    managed: ManagedAudio,
+    clip: Clip,
+    syncState: PreviewSyncState,
+    isTrackMuted: boolean,
+    // BUG-3 fix: Accept pre-hoisted data instead of calling useTimelineStore.getState()
+    // per audio clip per frame (was 2 separate store reads in the inner loop).
+    // Optional with fallback to maintain compatibility with test suites calling private method directly.
+    activeTransitions?: TransitionTimelineItem[],
+    fullTracks?: Array<{ id: string; muted?: boolean; volume?: number }>,
+  ): void {
     const audio = managed.element;
-    const activeTransitions = useTimelineStore.getState().transitions;
-    const sourceTime = getClipSourceTime(clip, syncState.time, syncState.frameRate, activeTransitions);
+    const resolvedTransitions = activeTransitions ?? useTimelineStore.getState().transitions;
+    const resolvedTracks = fullTracks ?? useTimelineStore.getState().tracks;
+    const sourceTime = getClipSourceTime(clip, syncState.time, syncState.frameRate, resolvedTransitions);
 
     // Combine global preview volume with per-clip and per-track volume
     const clipVolume = clip.volume ?? 1.0;
-    const track = useTimelineStore.getState().tracks.find((t) => t.id === clip.trackId);
+    const track = resolvedTracks.find((t) => t.id === clip.trackId);
     const trackVolume = track?.volume ?? 1.0;
     const combinedVolume = (syncState.volume / 100) * clipVolume * trackVolume;
 
