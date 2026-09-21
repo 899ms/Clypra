@@ -9,6 +9,7 @@
  */
 
 import { SpatialTier, normalizeSpatialTier } from "./types";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 
 export class RollingAvg {
   private sum = 0;
@@ -66,16 +67,34 @@ export function recordRequestDispatched(tierInput: unknown): void {
 export function recordFirstArtifactLatency(tierInput: unknown, ms: number): void {
   const tier = normalizeSpatialTier(tierInput);
   filmstripMetrics[tier].dispatchToFirstArtifactMs.record(ms);
+  workerPerfCollector.record({
+    domain: "filmstrip:artifact",
+    operation: `fetch:${tier}`,
+    durationMs: ms,
+    overBudget: ms > 16.67,
+  });
 }
 
 export function recordCacheApply(tierInput: unknown, ms: number): void {
   const tier = normalizeSpatialTier(tierInput);
   filmstripMetrics[tier].cacheApplyMs.record(ms);
+  workerPerfCollector.record({
+    domain: "filmstrip:cache",
+    operation: `apply:${tier}`,
+    durationMs: ms,
+    overBudget: ms > 16.67,
+  });
 }
 
 export function recordPaintCommit(tierInput: unknown, ms: number): void {
   const tier = normalizeSpatialTier(tierInput);
   filmstripMetrics[tier].paintCommitMs.record(ms);
+  workerPerfCollector.record({
+    domain: "filmstrip:paint",
+    operation: `commit:${tier}`,
+    durationMs: ms,
+    overBudget: ms > 16.67,
+  });
 }
 
 let flushLoopStarted = false;

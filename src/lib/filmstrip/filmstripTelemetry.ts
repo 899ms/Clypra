@@ -37,6 +37,8 @@ export interface FilmstripSessionSummary {
   avgTimeToVisibleMs: number;
 }
 
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
+
 export class FilmstripTelemetryRecorder {
   private records: FilmstripTileTelemetry[] = [];
   private readonly maxRecords: number;
@@ -55,6 +57,19 @@ export class FilmstripTelemetryRecorder {
     this.records.push({
       ...telemetry,
       recordedAt: performance.now(),
+    });
+    workerPerfCollector.record({
+      domain: "filmstrip:tile",
+      operation: telemetry.source,
+      durationMs: telemetry.totalTimeToVisibleMs,
+      workerDurationMs: telemetry.decodeMs,
+      overBudget: telemetry.totalTimeToVisibleMs > 16.67,
+      metadata: {
+        source: telemetry.source,
+        cacheLookupMs: telemetry.cacheLookupMs,
+        ipcTransferMs: telemetry.ipcTransferMs,
+        rasterPaintMs: telemetry.rasterPaintMs,
+      },
     });
   }
 

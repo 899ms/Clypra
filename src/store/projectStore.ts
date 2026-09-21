@@ -359,9 +359,21 @@ async function persistProjectPayload(
 async function persistCurrentProjectSnapshot(
   snapshot: ProjectPersistenceSnapshot,
 ): Promise<ProjectSaveResult> {
+  const startMs = performance.now();
   const { getProjectWorkerClient } = await import("@/core/workers/projectWorkerClient");
   const serialized = await getProjectWorkerClient().serialize(snapshot.rustProject as any);
-  return persistProjectPayload(serialized.json);
+  const result = await persistProjectPayload(serialized.json);
+  const totalSaveMs = performance.now() - startMs;
+  const { workerPerfCollector } = await import("@/core/monitoring/WorkerPerfCollector");
+  workerPerfCollector.record({
+    domain: "project:autosave",
+    operation: "persistCurrentProjectSnapshot",
+    durationMs: totalSaveMs,
+    workerDurationMs: serialized.serializeMs,
+    bytesTransferred: serialized.json.length,
+    overBudget: totalSaveMs > 50,
+  });
+  return result;
 }
 
 let crashRecoveryPromise: Promise<void> | null = null;

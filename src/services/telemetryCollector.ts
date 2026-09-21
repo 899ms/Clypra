@@ -12,6 +12,7 @@
 import { getApiBaseUrl, getApiHeaders } from "@/lib/api/apiUtils";
 import { perfLogService, type PerfLogKind } from "@/services/perfLogService";
 import { getAppVersionSync } from "@/lib/app/appVersion";
+import type { WorkerPerfRollup } from "@/core/monitoring/WorkerPerfCollector";
 
 export interface TelemetryHardwareContext {
   osFamily: "macos" | "windows" | "linux" | "ios" | "android" | "web";
@@ -442,6 +443,7 @@ export interface TelemetryEvent {
   textMetrics?: TelemetryTextMetrics;
   stickerMetrics?: TelemetryStickerMetrics;
   compositionMetrics?: TelemetryCompositionMetrics;
+  workerMetrics?: WorkerPerfRollup;
   fallbackEvent?: {
     triggered: boolean;
     fromBackend: string;
@@ -623,6 +625,7 @@ function resolvePerfLogKind(event: TelemetryEvent): PerfLogKind {
   if (event.textMetrics) return "text-rollup";
   if (event.stickerMetrics) return "sticker-rollup";
   if (event.compositionMetrics) return "composition-rollup";
+  if (event.workerMetrics) return "worker-rollup";
   if (
     event.workload.mode === "seek-cold" ||
     event.workload.mode === "seek-warm"

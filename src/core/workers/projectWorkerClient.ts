@@ -6,6 +6,7 @@
  */
 
 import { WorkerBus, getSharedDomainWorkerBus } from "./workerBus";
+import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 import type {
   ProjectWorkerRequest,
   ProjectWorkerResponse,
@@ -44,11 +45,21 @@ export class ProjectWorkerClient {
   ): Promise<SerializedResult> {
     if (this.bus.status === "error" || typeof Worker === "undefined") {
       const start = performance.now();
+      const json = JSON.stringify(state);
+      const serializeMs = performance.now() - start;
+      workerPerfCollector.record({
+        domain: "ComputeWorker:Project",
+        operation: "SERIALIZE_FALLBACK",
+        durationMs: serializeMs,
+        workerDurationMs: serializeMs,
+        itemsCount: Object.keys(state.project || {}).length,
+        overBudget: serializeMs > 16.67,
+      });
       return {
         type: "SERIALIZED",
         id: "fallback",
-        json: JSON.stringify(state),
-        serializeMs: performance.now() - start,
+        json,
+        serializeMs,
       };
     }
 
@@ -59,11 +70,21 @@ export class ProjectWorkerClient {
       } as any);
     } catch {
       const start = performance.now();
+      const json = JSON.stringify(state);
+      const serializeMs = performance.now() - start;
+      workerPerfCollector.record({
+        domain: "ComputeWorker:Project",
+        operation: "SERIALIZE_FALLBACK",
+        durationMs: serializeMs,
+        workerDurationMs: serializeMs,
+        itemsCount: Object.keys(state.project || {}).length,
+        overBudget: serializeMs > 16.67,
+      });
       return {
         type: "SERIALIZED",
         id: "fallback",
-        json: JSON.stringify(state),
-        serializeMs: performance.now() - start,
+        json,
+        serializeMs,
       };
     }
   }
@@ -192,11 +213,21 @@ export class ProjectWorkerClient {
       }
     }
 
+    const diffMs = performance.now() - start;
+    workerPerfCollector.record({
+      domain: "ComputeWorker:Project",
+      operation: "DIFF_FALLBACK",
+      durationMs: diffMs,
+      workerDurationMs: diffMs,
+      itemsCount: patch.length,
+      overBudget: diffMs > 16.67,
+    });
+
     return {
       type: "PATCH_READY",
       id: "fallback",
       patch,
-      diffMs: performance.now() - start,
+      diffMs,
     };
   }
 }
