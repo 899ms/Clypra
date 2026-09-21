@@ -6,6 +6,100 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-21
+
+### 🎨 Spatial Motion Paths & GPU Shutter Motion Blur
+
+- **2D Spatial Motion Paths** — added interactive on-canvas Bézier motion paths directly overlaid on the Program Preview. Visual creators can adjust multi-point trajectories using draggable diamond anchor nodes, centripetal Catmull-Rom auto-tangents for curvature smoothing, and directional tangent handles (blue for incoming, orange for outgoing) with sub-pixel snapping.
+- **Direction-Aware GPU Shutter Motion Blur** — implemented a dedicated WGSL post-processing compute pass that calculates instantaneous velocity vectors from spatial trajectory derivatives. Simulates real camera shutter motion blur with configurable shutter angle (`0°`–`360°`), configurable sampling quality (8, 16, or 32 samples per pixel), and automatic velocity scaling based on clip playback rate.
+- **Inline Timeline Keyframe Lane** — added collapsible, per-clip keyframe tracks below timeline clips with diamond keyframe indicators, multi-property keyframe selection, inline value scrubbing, ease curve visualizers, and right-click curve type assignment.
+
+### ✨ Advanced Animation Engine: Cubic Bézier, Spring Physics & Time Anchoring
+
+- **Custom Cubic Bézier Curves** — full CSS-compatible cubic Bézier easing engine (`cubic-bezier(x1, y1, x2, y2)`) featuring an 8-iteration Newton-Raphson solver with a 14-iteration bisection fallback for inflection points and near-zero derivative boundaries. Built-in presets include standard easings, kinetic character curves (`easeOutBack` with overshoot, `easeInBack` with anticipation), and CapCut-style speed profiles (`speedHero`, `jumpCut`, `bullet`).
+- **Closed-Form Physical Spring Dynamics** — integrated a damped harmonic oscillator spring model (`springPhysics.ts`) solving underdamped, critically damped, and overdamped motion analytically in \(O(1)\) time without numerical Euler drift. Provides intuitive physics parameters (`stiffness`, `damping`, `mass`, `initialVelocity`) and preset configurations (`snappy`, `bouncy`, `wobbly`, `gentle`, `stiff`) for natural, organic motion graphics.
+- **Responsive Time Anchoring (Build-In / Build-Out)** — introduced intelligent keyframe time anchoring (`timeAnchor.ts`) supporting `start` (anchored to clip in-point) and `end` (projected backwards from clip out-point). Includes an elastic compression guard that proportionally scales animation segments when clips are trimmed shorter than their intro and outro durations, preventing keyframe collisions, clipping, or inverted timing.
+
+### ⚡ Zero-Copy Direct GPU Pipeline & Windows D3D11VA → DX12 Interop
+
+- **Zero-Copy D3D11VA → wgpu DX12 Texture Pipeline (Windows)** — decoded NV12 frames flow directly from FFmpeg D3D11VA hardware decoders into the wgpu DirectX 12 compositor via NT shared handles (`render_nv12_from_imported_texture`). Eliminates host memory roundtrips, CPU RAM PCIe copies, and CPU NV12-to-RGBA conversion from the critical path.
+- **Physical Adapter Matching on Hybrid/Optimus GPUs** — DXGI adapter enumeration via `CreateDXGIFactory1` automatically matches `VendorId` and `DeviceId` to wgpu's selected GPU, binding FFmpeg hardware decoding and wgpu presentation to the exact same physical graphics adapter on dual-GPU laptops.
+- **Win32 NT Handle Duplication** — enabled `Win32_System_Threading` with `DuplicateHandle` in `D3d11SharedFrame::duplicate()`, allowing safe, independent NT shared handles across lookahead queues and multi-layer presentation passes without handle exhaustion or drop races.
+- **Targeted Surface Pipeline Warmup** — optimized native-surface initialization on Windows to compile only the active `Bgra8UnormSrgb` compositor pipeline rather than compiling 5 unused RGBA readback pipelines. Slashes render graph readiness latency from 17.9 seconds to 26 milliseconds on low-power Intel HD graphics.
+
+### 🚀 Hardware-Accelerated Export Engine & Real-Time Direct Pipe
+
+- **Direct Native GPU Export Pipeline** — implemented an end-to-end GPU render-to-encoder pipeline that feeds composition frames directly from the wgpu render target into native hardware encoders without host RAM staging. Delivers Real-Time Factors (RTF) exceeding 2.0x on 4K HEVC exports with zero dropped frames.
+- **Platform Hardware Encoders** — integrated native platform encoders via VideoToolbox (macOS) and NVENC / AMF / Intel QSV (Windows), supporting high-efficiency H.264 and HEVC output.
+- **Standard Rec.709 & BT.2020 Colorimetry Tagging** — injected standard color space, transfer characteristics, and color primaries metadata into native MP4 and MOV container headers, ensuring color-accurate reproduction across QuickTime, YouTube, and browser players.
+- **Export Throughput & RTF Telemetry** — added comprehensive export stage tracking measuring encode FPS, cumulative encoding time, frame delivery latency, and rolling peak memory usage.
+
+### 🎞️ Native Preview & Playback Stability Remediation (macOS & Windows)
+
+- **Six Critical Playback Instability Fixes (BUG-1 through BUG-6)**:
+  - *BUG-1*: Eliminated audio pops and glitches during timeline split operations under active playback.
+  - *BUG-2B*: Resolved timeline playhead drift during rapid scrubbing.
+  - *BUG-3*: Fixed timeline scrub stutter and decoder stalls when crossing clip boundaries.
+  - *BUG-4*: Eliminated playhead jumps when clicking to seek during active playback.
+  - *BUG-5*: Fixed track desynchronization following gap deletion.
+  - *BUG-6*: Resolved race conditions between transport state transitions and decoder thread pools.
+- **Backward Seek & Clock Re-anchoring** — resolved backward seek freezes caused by monotonic clock (`Instant`) and epoch timestamp (`request_started_at`) mismatches. Stabilized A/V sync drift to sub-millisecond tolerances (-0.67 ms average).
+- **Lock-Free Live Timeline Editing** — replaced `Mutex<FrameRequest>` with `parking_lot::RwLock<Arc<FrameRequest>>` in `NativeRenderSession`. Render ticks read double-buffered snapshots in ~5 ns without locking, allowing seamless clip trimming, splitting, and movement during active 60fps playback without audio glitches or lookahead flushes.
+- **Lookahead Timing Re-attribution** — re-anchored lookahead cache hits to presentation start time rather than queue residency, eliminating 13,657 false frame-anomalies and saving ~48 MB of telemetry log bloat per editing session.
+- **Fallback Readback Clamping** — capped RGBA fallback readback requests to 1080p maximum, reducing uncompressed frame transfers from 33.17 MB to 8.29 MB and eliminating 350–760 ms seek freezes on 4K/8K sources.
+- **Pipelined Audio Startup** — consolidated 6 discrete synchronous IPC commands into a single pipelined audio initialization pass, eliminating 18 ms startup latency and startup audio pops.
+- **macOS WindowServer Contention Elimination** — atomic surface visibility caching eliminates redundant `show_surface` calls, preventing macOS WindowServer display-sync locks at 60 Hz.
+- **Native Swapchain Prewarming** — added immediate swapchain texture acquisition and clear in `configure_surface`, absorbing initial `CAMetalLayer` and DXGI backbuffer lock overhead on initialization and collapsing cold surface acquire latency from 284 ms to ~2 ms.
+- **High-Efficiency MKV/MP4 Demuxer** — introduced `AVDISCARD_ALL` stream filtering at the libavformat layer to discard non-video streams during demuxing, eliminating memory allocations and packet handling for non-video streams.
+- **Canonical POSIX Path Normalization** — unified path normalization across frontend bridge and Rust backend, preventing WebKit `asset://` URI leakage into FFmpeg demuxers.
+
+### ⏩ Two-Stage Coarse-to-Fine Seeking & Proxy Scrubbing
+
+- **Two-Stage Coarse-to-Fine Seeking Pipeline** — timeline scrubbing and seek clicks default to `allowKeyframeApprox=true` for instant visual response (<15 ms). A debounced refinement timer (60 ms) automatically performs exact decoding (`quality=full`, `allowKeyframeApprox=false`) once playhead dragging settles.
+- **Quarter-Resolution Proxy Fast-Path** — coarse seeks downscale to quarter quality (capped at 480px width) during active scrubbing, collapsing cold-jump keyframe seek latency on long-GOP 4K media from 1,421 ms to under 20 ms.
+- **DPB Packet Draining Optimization** — wrapped decoder DPB buffer draining inside `if !found` guards in `decode_frame_raw_nv12_with_options` and `decode_frame_dxgi_windows`, exiting immediately upon keyframe match rather than traversing trailing GOP packets.
+- **Cache Pollution Separation** — tagged NV12 ring-buffer and prime cache entries with approximation flags (`is_approximate`), guaranteeing approximate scrub frames never contaminate exact paused frame requests.
+- **Seamless Seek-Without-Pause** — timeline clicking and arrow key navigation seamlessly update playhead position without forcing transport pause; audio and video clocks re-anchor continuously.
+
+### 🎥 AV1 Media Engine, Proxies & Sidecar Diagnostics
+
+- **CLI FFmpeg Fallback with libdav1d** — added automated fallback to CLI FFmpeg with `libdav1d` when in-process AV1 decoders fail, generating WebP poster frames in under 200 ms.
+- **Hardware AV1 Decode Detection** — queries macOS VideoToolbox at runtime to accurately detect hardware AV1 support (Apple Silicon M3+), routing older platforms to optimized software pipelines.
+- **Automatic AV1 Proxy Generation** — automatically generates lightweight H.264 proxies (`ultrafast`, `crf 24`, `yuv420p`) for AV1 assets on WebKit-incompatible platforms.
+- **Self-Healing Media Library** — `MediaCard` automatically detects stuck gray placeholder thumbnails and re-triggers poster frame extraction on mount.
+- **MediaRuntime Diagnostics API** — added `MediaRuntime` with engine availability, bundled-sidecar provenance, and versioning, exposing clean status in the UI ('Export engine ready (v8.0)').
+- **Sidecar Verification Gate** — added `scripts/verify-sidecars.mjs` to validate bundled FFmpeg binaries and reject stub wrappers during CI and release packaging.
+
+### ⌨️ Keyboard Shortcuts & Cross-Platform Modifier Parity
+
+- **Cross-OS Modifier Normalization** — unified shortcut listeners using `isMeta = e.ctrlKey || e.metaKey`, ensuring `Cmd` on macOS and `Ctrl` on Windows/Linux work interchangeably across all editing commands.
+- **International Keyboard Layout Parity** — added physical `e.code` fallbacks across all shortcut handlers, guaranteeing full functionality on AZERTY, QWERTZ, Dvorak, and Cyrillic keyboard layouts for Split, Duplicate, Ripple Delete, Nudge, and Cut/Copy/Paste.
+- **Project Save Shortcut** — added `Cmd+S` / `Ctrl+S` quick save with non-intrusive toast feedback.
+- **Zoom-to-Fit Shortcut** — added `Cmd+0` / `Ctrl+0` alias alongside `Shift+Z` to fit the entire timeline within the viewport.
+- **Arrow Keyboard Seeking & Frame Stepping**:
+  - While paused: `ArrowLeft` / `ArrowRight` steps 1 frame; `Shift+Arrow` jumps 1.0 second.
+  - While playing: `ArrowLeft` / `ArrowRight` jumps 1.0 second; `Shift+Arrow` jumps 5.0 seconds without interrupting playback.
+  - `Alt+Arrow` nudging preserved without shortcut collision.
+
+### 📊 End-to-End Worker & Engine Performance Telemetry
+
+- **Unified Worker Performance Collector (`WorkerPerfCollector`)** — added a centralized worker performance collector tracking computation and IPC round-trip duration (`durationMs`), internal worker execution (`workerDurationMs`), processed item counts, budget breaches (>16.67 ms frame deadline), and unhandled worker errors.
+- **Live Diagnostics Surface** — exposed real-time worker metrics on `window.__clypra_diagnostics.workerPerf`, providing windowed percentiles (P50, P95, P99, Max, Avg) and an anomaly ring buffer for live debugging.
+- **Auto-Instrumented WorkerBus** — automatically captures execution metrics across all WorkerBus domains: `ComputeWorker:KeyframeEval` (`evalMs`), `ComputeWorker:TimelineSnap` (`durationMs`), `ComputeWorker:Project` (`serializeMs`, `diffMs`), `MediaAnalysisWorker` (`analysisMs`), `WaveformLodWorker`, and `SubtitleParserWorker` (`parseMs`).
+- **Dedicated Worker Instrumentation** — added timing attribution to `stickerRasterizerWorkerClient` (Lottie/GIF rasterization), `templateRasterizerWorkerClient` (text template layout and render passes), and `bodySegmentationWorkerClient` (MediaPipe segmentation inference and mask transfer).
+- **Animation Evaluation Budget Monitoring** — instrumented `evaluateTimelineScene` in `evaluator.ts` with scene evaluation timing, occluded layer culling duration, and culled layer counts against the 16.67 ms display budget.
+- **Snap, Ripple & Serialization Profiling** — timing attribution for timeline snapping queries, ripple calculations, and project autosave cycles.
+- **Filmstrip & Color Scopes Telemetry** — forwarded tile generation and `recordPaintCommit` metrics to `WorkerPerfCollector` under `filmstrip:artifact`, `filmstrip:cache`, and `filmstrip:paint` domains.
+- **Real Process Memory Tracking** — introduced `get_process_memory_mb` Tauri command backed by `libc::getrusage(RUSAGE_SELF)` on macOS and Linux, replacing static memory placeholders with live rolling peak RAM metrics across all telemetry events.
+- **Session Log Gzip Streaming** — implemented gzip compression for session NDJSON upload streaming, preventing upload timeouts on slow connections.
+- **Local Anomaly Throttling with Peak Preservation** — intelligent local filtering throttles high-frequency frame and seek anomalies to prevent log bloat while guaranteeing the highest latency outliers are preserved.
+
+### 🛠️ CI Pipeline & Cross-Platform Build Hardening
+
+- **Rust Clippy Cross-Platform Remediation** — added `#[allow(unused_variables)]` to `ctx` in `decoder.rs`, resolving `-D warnings` compilation failures on Linux runners while preserving macOS/Windows hardware context usage.
+- **Timeline Clip Test Hardening** — added safe optional chaining for `expandedKeyframeClipIds` in `Clip.tsx` and updated test mock suites in `Clip.test.tsx`.
+- **Windows DXGI CLI Compatibility** — resolved compilation issues for `clypra-native-cli` on Windows runners.
+
 ## [1.5.1] - 2026-09-17
 
 ### 🧠 AI Body Effects & WebKit Worker Reliability

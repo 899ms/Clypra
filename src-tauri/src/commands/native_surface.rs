@@ -412,6 +412,38 @@ fn configure_surface(
     };
     surface.configure(&gpu.device, &configuration);
 
+    // Prewarm CAMetalLayer / DXGI swapchain allocation during configuration so the
+    // initial backbuffer lock latency (~200-300ms on first mount) is absorbed
+    // during setup rather than blocking the first frame tick.
+    if let Ok(surface_texture) = surface.get_current_texture() {
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("surface_prewarm_encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("surface_prewarm_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        gpu.queue.submit(std::iter::once(encoder.finish()));
+        surface_texture.present();
+    }
+
     let probe = NativeSurfaceProbe {
         contract_version: NATIVE_CORE_CONTRACT_VERSION,
         status: NativeSurfaceStatus::Ready,
