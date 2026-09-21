@@ -225,7 +225,6 @@ export class NativeAudioPreviewController {
       });
       if (this.disposed) return false;
 
-      await getNativeAudioStatus();
       this.initializationUs = elapsedUs(initializationStartedAt);
 
       this.active = true;
@@ -235,12 +234,15 @@ export class NativeAudioPreviewController {
       );
       this.restartPolling(this.clock.state === "playing");
 
-      await seekNativeAudio(secondsToTicks(this.clock.time));
-      await setNativeAudioSpeed(this.clock.speed);
-      // Output may have been selected before asynchronous graph installation
-      // completed; applying the retained value prevents first-play from
-      // momentarily using stale mute/volume state.
-      await setNativeAudioOutput(this.outputVolume, this.outputMuted);
+      await Promise.all([
+        seekNativeAudio(secondsToTicks(this.clock.time)),
+        setNativeAudioSpeed(this.clock.speed),
+        // Output may have been selected before asynchronous graph installation
+        // completed; applying the retained value prevents first-play from
+        // momentarily using stale mute/volume state.
+        setNativeAudioOutput(this.outputVolume, this.outputMuted),
+      ]);
+      if (this.disposed) return false;
       if (this.clock.state === "playing") {
         await this.beginStartupProbe();
         const playStartedAt = performance.now();
