@@ -608,7 +608,7 @@ pub fn downsample_pyramid(
 /// Calculate aspect-preserving dimensions for a spatial tier.
 ///
 /// Wrapper around shared geometry utility with tier-specific logic.
-/// DEPRECATED: Use geometry::fit_preserving_aspect_aligned directly.
+/// Use geometry::fit_preserving_aspect_aligned directly.
 /// Kept for backward compatibility with existing call sites.
 pub fn aspect_preserving_tier_dims(src_w: u32, src_h: u32, tier: SpatialTier) -> (u32, u32) {
     let (tier_w, tier_h) = tier.dims();

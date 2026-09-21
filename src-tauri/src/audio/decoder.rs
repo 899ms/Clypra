@@ -342,7 +342,7 @@ fn decode_with_ffmpeg_next(
 }
 
 /// Safely extract ONLY the valid audio samples from a resampled FFmpeg frame.
-/// Invariant: `resampled_frame.data(0)` has linesize allocation padding; we must ONLY
+/// `resampled_frame.data(0)` has linesize allocation padding; we must ONLY
 /// read `samples * channels` samples to prevent reading uninitialized memory/garbage floats!
 #[inline]
 fn append_valid_samples(

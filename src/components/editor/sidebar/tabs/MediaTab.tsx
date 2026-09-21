@@ -22,11 +22,15 @@ import { MediaCard } from "@/components/ui/MediaCard";
 export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
   const { mediaAssets, removeMediaAsset, addMediaAsset } = useProjectStore();
   const { importMedia, isLoading } = useMediaImport();
-  // Note: previewMediaId is used for visual selection state only.
+  // previewMediaId is used for visual selection state only.
   // Preview rendering is now timeline-driven, not media-selection driven.
   const { setPreviewMedia, previewMediaId } = useUIStore();
   const { clips } = useTimelineStore();
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    mediaId: string;
+  } | null>(null);
 
   // Track which media assets are used in the timeline
   const usedMediaIds = useMemo(() => {
@@ -55,12 +59,17 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
           while (currentIndex < paths.length) {
             const filePath = paths[currentIndex++];
             try {
-              const filename = filePath.split("/").pop() || filePath.split("\\").pop() || "Unknown";
+              const filename =
+                filePath.split("/").pop() ||
+                filePath.split("\\").pop() ||
+                "Unknown";
               const type = getMediaType(filename);
 
               // Check if asset already exists
               const currentAssets = useProjectStore.getState().mediaAssets;
-              const existingAsset = currentAssets.find((a) => a.path === filePath);
+              const existingAsset = currentAssets.find(
+                (a) => a.path === filePath,
+              );
               if (existingAsset) {
                 continue;
               }
@@ -87,28 +96,53 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
                 // Phase 2 (Async Background): Extract poster frame without blocking UI
                 if (type === "video") {
                   platform
-                    .extractPosterFrame(filePath, metadata.duration, window.devicePixelRatio || 1.0)
+                    .extractPosterFrame(
+                      filePath,
+                      metadata.duration,
+                      window.devicePixelRatio || 1.0,
+                    )
                     .then((posterFrame) => {
                       if (posterFrame) {
-                        useProjectStore.getState().updateMediaAsset(asset.id, { posterFrame });
+                        useProjectStore
+                          .getState()
+                          .updateMediaAsset(asset.id, { posterFrame });
                       }
                     })
                     .catch((err) => {
-                      console.warn(`[MediaTab] Failed to extract poster for ${filePath}:`, err);
+                      console.warn(
+                        `[MediaTab] Failed to extract poster for ${filePath}:`,
+                        err,
+                      );
                     });
 
-                  const ext = filename.split('.').pop()?.toLowerCase() || '';
-                  const needsRemux = ['mkv', 'avi', 'flv', 'wmv', 'ts', 'mts', 'm2ts', 'vob', '3gp', 'ogv'].includes(ext);
+                  const ext = filename.split(".").pop()?.toLowerCase() || "";
+                  const needsRemux = [
+                    "mkv",
+                    "avi",
+                    "flv",
+                    "wmv",
+                    "ts",
+                    "mts",
+                    "m2ts",
+                    "vob",
+                    "3gp",
+                    "ogv",
+                  ].includes(ext);
                   if (needsRemux && platform.getOrCreatePreviewVideo) {
                     platform
                       .getOrCreatePreviewVideo(filePath)
                       .then((previewPath) => {
                         if (previewPath) {
-                          useProjectStore.getState().updateMediaAsset(asset.id, { previewPath });
+                          useProjectStore
+                            .getState()
+                            .updateMediaAsset(asset.id, { previewPath });
                         }
                       })
                       .catch((err) => {
-                        console.warn(`[MediaTab] Failed to optimize preview for ${filePath}:`, err);
+                        console.warn(
+                          `[MediaTab] Failed to optimize preview for ${filePath}:`,
+                          err,
+                        );
                       });
                   }
                 }
@@ -127,10 +161,15 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
               }
             } catch (error) {
               console.error(`[MediaTab] Failed to import ${filePath}:`, error);
-              useProjectStore.getState().showToast(`Failed to import ${filePath.split("/").pop() || "file"}`, "error");
+              useProjectStore
+                .getState()
+                .showToast(
+                  `Failed to import ${filePath.split("/").pop() || "file"}`,
+                  "error",
+                );
             }
           }
-        }
+        },
       );
 
       await Promise.all(workers);
@@ -145,9 +184,18 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
   });
 
   return (
-    <div ref={containerRef} className={`flex-1 flex flex-col overflow-hidden transition-colors duration-200 ${isDraggingOver ? "bg-accent/5" : ""}`}>
+    <div
+      ref={containerRef}
+      className={`flex-1 flex flex-col overflow-hidden transition-colors duration-200 ${isDraggingOver ? "bg-accent/5" : ""}`}
+    >
       <div className="p-1 border-b border-border flex gap-1">
-        <Button variant="secondary" size="sm" className="flex-1 border-dashed cursor-pointer" onClick={importMedia} disabled={isLoading}>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="flex-1 border-dashed cursor-pointer"
+          onClick={importMedia}
+          disabled={isLoading}
+        >
           <CloudUpload className="w-4 h-4" />
           {isLoading ? "Importing..." : "Import Media"}
         </Button>
@@ -163,11 +211,15 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
       </div>
 
       {missingAssets.length > 0 && (
-        <div data-testid="missing-media-banner" className="m-1.5 p-2 bg-red-950/40 border border-red-500/30 rounded-lg flex items-center justify-between gap-2">
+        <div
+          data-testid="missing-media-banner"
+          className="m-1.5 p-2 bg-red-950/40 border border-red-500/30 rounded-lg flex items-center justify-between gap-2"
+        >
           <div className="flex items-center gap-1.5 text-xs text-red-300">
             <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
             <span className="font-medium">
-              {missingAssets.length} offline file{missingAssets.length > 1 ? "s" : ""}
+              {missingAssets.length} offline file
+              {missingAssets.length > 1 ? "s" : ""}
             </span>
           </div>
           <Button
@@ -176,7 +228,9 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
             className="text-[10px] h-6 px-2 border-red-500/40 text-red-200 hover:bg-red-500/20 cursor-pointer"
             onClick={() => {
               if (missingAssets[0]) {
-                void useProjectStore.getState().promptRelinkMedia(missingAssets[0].id);
+                void useProjectStore
+                  .getState()
+                  .promptRelinkMedia(missingAssets[0].id);
               }
             }}
           >
@@ -187,7 +241,11 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
 
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {mediaAssets.length === 0 ? (
-          <EmptyState icon={CloudUpload} title="No media imported" description="Import videos, audio, or images to get started" />
+          <EmptyState
+            icon={CloudUpload}
+            title="No media imported"
+            description="Import videos, audio, or images to get started"
+          />
         ) : (
           <div className="grid grid-cols-2 gap-2 p-1">
             {mediaAssets.map((asset) => (
@@ -199,7 +257,11 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
                 onClick={() => setPreviewMedia(asset.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  setContextMenu({ x: e.clientX, y: e.clientY, mediaId: asset.id });
+                  setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    mediaId: asset.id,
+                  });
                 }}
                 onAddToTimeline={() => onAddToTimeline?.(asset, "media")}
               />
@@ -216,19 +278,28 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
               onClick: () => {
                 const targetMediaId = contextMenu.mediaId;
                 setContextMenu(null);
-                void useProjectStore.getState().promptRelinkMedia(targetMediaId);
+                void useProjectStore
+                  .getState()
+                  .promptRelinkMedia(targetMediaId);
               },
             },
             usedMediaIds.has(contextMenu.mediaId)
               ? {
                   label: "Remove from Timeline",
                   onClick: () => {
-                    const { normalizeTrack, removeEmptyNonMainTracks, withBatch } = useTimelineStore.getState();
-                    const { execute, beginTransaction, commitTransaction } = useHistoryStore.getState();
+                    const {
+                      normalizeTrack,
+                      removeEmptyNonMainTracks,
+                      withBatch,
+                    } = useTimelineStore.getState();
+                    const { execute, beginTransaction, commitTransaction } =
+                      useHistoryStore.getState();
                     const affectedTracks = new Set<string>();
 
                     // Find all clips using this media asset
-                    const clipsToRemove = clips.filter((c) => c.mediaId === contextMenu.mediaId);
+                    const clipsToRemove = clips.filter(
+                      (c) => c.mediaId === contextMenu.mediaId,
+                    );
 
                     // Use transaction to group all deletes into a single undo/redo unit
                     beginTransaction("Remove from Timeline");
@@ -256,11 +327,17 @@ export const MediaTab: React.FC<MediaTabProps> = ({ onAddToTimeline }) => {
               : {
                   label: "Add to Track",
                   onClick: () => {
-                    const asset = mediaAssets.find((a) => a.id === contextMenu.mediaId);
+                    const asset = mediaAssets.find(
+                      (a) => a.id === contextMenu.mediaId,
+                    );
                     if (asset) onAddToTimeline?.(asset, "media");
                   },
                 },
-            { label: "Delete", onClick: () => removeMediaAsset(contextMenu.mediaId), danger: true },
+            {
+              label: "Delete",
+              onClick: () => removeMediaAsset(contextMenu.mediaId),
+              danger: true,
+            },
           ]}
           position={{ x: contextMenu.x, y: contextMenu.y }}
           onClose={() => setContextMenu(null)}

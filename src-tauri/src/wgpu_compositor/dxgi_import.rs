@@ -214,7 +214,7 @@ pub fn import_into_wgpu(
     let width = shared.width;
     let height = shared.height;
 
-    // SAFETY: We close nt_handle in all branches (success and failure).
+    // We close nt_handle in all branches (success and failure).
     let result = unsafe {
         device.as_hal::<Dx12, _, Result<ImportedNv12Texture, DxgiFailureReason>>(|hal_device| {
             let hal_device = hal_device.ok_or(DxgiFailureReason::ImportFailed)?;

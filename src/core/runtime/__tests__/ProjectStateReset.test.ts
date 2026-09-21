@@ -5,7 +5,11 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { resetAllProjectState, detectStaleState, type ResetOptions } from "../ProjectStateReset";
+import {
+  resetAllProjectState,
+  detectStaleState,
+  type ResetOptions,
+} from "../ProjectStateReset";
 
 // Mock implementations
 const mockClearDragging = vi.fn();
@@ -88,7 +92,6 @@ vi.mock("@/core/playback/PlaybackClock", () => ({
   resetPlaybackClock: vi.fn(),
 }));
 
-
 vi.mock("@/store/middleware/autoSaveMiddleware", () => ({
   resumeAutoSave: vi.fn(),
   suspendAutoSave: vi.fn(),
@@ -141,7 +144,9 @@ describe("ProjectStateReset", () => {
       expect(result.resetSubsystems).toContain("GlobalAudioEngine");
 
       expect(mockTemplateReset).toHaveBeenCalled();
-      expect(mockFavoritesSetState).toHaveBeenCalledWith({ downloadingIds: [] });
+      expect(mockFavoritesSetState).toHaveBeenCalledWith({
+        downloadingIds: [],
+      });
       expect(mockBodyMaskClear).toHaveBeenCalled();
     }, 15_000);
 
@@ -165,7 +170,7 @@ describe("ProjectStateReset", () => {
     });
 
     it("should handle errors gracefully", async () => {
-      // Note: In real implementation, errors would be caught and reported
+      // In real implementation, errors would be caught and reported
       // This test verifies the structure exists
       const result = await resetAllProjectState();
 

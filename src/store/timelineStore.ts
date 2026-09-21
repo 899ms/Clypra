@@ -22,18 +22,51 @@
  */
 
 import { create } from "zustand";
-import type { Track, TrackType, Clip, TextClip, TransitionTimelineItem, TransitionType, TimelineMarker } from "@/types";
-import { type CaptionTrack, CAPTION_MODEL_VERSION, DEFAULT_CAPTION_STYLE } from "@/types/captions";
+import type {
+  Track,
+  TrackType,
+  Clip,
+  TextClip,
+  TransitionTimelineItem,
+  TransitionType,
+  TimelineMarker,
+} from "@/types";
+import {
+  type CaptionTrack,
+  CAPTION_MODEL_VERSION,
+  DEFAULT_CAPTION_STYLE,
+} from "@/types/captions";
 import { synchronizeClipAudioProperties } from "@/types/audio";
 import type { Gap } from "@/types/gap";
 import { generateId, getCounter } from "@/lib/utils/id";
-import { detectGaps, createGap, insertGapWithRipple, removeGapWithRipple, resizeGap, packTrack, mergeAdjacentGaps, validateGap } from "@/lib/timeline/gapEngine";
+import {
+  detectGaps,
+  createGap,
+  insertGapWithRipple,
+  removeGapWithRipple,
+  resizeGap,
+  packTrack,
+  mergeAdjacentGaps,
+  validateGap,
+} from "@/lib/timeline/gapEngine";
 import { resolveTextClipStyleUpdate } from "@/lib/text/textClip";
 import { useUIStore } from "./uiStore";
 import { useProjectStore } from "./projectStore";
-import { clampTimelinePixelsPerSecond, clampTimelineZoom, TIMELINE_PPS_PER_ZOOM, TIMELINE_ZOOM_DEFAULT } from "../lib/timeline/timelineZoom";
-import { getTimelineContentEnd, normalizeClipTiming } from "@/lib/timeline/timelineClip";
-import { autoSaveMiddleware, suppressAutoSave, enableAutoSave } from "./middleware/autoSaveMiddleware";
+import {
+  clampTimelinePixelsPerSecond,
+  clampTimelineZoom,
+  TIMELINE_PPS_PER_ZOOM,
+  TIMELINE_ZOOM_DEFAULT,
+} from "../lib/timeline/timelineZoom";
+import {
+  getTimelineContentEnd,
+  normalizeClipTiming,
+} from "@/lib/timeline/timelineClip";
+import {
+  autoSaveMiddleware,
+  suppressAutoSave,
+  enableAutoSave,
+} from "./middleware/autoSaveMiddleware";
 import {
   TRACK_TYPE_CONFIG,
   shouldAutoPruneTrack,
@@ -74,8 +107,16 @@ interface TimelineStore {
   rippleEditEnabled: boolean;
   snapEnabled: boolean;
   /** Active snap guides (vertical alignment indicators during resize/drag) */
-  snapGuides: Array<{ time: number; type: "clip-start" | "clip-end" | "playhead" }>;
-  setSnapGuides: (guides: Array<{ time: number; type: "clip-start" | "clip-end" | "playhead" }>) => void;
+  snapGuides: Array<{
+    time: number;
+    type: "clip-start" | "clip-end" | "playhead";
+  }>;
+  setSnapGuides: (
+    guides: Array<{
+      time: number;
+      type: "clip-start" | "clip-end" | "playhead";
+    }>,
+  ) => void;
   clearSnapGuides: () => void;
   /** @internal Batch nesting depth — do not read directly */
   _batchDepth: number;
@@ -86,7 +127,16 @@ interface TimelineStore {
   /** Increment epoch (for cache invalidation) */
   incrementEpoch: () => void;
   /** Hydrate timeline state from project load (atomic operation) */
-  hydrateFromProject: (payload: { tracks?: any[]; clips?: any[]; transitions?: TransitionTimelineItem[]; gaps?: Gap[]; markers?: TimelineMarker[]; captionTracks?: CaptionTrack[]; mainVideoTrackId?: string | null; cleanEmptyTracks?: boolean }) => void;
+  hydrateFromProject: (payload: {
+    tracks?: any[];
+    clips?: any[];
+    transitions?: TransitionTimelineItem[];
+    gaps?: Gap[];
+    markers?: TimelineMarker[];
+    captionTracks?: CaptionTrack[];
+    mainVideoTrackId?: string | null;
+    cleanEmptyTracks?: boolean;
+  }) => void;
   setCaptionTracks: (tracks: CaptionTrack[]) => void;
   setActiveCaptionTrackId: (id: string | null) => void;
   updateCaptionTrack: (trackId: string, updates: Partial<CaptionTrack>) => void;
@@ -105,8 +155,17 @@ interface TimelineStore {
   updateClip: (clipId: string, updates: Partial<Clip>) => void;
   addTransition: (transition: TransitionTimelineItem) => void;
   removeTransition: (transitionId: string) => void;
-  updateTransition: (transitionId: string, updates: Partial<TransitionTimelineItem>) => void;
-  createTransitionBetweenClips: (fromClipId: string, toClipId: string, type: TransitionType, duration?: number, renderer?: string) => { transition?: TransitionTimelineItem; error: string | null };
+  updateTransition: (
+    transitionId: string,
+    updates: Partial<TransitionTimelineItem>,
+  ) => void;
+  createTransitionBetweenClips: (
+    fromClipId: string,
+    toClipId: string,
+    type: TransitionType,
+    duration?: number,
+    renderer?: string,
+  ) => { transition?: TransitionTimelineItem; error: string | null };
   moveClip: (clipId: string, startTime: number) => void;
   setZoom: (level: number) => void;
   /** Clamps to the SRP zoom range and syncs `zoomLevel` to `pixelsPerSecond / 100`. */
@@ -117,7 +176,11 @@ interface TimelineStore {
   swapClips: () => { error: string | null };
   toggleRippleEdit: () => void;
   toggleSnapEnabled: () => void;
-  rippleTrimClip: (clipId: string, side: "left" | "right", deltaTime: number) => void;
+  rippleTrimClip: (
+    clipId: string,
+    side: "left" | "right",
+    deltaTime: number,
+  ) => void;
   // Sequence-based operations
   insertClipAtIndex: (clipId: string, trackId: string, index: number) => void;
   normalizeTrack: (trackId: string) => void;
@@ -136,7 +199,11 @@ interface TimelineStore {
    */
   ensureTrackForType: (type: TrackType, mediaId?: string) => string;
   // Gap operations
-  insertGap: (trackId: string, startTime: number, duration: number) => Gap | null;
+  insertGap: (
+    trackId: string,
+    startTime: number,
+    duration: number,
+  ) => Gap | null;
   removeGap: (gapId: string) => void;
   resizeGapDuration: (gapId: string, newDuration: number) => void;
   toggleGapProtection: (gapId: string) => void;
@@ -147,18 +214,41 @@ interface TimelineStore {
   addMarker: (time: number, name?: string, color?: string) => string;
   removeMarker: (markerId: string) => void;
   updateMarker: (markerId: string, updates: Partial<TimelineMarker>) => void;
-  addClipMarker: (clipId: string, localTime: number, name?: string, color?: string) => string;
+  addClipMarker: (
+    clipId: string,
+    localTime: number,
+    name?: string,
+    color?: string,
+  ) => string;
   removeClipMarker: (clipId: string, markerId: string) => void;
   jumpToNextMarker: () => void;
   jumpToPrevMarker: () => void;
   // Audio Automation & FX operations
-  addAudioKeyframe: (clipId: string, time: number, gain: number, easing?: "linear" | "exponential" | "bezier") => string;
+  addAudioKeyframe: (
+    clipId: string,
+    time: number,
+    gain: number,
+    easing?: "linear" | "exponential" | "bezier",
+  ) => string;
   removeAudioKeyframe: (clipId: string, keyframeId: string) => void;
-  updateAudioKeyframe: (clipId: string, keyframeId: string, updates: Partial<import("@/types").AudioKeyframe>) => void;
-  updateClipAudioFX: (clipId: string, fxUpdates: Partial<import("@/types").AudioFXConfig>) => void;
+  updateAudioKeyframe: (
+    clipId: string,
+    keyframeId: string,
+    updates: Partial<import("@/types").AudioKeyframe>,
+  ) => void;
+  updateClipAudioFX: (
+    clipId: string,
+    fxUpdates: Partial<import("@/types").AudioFXConfig>,
+  ) => void;
   // Chroma Key & Color Grading operations
-  updateClipChromaKey: (clipId: string, updates: Partial<import("@/types").ChromaKeyConfig>) => void;
-  updateClipColorGrade: (clipId: string, updates: Partial<import("@/types").ColorGradeUniforms>) => void;
+  updateClipChromaKey: (
+    clipId: string,
+    updates: Partial<import("@/types").ChromaKeyConfig>,
+  ) => void;
+  updateClipColorGrade: (
+    clipId: string,
+    updates: Partial<import("@/types").ColorGradeUniforms>,
+  ) => void;
 }
 
 /** Track row height in px — derived from the canonical TRACK_TYPE_CONFIG registry. */
@@ -172,7 +262,10 @@ const MIN_TRIM_DURATION_SEC = 1;
  * Delegates to trackTypeConfig.getTrackInsertionIndex — do NOT add logic here.
  * @deprecated Prefer getTrackInsertionIndex from trackTypeConfig directly.
  */
-export function getInsertIndexForNewTrack(tracks: Track[], trackType: TrackType): number {
+export function getInsertIndexForNewTrack(
+  tracks: Track[],
+  trackType: TrackType,
+): number {
   return getTrackInsertionIndex(tracks, trackType);
 }
 
@@ -181,7 +274,12 @@ export function getInsertIndexForNewTrack(tracks: Track[], trackType: TrackType)
  * Delegates to trackTypeConfig.getTrackInsertionIndexGrouped — do NOT add logic here.
  * @deprecated Prefer getTrackInsertionIndexGrouped from trackTypeConfig directly.
  */
-export function getInsertIndexForNewTrackGrouped(tracks: Track[], clips: Clip[], trackType: TrackType, mediaId?: string): number {
+export function getInsertIndexForNewTrackGrouped(
+  tracks: Track[],
+  clips: Clip[],
+  trackType: TrackType,
+  mediaId?: string,
+): number {
   return getTrackInsertionIndexGrouped(tracks, clips, trackType, mediaId);
 }
 
@@ -223,13 +321,20 @@ export function getInsertIndexForNewTrackSmart(
 
   // Between specific tracks
   if (newTrackPosition === "between" && betweenTrackIds) {
-    const belowIndex = tracks.findIndex((t) => t.id === betweenTrackIds.belowId);
+    const belowIndex = tracks.findIndex(
+      (t) => t.id === betweenTrackIds.belowId,
+    );
     if (belowIndex >= 0) {
       proposedIndex = belowIndex; // Insert at the position of the "below" track (pushing it down)
     }
   }
 
-  return getSafeTrackInsertionIndex(tracks, trackType, proposedIndex, context.mainVideoTrackId);
+  return getSafeTrackInsertionIndex(
+    tracks,
+    trackType,
+    proposedIndex,
+    context.mainVideoTrackId,
+  );
 }
 
 export const useTimelineStore = create<TimelineStore>(
@@ -269,8 +374,16 @@ export const useTimelineStore = create<TimelineStore>(
       } finally {
         set((state) => {
           const newDepth = Math.max(0, state._batchDepth - 1);
-          if (newDepth === 0 && state._pendingEpochIncrement && completedSuccessfully) {
-            return { _batchDepth: 0, _pendingEpochIncrement: false, epoch: state.epoch + 1 };
+          if (
+            newDepth === 0 &&
+            state._pendingEpochIncrement &&
+            completedSuccessfully
+          ) {
+            return {
+              _batchDepth: 0,
+              _pendingEpochIncrement: false,
+              epoch: state.epoch + 1,
+            };
           }
           // If fn() threw, clear the pending flag but do NOT increment epoch.
           if (newDepth === 0 && !completedSuccessfully) {
@@ -303,7 +416,9 @@ export const useTimelineStore = create<TimelineStore>(
         // Clean up empty tracks (tracks with no clips) when cleanEmptyTracks is enabled
         let finalTracks = finalTracksRaw;
         if (payload?.cleanEmptyTracks) {
-          const clipTrackIds = new Set(finalClipsRaw.map((c: any) => c.trackId));
+          const clipTrackIds = new Set(
+            finalClipsRaw.map((c: any) => c.trackId),
+          );
           const hasClips = finalClipsRaw.length > 0;
           finalTracks = finalTracksRaw.filter((track: any) => {
             if (!hasClips) return true;
@@ -331,18 +446,29 @@ export const useTimelineStore = create<TimelineStore>(
         // from the clip/media contract and canonical bottommost video track position
         // so an overlay track or secondary video row cannot steal the main A-roll role.
         const explicitMainTrack = finalTracks.find(
-          (track) => track.id === payload?.mainVideoTrackId && track.type === "video",
+          (track) =>
+            track.id === payload?.mainVideoTrackId && track.type === "video",
         );
-        const inferredMainTrack = [...finalTracks].reverse().find((track) =>
-          track.type === "video" && finalClipsRaw.some((clip: any) => {
-            if (clip.trackId !== track.id) return false;
-            if (clip.kind === "video") return true;
-            const asset = mediaAssets.find((candidate) => candidate.id === clip.mediaId);
-            return asset?.type === "video";
-          }),
+        const inferredMainTrack = [...finalTracks].reverse().find(
+          (track) =>
+            track.type === "video" &&
+            finalClipsRaw.some((clip: any) => {
+              if (clip.trackId !== track.id) return false;
+              if (clip.kind === "video") return true;
+              const asset = mediaAssets.find(
+                (candidate) => candidate.id === clip.mediaId,
+              );
+              return asset?.type === "video";
+            }),
         );
-        const newMainVideoTrackId = explicitMainTrack?.id ?? inferredMainTrack?.id ?? resolvePrimaryVideoTrackId(finalTracks, payload?.mainVideoTrackId);
-        finalTracks = normalizeTrackOrderForMainVideo(finalTracks, newMainVideoTrackId);
+        const newMainVideoTrackId =
+          explicitMainTrack?.id ??
+          inferredMainTrack?.id ??
+          resolvePrimaryVideoTrackId(finalTracks, payload?.mainVideoTrackId);
+        finalTracks = normalizeTrackOrderForMainVideo(
+          finalTracks,
+          newMainVideoTrackId,
+        );
 
         // Atomic state update - all or nothing
         const loadedCaptionTracks = (payload as any)?.captionTracks ?? [];
@@ -395,7 +521,7 @@ export const useTimelineStore = create<TimelineStore>(
     updateCaptionTrack: (trackId, updates) => {
       set((state) => {
         const nextTracks = state.captionTracks.map((t) =>
-          t.id === trackId ? { ...t, ...updates } : t
+          t.id === trackId ? { ...t, ...updates } : t,
         );
         const next: Partial<TimelineStore> = { captionTracks: nextTracks };
         if (state._batchDepth > 0) {
@@ -465,12 +591,19 @@ export const useTimelineStore = create<TimelineStore>(
         height: trackHeights[type],
       };
       set((state) => {
-        const insertIndex = getSafeTrackInsertionIndex(state.tracks, type, state.tracks.length, state.mainVideoTrackId);
+        const insertIndex = getSafeTrackInsertionIndex(
+          state.tracks,
+          type,
+          state.tracks.length,
+          state.mainVideoTrackId,
+        );
         const nextTracks = [...state.tracks];
         nextTracks.splice(insertIndex, 0, newTrack);
         const next: Partial<TimelineStore> = {
           tracks: nextTracks,
-          mainVideoTrackId: resolvePrimaryVideoTrackId(state.tracks, state.mainVideoTrackId) ?? (type === "video" ? newTrack.id : null),
+          mainVideoTrackId:
+            resolvePrimaryVideoTrackId(state.tracks, state.mainVideoTrackId) ??
+            (type === "video" ? newTrack.id : null),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -493,12 +626,19 @@ export const useTimelineStore = create<TimelineStore>(
       };
       const id = newTrack.id;
       set((state) => {
-        const clamped = getSafeTrackInsertionIndex(state.tracks, type, index, state.mainVideoTrackId);
+        const clamped = getSafeTrackInsertionIndex(
+          state.tracks,
+          type,
+          index,
+          state.mainVideoTrackId,
+        );
         const nextTracks = [...state.tracks];
         nextTracks.splice(clamped, 0, newTrack);
         const next: Partial<TimelineStore> = {
           tracks: nextTracks,
-          mainVideoTrackId: resolvePrimaryVideoTrackId(state.tracks, state.mainVideoTrackId) ?? (type === "video" ? newTrack.id : null),
+          mainVideoTrackId:
+            resolvePrimaryVideoTrackId(state.tracks, state.mainVideoTrackId) ??
+            (type === "video" ? newTrack.id : null),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -516,7 +656,9 @@ export const useTimelineStore = create<TimelineStore>(
         const next: Partial<TimelineStore> = {
           tracks: state.tracks.filter((t) => t.id !== trackId),
           clips: state.clips.filter((c) => c.trackId !== trackId),
-          transitions: state.transitions.filter((transition) => transition.placement.trackId !== trackId),
+          transitions: state.transitions.filter(
+            (transition) => transition.placement.trackId !== trackId,
+          ),
           gaps: state.gaps.filter((g) => g.trackId !== trackId),
         };
         if (state._batchDepth > 0) {
@@ -531,7 +673,9 @@ export const useTimelineStore = create<TimelineStore>(
     toggleTrackLock: (trackId) => {
       set((state) => {
         const next: Partial<TimelineStore> = {
-          tracks: state.tracks.map((track) => (track.id === trackId ? { ...track, locked: !track.locked } : track)),
+          tracks: state.tracks.map((track) =>
+            track.id === trackId ? { ...track, locked: !track.locked } : track,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -549,7 +693,9 @@ export const useTimelineStore = create<TimelineStore>(
 
       set((state) => {
         const next: Partial<TimelineStore> = {
-          tracks: state.tracks.map((track) => (track.id === trackId ? { ...track, muted: !track.muted } : track)),
+          tracks: state.tracks.map((track) =>
+            track.id === trackId ? { ...track, muted: !track.muted } : track,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -564,9 +710,9 @@ export const useTimelineStore = create<TimelineStore>(
       if (get().tracks.find((track) => track.id === trackId)?.locked) return;
       set((state) => {
         const next: Partial<TimelineStore> = {
-          tracks: state.tracks.map((track) => (
-            track.id === trackId ? { ...track, solo: !track.solo } : track
-          )),
+          tracks: state.tracks.map((track) =>
+            track.id === trackId ? { ...track, solo: !track.solo } : track,
+          ),
         };
         if (state._batchDepth > 0) next._pendingEpochIncrement = true;
         else next.epoch = state.epoch + 1;
@@ -577,7 +723,11 @@ export const useTimelineStore = create<TimelineStore>(
     toggleTrackVisibility: (trackId) => {
       set((state) => {
         const next: Partial<TimelineStore> = {
-          tracks: state.tracks.map((track) => (track.id === trackId ? { ...track, visible: !track.visible } : track)),
+          tracks: state.tracks.map((track) =>
+            track.id === trackId
+              ? { ...track, visible: !track.visible }
+              : track,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -599,7 +749,10 @@ export const useTimelineStore = create<TimelineStore>(
         case "primary": {
           // The primary video track must already exist; never create one here.
           const primary = state.tracks.find((t) => t.type === "video") ?? null;
-          if (!primary) throw new Error("[ensureTrackForType] primary: no video track found");
+          if (!primary)
+            throw new Error(
+              "[ensureTrackForType] primary: no video track found",
+            );
           return primary.id;
         }
 
@@ -622,19 +775,25 @@ export const useTimelineStore = create<TimelineStore>(
           if (mediaId) {
             const { tracks, clips } = get();
             const match = tracks.find(
-              (t) => t.type === type && clips.some((c) => c.trackId === t.id && c.mediaId === mediaId),
+              (t) =>
+                t.type === type &&
+                clips.some((c) => c.trackId === t.id && c.mediaId === mediaId),
             );
             if (match) return match.id;
           }
           const { tracks, clips } = get();
-          const idx = getTrackInsertionIndexGrouped(tracks, clips, type, mediaId);
+          const idx = getTrackInsertionIndexGrouped(
+            tracks,
+            clips,
+            type,
+            mediaId,
+          );
           return get().insertTrackAt(type, idx);
         }
       }
     },
 
     addClip: (clip) => {
-
       set((state) => {
         // Prevent adding duplicate clips with the same ID
         const existingClip = state.clips.find((c) => c.id === clip.id);
@@ -645,7 +804,9 @@ export const useTimelineStore = create<TimelineStore>(
         const wasEmpty = state.clips.length === 0;
 
         // Check for overlap and adjust position if needed
-        const trackClips = state.clips.filter((c) => c.trackId === clip.trackId).sort((a, b) => a.startTime - b.startTime);
+        const trackClips = state.clips
+          .filter((c) => c.trackId === clip.trackId)
+          .sort((a, b) => a.startTime - b.startTime);
 
         let finalStartTime = clip.startTime;
         let hasOverlap = true;
@@ -658,7 +819,10 @@ export const useTimelineStore = create<TimelineStore>(
             const newEnd = finalStartTime + clip.duration;
 
             // Check for overlap
-            if (finalStartTime < existingEnd && newEnd > existingClip.startTime) {
+            if (
+              finalStartTime < existingEnd &&
+              newEnd > existingClip.startTime
+            ) {
               // Overlap detected - move to end of conflicting clip
               finalStartTime = existingEnd;
               hasOverlap = true; // Re-check with new position
@@ -673,7 +837,7 @@ export const useTimelineStore = create<TimelineStore>(
           ...clip,
           startTime: finalStartTime,
           trimIn,
-          trimOut: clip.trimOut ?? (trimIn + clip.duration),
+          trimOut: clip.trimOut ?? trimIn + clip.duration,
         };
 
         // If timeline was empty, switch to program preview and seek to first clip's start time
@@ -721,7 +885,9 @@ export const useTimelineStore = create<TimelineStore>(
       if (clip.templateId) {
         import("@/features/text-templates/templateStore")
           .then(({ useTemplateStore }) => {
-            useTemplateStore.getState().preloadTemplatesAndFontsForClips([clip]);
+            useTemplateStore
+              .getState()
+              .preloadTemplatesAndFontsForClips([clip]);
           })
           .catch(() => {});
       }
@@ -767,14 +933,21 @@ export const useTimelineStore = create<TimelineStore>(
         if (clipToRemove) {
           const trackId = clipToRemove.trackId;
           const track = state.tracks.find((t) => t.id === trackId);
-          const hasOtherClips = remainingClips.some((c) => c.trackId === trackId);
+          const hasOtherClips = remainingClips.some(
+            (c) => c.trackId === trackId,
+          );
 
-          if (track && !hasOtherClips && shouldAutoPruneTrack(track, state.tracks, state.mainVideoTrackId)) {
+          if (
+            track &&
+            !hasOtherClips &&
+            shouldAutoPruneTrack(track, state.tracks, state.mainVideoTrackId)
+          ) {
             tracksToKeep = state.tracks.filter((t) => t.id !== trackId);
             gapsToKeep = state.gaps.filter((g) => g.trackId !== trackId);
             removedTrackIdForCleanup = trackId;
             if (mainVideoTrackId === trackId) {
-              mainVideoTrackId = tracksToKeep.find((t) => t.type === "video")?.id ?? null;
+              mainVideoTrackId =
+                tracksToKeep.find((t) => t.type === "video")?.id ?? null;
             }
           }
         }
@@ -784,7 +957,11 @@ export const useTimelineStore = create<TimelineStore>(
           tracks: tracksToKeep,
           gaps: gapsToKeep,
           mainVideoTrackId,
-          transitions: state.transitions.filter((transition) => transition.fromItemId !== clipId && transition.toItemId !== clipId),
+          transitions: state.transitions.filter(
+            (transition) =>
+              transition.fromItemId !== clipId &&
+              transition.toItemId !== clipId,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -815,11 +992,13 @@ export const useTimelineStore = create<TimelineStore>(
       }
     },
 
-
     addTransition: (transition) => {
       set((state) => {
         const next: Partial<TimelineStore> = {
-          transitions: [...state.transitions.filter((t) => t.id !== transition.id), transition],
+          transitions: [
+            ...state.transitions.filter((t) => t.id !== transition.id),
+            transition,
+          ],
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -833,7 +1012,9 @@ export const useTimelineStore = create<TimelineStore>(
     removeTransition: (transitionId) => {
       set((state) => {
         const next: Partial<TimelineStore> = {
-          transitions: state.transitions.filter((transition) => transition.id !== transitionId),
+          transitions: state.transitions.filter(
+            (transition) => transition.id !== transitionId,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -847,7 +1028,9 @@ export const useTimelineStore = create<TimelineStore>(
     updateTransition: (transitionId, updates) => {
       set((state) => {
         const next: Partial<TimelineStore> = {
-          transitions: state.transitions.map((t) => (t.id === transitionId ? { ...t, ...updates } : t)),
+          transitions: state.transitions.map((t) =>
+            t.id === transitionId ? { ...t, ...updates } : t,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -858,23 +1041,40 @@ export const useTimelineStore = create<TimelineStore>(
       });
     },
 
-    createTransitionBetweenClips: (fromClipId, toClipId, type, duration = 0.5, renderer) => {
+    createTransitionBetweenClips: (
+      fromClipId,
+      toClipId,
+      type,
+      duration = 0.5,
+      renderer,
+    ) => {
       const state = get();
       const fromClip = state.clips.find((clip) => clip.id === fromClipId);
       const toClip = state.clips.find((clip) => clip.id === toClipId);
-      if (!fromClip || !toClip) return { error: "Select two clips to add a transition" };
-      if (fromClip.trackId !== toClip.trackId) return { error: "Transitions require two clips on the same track" };
+      if (!fromClip || !toClip)
+        return { error: "Select two clips to add a transition" };
+      if (fromClip.trackId !== toClip.trackId)
+        return { error: "Transitions require two clips on the same track" };
 
       const track = state.tracks.find((t) => t.id === fromClip.trackId);
       if (!track) return { error: "Transition track was not found" };
-      if (track.locked) return { error: "Unlock the track before adding a transition" };
-      if (track.type === "audio") return { error: "Visual transitions can only be added to video or text tracks" };
+      if (track.locked)
+        return { error: "Unlock the track before adding a transition" };
+      if (track.type === "audio")
+        return {
+          error: "Visual transitions can only be added to video or text tracks",
+        };
 
-      const [left, right] = fromClip.startTime <= toClip.startTime ? [fromClip, toClip] : [toClip, fromClip];
+      const [left, right] =
+        fromClip.startTime <= toClip.startTime
+          ? [fromClip, toClip]
+          : [toClip, fromClip];
       const leftEnd = left.startTime + left.duration;
       const gap = right.startTime - leftEnd;
-      if (gap > 0.001) return { error: "Move clips together before adding a transition" };
-      if (left.duration < duration / 2 || right.duration < duration / 2) return { error: "Clips are too short for this transition" };
+      if (gap > 0.001)
+        return { error: "Move clips together before adding a transition" };
+      if (left.duration < duration / 2 || right.duration < duration / 2)
+        return { error: "Clips are too short for this transition" };
 
       const transitionStart = Math.max(0, leftEnd - duration / 2);
       const transition: TransitionTimelineItem = {
@@ -914,19 +1114,29 @@ export const useTimelineStore = create<TimelineStore>(
                 const project = useProjectStore.getState().project;
                 const canvasWidth = project?.canvasWidth ?? 1920;
                 const canvasHeight = project?.canvasHeight ?? 1080;
-                return { ...c, ...resolveTextClipStyleUpdate(c as TextClip, updates as Partial<TextClip>, canvasWidth, canvasHeight) };
+                return {
+                  ...c,
+                  ...resolveTextClipStyleUpdate(
+                    c as TextClip,
+                    updates as Partial<TextClip>,
+                    canvasWidth,
+                    canvasHeight,
+                  ),
+                };
               } catch (e) {
                 return { ...c, ...updates };
               }
             }
 
             const synchronized = synchronizeClipAudioProperties(c, updates);
-            const linkedSource = c.audio?.linkState === "unlinked" && c.audio.linkedClipId
-              ? state.clips.find((clip) => clip.id === c.audio?.linkedClipId)
-              : undefined;
-            const linkOffsetSeconds = updates.startTime !== undefined && linkedSource
-              ? updates.startTime - linkedSource.startTime
-              : synchronized.audio?.linkOffsetSeconds;
+            const linkedSource =
+              c.audio?.linkState === "unlinked" && c.audio.linkedClipId
+                ? state.clips.find((clip) => clip.id === c.audio?.linkedClipId)
+                : undefined;
+            const linkOffsetSeconds =
+              updates.startTime !== undefined && linkedSource
+                ? updates.startTime - linkedSource.startTime
+                : synchronized.audio?.linkOffsetSeconds;
             return {
               ...c,
               ...synchronized,
@@ -938,13 +1148,17 @@ export const useTimelineStore = create<TimelineStore>(
         };
         // Skip epoch increment during transform preview (high-frequency updates)
         // The final mouseup will commit to history which will increment epoch properly
-        const isTransformPreview = "_skipEpochIncrement" in updates && (updates as any)._skipEpochIncrement;
+        const isTransformPreview =
+          "_skipEpochIncrement" in updates &&
+          (updates as any)._skipEpochIncrement;
 
         // EXCEPTION: For text templates, always increment epoch even during transform preview
         // because templates need to re-render at different scales in real-time
         const clip = state.clips.find((c) => c.id === clipId);
-        const isTextTemplate = clip && "templateId" in clip && (clip as TextClip).templateId;
-        const isResizing = updates.width !== undefined || updates.height !== undefined;
+        const isTextTemplate =
+          clip && "templateId" in clip && (clip as TextClip).templateId;
+        const isResizing =
+          updates.width !== undefined || updates.height !== undefined;
 
         if (isTransformPreview && !(isTextTemplate && isResizing)) {
           // Don't increment epoch for preview updates (except template resizing)
@@ -962,7 +1176,11 @@ export const useTimelineStore = create<TimelineStore>(
       if (updates.templateId) {
         import("@/features/text-templates/templateStore")
           .then(({ useTemplateStore }) => {
-            useTemplateStore.getState().preloadTemplatesAndFontsForClips([{ templateId: updates.templateId }]);
+            useTemplateStore
+              .getState()
+              .preloadTemplatesAndFontsForClips([
+                { templateId: updates.templateId },
+              ]);
           })
           .catch(() => {});
       }
@@ -971,7 +1189,9 @@ export const useTimelineStore = create<TimelineStore>(
     moveClip: (clipId, startTime) => {
       set((state) => {
         const next: Partial<TimelineStore> = {
-          clips: state.clips.map((c) => (c.id === clipId ? { ...c, startTime } : c)),
+          clips: state.clips.map((c) =>
+            c.id === clipId ? { ...c, startTime } : c,
+          ),
         };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -988,7 +1208,10 @@ export const useTimelineStore = create<TimelineStore>(
       set((state) => {
         // Zoom animation writes on every RAF. Avoid notifying every subscriber
         // when a frame has already reached the requested value.
-        if (Object.is(state.pixelsPerSecond, clamped) && Object.is(state.zoomLevel, zoomLevel)) {
+        if (
+          Object.is(state.pixelsPerSecond, clamped) &&
+          Object.is(state.zoomLevel, zoomLevel)
+        ) {
           return state;
         }
         return {
@@ -999,7 +1222,9 @@ export const useTimelineStore = create<TimelineStore>(
     },
 
     setZoom: (level) => {
-      get().setPixelsPerSecond(TIMELINE_PPS_PER_ZOOM * clampTimelineZoom(level));
+      get().setPixelsPerSecond(
+        TIMELINE_PPS_PER_ZOOM * clampTimelineZoom(level),
+      );
     },
 
     setScrollLeft: (left) => {
@@ -1035,10 +1260,12 @@ export const useTimelineStore = create<TimelineStore>(
         const collision = state.clips.some((clip) => {
           if (clip.id === clipA.id || clip.id === clipB.id) return false;
           const clipEnd = clip.startTime + clip.duration;
-          const clipAOverlapsDestination = clip.trackId === clipB.trackId &&
+          const clipAOverlapsDestination =
+            clip.trackId === clipB.trackId &&
             clipB.startTime < clipEnd &&
             clipB.startTime + clipA.duration > clip.startTime;
-          const clipBOverlapsDestination = clip.trackId === clipA.trackId &&
+          const clipBOverlapsDestination =
+            clip.trackId === clipA.trackId &&
             clipA.startTime < clipEnd &&
             clipA.startTime + clipB.duration > clip.startTime;
           return clipAOverlapsDestination || clipBOverlapsDestination;
@@ -1051,18 +1278,28 @@ export const useTimelineStore = create<TimelineStore>(
         set((state) => {
           // TL-04 fix: Remove transitions that would bridge different tracks after swap
           const updatedTransitions = state.transitions.filter((t) => {
-            const refsClipA = t.fromItemId === clipA.id || t.toItemId === clipA.id;
-            const refsClipB = t.fromItemId === clipB.id || t.toItemId === clipB.id;
+            const refsClipA =
+              t.fromItemId === clipA.id || t.toItemId === clipA.id;
+            const refsClipB =
+              t.fromItemId === clipB.id || t.toItemId === clipB.id;
             return !refsClipA && !refsClipB;
           });
 
           const next: Partial<TimelineStore> = {
             clips: state.clips.map((c) => {
               if (c.id === clipA.id) {
-                return { ...c, startTime: clipB.startTime, trackId: clipB.trackId };
+                return {
+                  ...c,
+                  startTime: clipB.startTime,
+                  trackId: clipB.trackId,
+                };
               }
               if (c.id === clipB.id) {
-                return { ...c, startTime: clipA.startTime, trackId: clipA.trackId };
+                return {
+                  ...c,
+                  startTime: clipA.startTime,
+                  trackId: clipA.trackId,
+                };
               }
               return c;
             }),
@@ -1081,7 +1318,8 @@ export const useTimelineStore = create<TimelineStore>(
 
       // Case: same track — recalculate positions flush
       // Ensure left is always the leftmost clip
-      const [left, right] = clipA.startTime < clipB.startTime ? [clipA, clipB] : [clipB, clipA];
+      const [left, right] =
+        clipA.startTime < clipB.startTime ? [clipA, clipB] : [clipB, clipA];
 
       // TL-05 fix: Swap startTime values directly to preserve gaps between clips
       const newLeftStart = right.startTime;
@@ -1090,15 +1328,20 @@ export const useTimelineStore = create<TimelineStore>(
       const newRightEnd = newRightStart + left.duration;
 
       // Collision check: do the swapped clips overlap any other clips?
-      const trackClips = state.clips.filter((c) => c.trackId === left.trackId && c.id !== left.id && c.id !== right.id);
+      const trackClips = state.clips.filter(
+        (c) =>
+          c.trackId === left.trackId && c.id !== left.id && c.id !== right.id,
+      );
 
       // Check if either swapped clip overlaps with other clips on the track
       const collision = trackClips.some((c) => {
         const cEnd = c.startTime + c.duration;
         // Check if clip C overlaps with new left position (right clip moved to left)
-        const overlapsNewLeft = Math.max(newLeftStart, c.startTime) < Math.min(newLeftEnd, cEnd);
+        const overlapsNewLeft =
+          Math.max(newLeftStart, c.startTime) < Math.min(newLeftEnd, cEnd);
         // Check if clip C overlaps with new right position (left clip moved to right)
-        const overlapsNewRight = Math.max(newRightStart, c.startTime) < Math.min(newRightEnd, cEnd);
+        const overlapsNewRight =
+          Math.max(newRightStart, c.startTime) < Math.min(newRightEnd, cEnd);
         return overlapsNewLeft || overlapsNewRight;
       });
 
@@ -1148,9 +1391,15 @@ export const useTimelineStore = create<TimelineStore>(
       try {
         // Lazy import to avoid circular deps during store init.
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const asset = useProjectStore.getState().mediaAssets?.find((a: any) => a.id === clip.mediaId);
+        const asset = useProjectStore
+          .getState()
+          .mediaAssets?.find((a: any) => a.id === clip.mediaId);
         mediaType = asset?.type ?? null;
-        if (asset?.duration && Number.isFinite(asset.duration) && asset.duration > 0) {
+        if (
+          asset?.duration &&
+          Number.isFinite(asset.duration) &&
+          asset.duration > 0
+        ) {
           mediaDurationBound = asset.duration;
         }
       } catch {
@@ -1169,9 +1418,15 @@ export const useTimelineStore = create<TimelineStore>(
 
       if (side === "right") {
         // Trimming right edge - changes duration
-        const maxDuration = Math.max(minDuration, mediaDurationBound - clip.trimIn);
+        const maxDuration = Math.max(
+          minDuration,
+          mediaDurationBound - clip.trimIn,
+        );
         const desiredDuration = clip.duration + deltaTime;
-        newDuration = Math.max(minDuration, Math.min(desiredDuration, maxDuration));
+        newDuration = Math.max(
+          minDuration,
+          Math.min(desiredDuration, maxDuration),
+        );
         rippleAmount = newDuration - clip.duration;
       } else {
         // Trimming left edge changes the media in-point and duration. In
@@ -1187,11 +1442,18 @@ export const useTimelineStore = create<TimelineStore>(
             return maxEnd;
           }, 0);
 
-        const minDelta = Math.max(-clip.startTime, previousClipEnd - clip.startTime);
+        const minDelta = Math.max(
+          -clip.startTime,
+          previousClipEnd - clip.startTime,
+        );
         const maxDeltaByDuration = clip.duration - minDuration;
         const maxDeltaByMedia = maxTrimIn - clip.trimIn;
         // TL-01 fix: Clamp against clip.trimIn to prevent negative source timestamps
-        const clampedDelta = Math.max(minDelta, -clip.trimIn, Math.min(desiredDelta, maxDeltaByDuration, maxDeltaByMedia));
+        const clampedDelta = Math.max(
+          minDelta,
+          -clip.trimIn,
+          Math.min(desiredDelta, maxDeltaByDuration, maxDeltaByMedia),
+        );
 
         newStartTime = clip.startTime;
         newDuration = clip.duration - clampedDelta;
@@ -1229,7 +1491,10 @@ export const useTimelineStore = create<TimelineStore>(
                 updates.trimIn = clip.trimIn + (clip.duration - newDuration);
                 updates.duration = clip.trimOut - updates.trimIn;
               } else {
-                updates.trimOut = Math.min(clip.trimIn + newDuration, mediaDurationBound);
+                updates.trimOut = Math.min(
+                  clip.trimIn + newDuration,
+                  mediaDurationBound,
+                );
                 updates.duration = updates.trimOut - clip.trimIn;
               }
 
@@ -1260,7 +1525,9 @@ export const useTimelineStore = create<TimelineStore>(
     // Sequence-based operations for gap engine
     getTrackClips: (trackId) => {
       const state = get();
-      return state.clips.filter((c) => c.trackId === trackId).sort((a, b) => a.startTime - b.startTime);
+      return state.clips
+        .filter((c) => c.trackId === trackId)
+        .sort((a, b) => a.startTime - b.startTime);
     },
 
     insertClipAtIndex: (clipId, trackId, index) => {
@@ -1270,7 +1537,9 @@ export const useTimelineStore = create<TimelineStore>(
 
       // Check if clip is already at target position (no-op detection)
       if (clip.trackId === trackId) {
-        const allTrackClips = state.clips.filter((c) => c.trackId === trackId).sort((a, b) => a.startTime - b.startTime);
+        const allTrackClips = state.clips
+          .filter((c) => c.trackId === trackId)
+          .sort((a, b) => a.startTime - b.startTime);
         const currentIndex = allTrackClips.findIndex((c) => c.id === clipId);
         if (currentIndex === index) {
           // No-op: clip is already at target position, don't shift anything
@@ -1279,7 +1548,9 @@ export const useTimelineStore = create<TimelineStore>(
       }
 
       // Get all clips on target track (excluding the dragged clip)
-      const trackClips = state.clips.filter((c) => c.trackId === trackId && c.id !== clipId).sort((a, b) => a.startTime - b.startTime);
+      const trackClips = state.clips
+        .filter((c) => c.trackId === trackId && c.id !== clipId)
+        .sort((a, b) => a.startTime - b.startTime);
 
       // Insert clip at index
       trackClips.splice(index, 0, clip);
@@ -1311,7 +1582,9 @@ export const useTimelineStore = create<TimelineStore>(
 
     normalizeTrack: (trackId) => {
       const state = get();
-      const trackClips = state.clips.filter((c) => c.trackId === trackId).sort((a, b) => a.startTime - b.startTime);
+      const trackClips = state.clips
+        .filter((c) => c.trackId === trackId)
+        .sort((a, b) => a.startTime - b.startTime);
 
       let currentTime = 0;
       const normalized = trackClips.map((clip) => {
@@ -1339,10 +1612,14 @@ export const useTimelineStore = create<TimelineStore>(
     removeEmptyNonMainTracks: (candidateTrackIds) => {
       set((state) => {
         const videoTracks = state.tracks.filter((t) => t.type === "video");
-        const mainVideoTrackId = state.mainVideoTrackId ?? (
-          videoTracks.length === 1 ? videoTracks[0].id : videoTracks[videoTracks.length - 1]?.id ?? null
-        );
-        const candidateSet = candidateTrackIds ? new Set(candidateTrackIds) : null;
+        const mainVideoTrackId =
+          state.mainVideoTrackId ??
+          (videoTracks.length === 1
+            ? videoTracks[0].id
+            : (videoTracks[videoTracks.length - 1]?.id ?? null));
+        const candidateSet = candidateTrackIds
+          ? new Set(candidateTrackIds)
+          : null;
         const nextTracks = state.tracks.filter((track) => {
           if (track.id === mainVideoTrackId) return true;
           if (candidateSet && !candidateSet.has(track.id)) return true;
@@ -1366,7 +1643,7 @@ export const useTimelineStore = create<TimelineStore>(
     // ═══════════════════════════════════════════════════════════
 
     insertGap: (trackId, startTime, duration) => {
-      // DEPRECATED: Use GapManager.insertGap() for undo/redo support
+      // Use GapManager.insertGap() for undo/redo support
 
       const state = get();
       const track = state.tracks.find((t) => t.id === trackId);
@@ -1375,7 +1652,14 @@ export const useTimelineStore = create<TimelineStore>(
         return null;
       }
 
-      const result = insertGapWithRipple(trackId, startTime, duration, state.clips, state.gaps, "user-insert");
+      const result = insertGapWithRipple(
+        trackId,
+        startTime,
+        duration,
+        state.clips,
+        state.gaps,
+        "user-insert",
+      );
 
       if (!result.success || !result.gap) {
         return null;
@@ -1385,7 +1669,11 @@ export const useTimelineStore = create<TimelineStore>(
       set((state) => {
         const next: Partial<TimelineStore> = {
           gaps: [...state.gaps, result.gap!],
-          clips: state.clips.map((c) => (result.affectedClipIds!.includes(c.id) ? { ...c, startTime: c.startTime + duration } : c)),
+          clips: state.clips.map((c) =>
+            result.affectedClipIds!.includes(c.id)
+              ? { ...c, startTime: c.startTime + duration }
+              : c,
+          ),
         };
 
         if (state._batchDepth > 0) {
@@ -1401,7 +1689,7 @@ export const useTimelineStore = create<TimelineStore>(
     },
 
     removeGap: (gapId) => {
-      // DEPRECATED: Use GapManager.removeGap() for undo/redo support
+      // Use GapManager.removeGap() for undo/redo support
 
       const state = get();
       const gap = state.gaps.find((g) => g.id === gapId);
@@ -1419,7 +1707,11 @@ export const useTimelineStore = create<TimelineStore>(
       set((state) => {
         const next: Partial<TimelineStore> = {
           gaps: state.gaps.filter((g) => g.id !== gapId),
-          clips: state.clips.map((c) => (result.affectedClipIds!.includes(c.id) ? { ...c, startTime: c.startTime - gap.duration } : c)),
+          clips: state.clips.map((c) =>
+            result.affectedClipIds!.includes(c.id)
+              ? { ...c, startTime: c.startTime - gap.duration }
+              : c,
+          ),
         };
 
         if (state._batchDepth > 0) {
@@ -1433,7 +1725,7 @@ export const useTimelineStore = create<TimelineStore>(
     },
 
     resizeGapDuration: (gapId, newDuration) => {
-      // DEPRECATED: Use GapManager.resizeGap() for undo/redo support
+      // Use GapManager.resizeGap() for undo/redo support
 
       const state = get();
       const gap = state.gaps.find((g) => g.id === gapId);
@@ -1453,7 +1745,11 @@ export const useTimelineStore = create<TimelineStore>(
       set((state) => {
         const next: Partial<TimelineStore> = {
           gaps: state.gaps.map((g) => (g.id === gapId ? result.gap! : g)),
-          clips: state.clips.map((c) => (result.affectedClipIds!.includes(c.id) ? { ...c, startTime: c.startTime + deltaTime } : c)),
+          clips: state.clips.map((c) =>
+            result.affectedClipIds!.includes(c.id)
+              ? { ...c, startTime: c.startTime + deltaTime }
+              : c,
+          ),
         };
 
         if (state._batchDepth > 0) {
@@ -1467,7 +1763,7 @@ export const useTimelineStore = create<TimelineStore>(
     },
 
     toggleGapProtection: (gapId) => {
-      // DEPRECATED: Use GapManager.toggleProtection() for undo/redo support
+      // Use GapManager.toggleProtection() for undo/redo support
 
       set((state) => {
         const next: Partial<TimelineStore> = {
@@ -1494,21 +1790,27 @@ export const useTimelineStore = create<TimelineStore>(
 
     detectAndSyncGaps: (trackId) => {
       const state = get();
-      const tracksToProcess = trackId ? state.tracks.filter((t) => t.id === trackId) : state.tracks;
+      const tracksToProcess = trackId
+        ? state.tracks.filter((t) => t.id === trackId)
+        : state.tracks;
 
       // Start with gaps from tracks we're NOT processing (keep them as-is)
       const trackIdsToProcess = new Set(tracksToProcess.map((t) => t.id));
-      let newGaps: Gap[] = state.gaps.filter((g) => !trackIdsToProcess.has(g.trackId));
+      let newGaps: Gap[] = state.gaps.filter(
+        (g) => !trackIdsToProcess.has(g.trackId),
+      );
 
       for (const track of tracksToProcess) {
         const trackClips = state.clips.filter((c) => c.trackId === track.id);
 
-        // COMPLETE REDETECTION: Detect all gaps fresh (don't preserve existing)
+        // Detect all gaps fresh (don't preserve existing)
         // This ensures gaps always have the correct duration after clip moves
         const detectedGaps = detectGaps(trackClips, []);
 
         // Preserve protected gaps (match by position and update duration)
-        const existingProtectedGaps = state.gaps.filter((g) => g.trackId === track.id && g.protected);
+        const existingProtectedGaps = state.gaps.filter(
+          (g) => g.trackId === track.id && g.protected,
+        );
 
         // For each protected gap, check if it still exists and update its duration
         const validProtectedGaps: Gap[] = [];
@@ -1519,7 +1821,10 @@ export const useTimelineStore = create<TimelineStore>(
           const matchingGap = detectedGaps.find((detected) => {
             const detectedEnd = detected.startTime + detected.duration;
             const protectedEnd = protectedGap.startTime + protectedGap.duration;
-            const overlapStart = Math.max(detected.startTime, protectedGap.startTime);
+            const overlapStart = Math.max(
+              detected.startTime,
+              protectedGap.startTime,
+            );
             const overlapEnd = Math.min(detectedEnd, protectedEnd);
             return overlapStart < overlapEnd - 0.001; // Overlaps by at least 1ms
           });
@@ -1556,7 +1861,15 @@ export const useTimelineStore = create<TimelineStore>(
         for (let i = 0; i < a.length; i++) {
           const ga = a[i];
           const gb = b[i];
-          if (ga.id !== gb.id || ga.trackId !== gb.trackId || Math.abs(ga.startTime - gb.startTime) > 0.001 || Math.abs(ga.duration - gb.duration) > 0.001 || ga.type !== gb.type || ga.source !== gb.source || ga.protected !== gb.protected) {
+          if (
+            ga.id !== gb.id ||
+            ga.trackId !== gb.trackId ||
+            Math.abs(ga.startTime - gb.startTime) > 0.001 ||
+            Math.abs(ga.duration - gb.duration) > 0.001 ||
+            ga.type !== gb.type ||
+            ga.source !== gb.source ||
+            ga.protected !== gb.protected
+          ) {
             return false;
           }
         }
@@ -1569,7 +1882,7 @@ export const useTimelineStore = create<TimelineStore>(
     },
 
     packTrackGaps: (trackId) => {
-      // DEPRECATED: Use GapManager.packTrack() for undo/redo support
+      // Use GapManager.packTrack() for undo/redo support
 
       const state = get();
       const track = state.tracks.find((t) => t.id === trackId);
@@ -1579,7 +1892,9 @@ export const useTimelineStore = create<TimelineStore>(
       const result = packTrack(trackId, state.clips, state.gaps);
 
       // Reposition all clips tightly
-      const trackClips = state.clips.filter((c) => c.trackId === trackId).sort((a, b) => a.startTime - b.startTime);
+      const trackClips = state.clips
+        .filter((c) => c.trackId === trackId)
+        .sort((a, b) => a.startTime - b.startTime);
 
       let currentTime = 0;
       const repositionedClips = new Map<string, number>();
@@ -1596,7 +1911,11 @@ export const useTimelineStore = create<TimelineStore>(
 
         const next: Partial<TimelineStore> = {
           gaps: allRemainingGaps,
-          clips: state.clips.map((c) => (repositionedClips.has(c.id) ? { ...c, startTime: repositionedClips.get(c.id)! } : c)),
+          clips: state.clips.map((c) =>
+            repositionedClips.has(c.id)
+              ? { ...c, startTime: repositionedClips.get(c.id)! }
+              : c,
+          ),
         };
 
         if (state._batchDepth > 0) {
@@ -1666,7 +1985,9 @@ export const useTimelineStore = create<TimelineStore>(
 
         const clampedTime = Math.max(0, Math.min(clip.duration, time));
         const keyframes = clip.volumeKeyframes ? [...clip.volumeKeyframes] : [];
-        const existingIdx = keyframes.findIndex((kf) => Math.abs(kf.time - clampedTime) < 0.001);
+        const existingIdx = keyframes.findIndex(
+          (kf) => Math.abs(kf.time - clampedTime) < 0.001,
+        );
 
         if (existingIdx >= 0) {
           keyframes[existingIdx] = { ...keyframes[existingIdx], gain, easing };
@@ -1675,11 +1996,16 @@ export const useTimelineStore = create<TimelineStore>(
         }
         keyframes.sort((a, b) => a.time - b.time);
 
-        const updatedClips = state.clips.map((c) => (
+        const updatedClips = state.clips.map((c) =>
           c.id === clipId
-            ? { ...c, ...synchronizeClipAudioProperties(c, { volumeKeyframes: keyframes }) }
-            : c
-        ));
+            ? {
+                ...c,
+                ...synchronizeClipAudioProperties(c, {
+                  volumeKeyframes: keyframes,
+                }),
+              }
+            : c,
+        );
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -1696,12 +2022,19 @@ export const useTimelineStore = create<TimelineStore>(
         const clip = state.clips.find((c) => c.id === clipId);
         if (!clip || !clip.volumeKeyframes) return state;
 
-        const keyframes = clip.volumeKeyframes.filter((kf) => kf.id !== keyframeId);
-        const updatedClips = state.clips.map((c) => (
+        const keyframes = clip.volumeKeyframes.filter(
+          (kf) => kf.id !== keyframeId,
+        );
+        const updatedClips = state.clips.map((c) =>
           c.id === clipId
-            ? { ...c, ...synchronizeClipAudioProperties(c, { volumeKeyframes: keyframes }) }
-            : c
-        ));
+            ? {
+                ...c,
+                ...synchronizeClipAudioProperties(c, {
+                  volumeKeyframes: keyframes,
+                }),
+              }
+            : c,
+        );
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -1728,11 +2061,16 @@ export const useTimelineStore = create<TimelineStore>(
           })
           .sort((a, b) => a.time - b.time);
 
-        const updatedClips = state.clips.map((c) => (
+        const updatedClips = state.clips.map((c) =>
           c.id === clipId
-            ? { ...c, ...synchronizeClipAudioProperties(c, { volumeKeyframes: keyframes }) }
-            : c
-        ));
+            ? {
+                ...c,
+                ...synchronizeClipAudioProperties(c, {
+                  volumeKeyframes: keyframes,
+                }),
+              }
+            : c,
+        );
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -1751,11 +2089,11 @@ export const useTimelineStore = create<TimelineStore>(
         const currentFX = clip.audioFX || {};
         const newFX = { ...currentFX, ...fxUpdates };
 
-        const updatedClips = state.clips.map((c) => (
+        const updatedClips = state.clips.map((c) =>
           c.id === clipId
             ? { ...c, ...synchronizeClipAudioProperties(c, { audioFX: newFX }) }
-            : c
-        ));
+            : c,
+        );
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -1783,7 +2121,9 @@ export const useTimelineStore = create<TimelineStore>(
         };
         const newChroma = { ...currentChroma, ...updates };
 
-        const updatedClips = state.clips.map((c) => (c.id === clipId ? { ...c, chromaKey: newChroma } : c));
+        const updatedClips = state.clips.map((c) =>
+          c.id === clipId ? { ...c, chromaKey: newChroma } : c,
+        );
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -1811,7 +2151,9 @@ export const useTimelineStore = create<TimelineStore>(
         };
         const newColor = { ...currentColor, ...updates };
 
-        const updatedClips = state.clips.map((c) => (c.id === clipId ? { ...c, colorGrade: newColor } : c));
+        const updatedClips = state.clips.map((c) =>
+          c.id === clipId ? { ...c, colorGrade: newColor } : c,
+        );
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
           next._pendingEpochIncrement = true;
@@ -1821,7 +2163,6 @@ export const useTimelineStore = create<TimelineStore>(
         return next;
       });
     },
-
 
     addClipMarker: (clipId, localTime, name, color) => {
       const markerId = generateId("clipmarker");
@@ -1837,8 +2178,12 @@ export const useTimelineStore = create<TimelineStore>(
         };
 
         const currentMarkers = clip.markers || [];
-        const updatedMarkers = [...currentMarkers, newMarker].sort((a, b) => a.localTime - b.localTime);
-        const updatedClips = state.clips.map((c) => (c.id === clipId ? { ...c, markers: updatedMarkers } : c));
+        const updatedMarkers = [...currentMarkers, newMarker].sort(
+          (a, b) => a.localTime - b.localTime,
+        );
+        const updatedClips = state.clips.map((c) =>
+          c.id === clipId ? { ...c, markers: updatedMarkers } : c,
+        );
 
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
@@ -1857,7 +2202,9 @@ export const useTimelineStore = create<TimelineStore>(
         if (!clip || !clip.markers) return state;
 
         const updatedMarkers = clip.markers.filter((m) => m.id !== markerId);
-        const updatedClips = state.clips.map((c) => (c.id === clipId ? { ...c, markers: updatedMarkers } : c));
+        const updatedClips = state.clips.map((c) =>
+          c.id === clipId ? { ...c, markers: updatedMarkers } : c,
+        );
 
         const next: Partial<TimelineStore> = { clips: updatedClips };
         if (state._batchDepth > 0) {
@@ -1875,7 +2222,8 @@ export const useTimelineStore = create<TimelineStore>(
       let playbackClock: any = null;
 
       try {
-        const { getActiveSession } = await import("@/core/runtime/ProjectSession");
+        const { getActiveSession } =
+          await import("@/core/runtime/ProjectSession");
         const session = getActiveSession();
         if (session) {
           playbackClock = session.playback;
@@ -1895,7 +2243,9 @@ export const useTimelineStore = create<TimelineStore>(
         }
       });
 
-      const nextTimes = allTimes.filter((t) => t > currentTime + 0.01).sort((a, b) => a - b);
+      const nextTimes = allTimes
+        .filter((t) => t > currentTime + 0.01)
+        .sort((a, b) => a - b);
       if (nextTimes.length > 0 && playbackClock) {
         playbackClock.setTime(nextTimes[0]);
       }
@@ -1907,7 +2257,8 @@ export const useTimelineStore = create<TimelineStore>(
       let playbackClock: any = null;
 
       try {
-        const { getActiveSession } = await import("@/core/runtime/ProjectSession");
+        const { getActiveSession } =
+          await import("@/core/runtime/ProjectSession");
         const session = getActiveSession();
         if (session) {
           playbackClock = session.playback;
@@ -1927,7 +2278,9 @@ export const useTimelineStore = create<TimelineStore>(
         }
       });
 
-      const prevTimes = allTimes.filter((t) => t < currentTime - 0.01).sort((a, b) => b - a);
+      const prevTimes = allTimes
+        .filter((t) => t < currentTime - 0.01)
+        .sort((a, b) => b - a);
       if (prevTimes.length > 0 && playbackClock) {
         playbackClock.setTime(prevTimes[0]);
       }

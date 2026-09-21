@@ -261,7 +261,7 @@ async fn get_video_metadata_internal(path: &str) -> Result<MediaMetadata, String
 /// Legacy command for backward compatibility.
 /// New code should use get_media_metadata instead.
 ///
-/// DEPRECATED: Use get_media_metadata for unified media type handling
+/// Use get_media_metadata for unified media type handling
 #[deprecated(note = "Use get_media_metadata instead")]
 #[tauri::command]
 pub async fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {

@@ -56,7 +56,10 @@ export class SplitClipCommand implements Command {
     }
 
     // ✅ SNAP split time to frame boundary BEFORE calculations
-    const snappedSplitTime = snapToFrameBoundary(this.splitTime, this.frameRate);
+    const snappedSplitTime = snapToFrameBoundary(
+      this.splitTime,
+      this.frameRate,
+    );
     if (snappedSplitTime <= clip.startTime || snappedSplitTime >= clipEndTime) {
       return state;
     }
@@ -71,7 +74,10 @@ export class SplitClipCommand implements Command {
     const rightDuration = clip.trimOut - rightTrimIn;
 
     // ✅ ASSERT: verify coherence (can remove in production)
-    console.assert(Math.abs(rightTrimIn - leftTrimOut) < 0.001, `Split coherence violated: leftTrimOut=${leftTrimOut} rightTrimIn=${rightTrimIn}`);
+    console.assert(
+      Math.abs(rightTrimIn - leftTrimOut) < 0.001,
+      `Split coherence violated: leftTrimOut=${leftTrimOut} rightTrimIn=${rightTrimIn}`,
+    );
 
     // Generate new IDs for BOTH splits
     // This prevents property confusion where effects/volume applied to wrong clip
@@ -118,7 +124,11 @@ export class SplitClipCommand implements Command {
     const nextState: TimelineState = {
       ...state,
       // Remove original clip, add both new splits
-      clips: [...state.clips.filter((c) => c.id !== this.clipId), leftClip, rightClip],
+      clips: [
+        ...state.clips.filter((c) => c.id !== this.clipId),
+        leftClip,
+        rightClip,
+      ],
       epoch: state.epoch + 1, // ✅ Epoch increment inside command
     };
 
@@ -138,7 +148,7 @@ export class SplitClipCommand implements Command {
     return this.rightClipId;
   }
 
-  // DEPRECATED: Kept for backward compatibility
+  // Kept for backward compatibility
   // New code should use getLeftClipId() and getRightClipId()
   getCreatedClipId(): string | null {
     return this.rightClipId; // Return right clip for backward compat
@@ -146,7 +156,14 @@ export class SplitClipCommand implements Command {
 
   invert(): Command {
     // Pass both clip IDs and the original splitTime to merge command
-    return new MergeSplitClipsCommand(this.leftClipId!, this.rightClipId!, this.originalClip, this.frameRate, this.splitTime, this.originalClipIndex);
+    return new MergeSplitClipsCommand(
+      this.leftClipId!,
+      this.rightClipId!,
+      this.originalClip,
+      this.frameRate,
+      this.splitTime,
+      this.originalClipIndex,
+    );
   }
 
   toJSON(): Record<string, any> {
@@ -166,7 +183,12 @@ export class SplitClipCommand implements Command {
   }
 
   static fromJSON(data: Record<string, any>): SplitClipCommand {
-    const cmd = new SplitClipCommand(data.clipId, data.splitTime, data.frameRate || 30, data.originalClip);
+    const cmd = new SplitClipCommand(
+      data.clipId,
+      data.splitTime,
+      data.frameRate || 30,
+      data.originalClip,
+    );
 
     // Migration for old format
     // Old format: only newClipId exists (left kept original ID)
@@ -215,10 +237,13 @@ class MergeSplitClipsCommand implements Command {
 
   apply(state: TimelineState): TimelineState {
     // Remove BOTH split clips and restore original
-    const clips = state.clips.filter((c) => c.id !== this.leftClipId && c.id !== this.rightClipId);
-    const insertIndex = this.originalClipIndex >= 0
-      ? Math.min(this.originalClipIndex, clips.length)
-      : clips.length;
+    const clips = state.clips.filter(
+      (c) => c.id !== this.leftClipId && c.id !== this.rightClipId,
+    );
+    const insertIndex =
+      this.originalClipIndex >= 0
+        ? Math.min(this.originalClipIndex, clips.length)
+        : clips.length;
     clips.splice(insertIndex, 0, cloneClipSnapshot(this.originalClip));
     return {
       ...state,
@@ -229,8 +254,15 @@ class MergeSplitClipsCommand implements Command {
 
   invert(): Command {
     // TL-BUG-002 fix: Use the stored splitTime (exact) instead of duration / 2 (approximate)
-    const exactSplitTime = this.splitTime ?? this.originalClip.startTime + this.originalClip.duration / 2;
-    const cmd = new SplitClipCommand(this.originalClip.id, exactSplitTime, this.frameRate, this.originalClip);
+    const exactSplitTime =
+      this.splitTime ??
+      this.originalClip.startTime + this.originalClip.duration / 2;
+    const cmd = new SplitClipCommand(
+      this.originalClip.id,
+      exactSplitTime,
+      this.frameRate,
+      this.originalClip,
+    );
     // Preserve the same clip IDs so redo produces identical clips
     (cmd as any).leftClipId = this.leftClipId;
     (cmd as any).rightClipId = this.rightClipId;
@@ -251,6 +283,13 @@ class MergeSplitClipsCommand implements Command {
   }
 
   static fromJSON(data: Record<string, any>): MergeSplitClipsCommand {
-    return new MergeSplitClipsCommand(data.leftClipId, data.rightClipId, data.originalClip, data.frameRate || 30, data.splitTime, data.originalClipIndex ?? -1);
+    return new MergeSplitClipsCommand(
+      data.leftClipId,
+      data.rightClipId,
+      data.originalClip,
+      data.frameRate || 30,
+      data.splitTime,
+      data.originalClipIndex ?? -1,
+    );
   }
 }

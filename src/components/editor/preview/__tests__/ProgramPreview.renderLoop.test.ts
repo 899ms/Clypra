@@ -40,7 +40,10 @@ class MockRenderLoop {
   private syncMutatesState = true;
   private renderDuration = 0; // ms to simulate render job duration
 
-  constructor(config?: { renderDuration?: number; syncMutatesState?: boolean }) {
+  constructor(config?: {
+    renderDuration?: number;
+    syncMutatesState?: boolean;
+  }) {
     if (config?.renderDuration !== undefined) {
       this.renderDuration = config.renderDuration;
     }
@@ -183,7 +186,10 @@ describe("ProgramPreview RAF Loop — Render Race Condition", () => {
   });
 
   it("should prevent state mutation during active render", () => {
-    const slowLoop = new MockRenderLoop({ renderDuration: 20, syncMutatesState: true });
+    const slowLoop = new MockRenderLoop({
+      renderDuration: 20,
+      syncMutatesState: true,
+    });
 
     // Frame 1: sync v0→v1, start render with v1
     slowLoop.rafTickFixed();
@@ -201,7 +207,10 @@ describe("ProgramPreview RAF Loop — Render Race Condition", () => {
   });
 
   it("should allow state mutation during active render WITHOUT fix (causes crash)", () => {
-    const slowLoop = new MockRenderLoop({ renderDuration: 20, syncMutatesState: true });
+    const slowLoop = new MockRenderLoop({
+      renderDuration: 20,
+      syncMutatesState: true,
+    });
 
     // Frame 1: sync v0→v1, start render with v1
     slowLoop.rafTickBroken();
@@ -315,7 +324,10 @@ describe("ProgramPreview RAF Loop — Render Race Condition", () => {
   });
 
   it("should demonstrate the race condition without fix", () => {
-    const slowLoop = new MockRenderLoop({ renderDuration: 20, syncMutatesState: true });
+    const slowLoop = new MockRenderLoop({
+      renderDuration: 20,
+      syncMutatesState: true,
+    });
 
     // Frame 1: sync (v0→v1), render job starts with v1 elements
     slowLoop.rafTickBroken();
@@ -333,7 +345,10 @@ describe("ProgramPreview RAF Loop — Render Race Condition", () => {
   });
 
   it("should prevent the race condition with fix", () => {
-    const slowLoop = new MockRenderLoop({ renderDuration: 20, syncMutatesState: true });
+    const slowLoop = new MockRenderLoop({
+      renderDuration: 20,
+      syncMutatesState: true,
+    });
 
     // Frame 1: sync (v0→v1), render job starts with v1 elements
     slowLoop.rafTickFixed();
@@ -380,7 +395,13 @@ describe("ProgramPreview RAF Loop — Guard Ordering", () => {
 
     // First tick
     rafTickFixed();
-    expect(operations).toEqual(["raf_start", "guard_passed", "sync_start", "sync_end", "render_start"]);
+    expect(operations).toEqual([
+      "raf_start",
+      "guard_passed",
+      "sync_start",
+      "sync_end",
+      "render_start",
+    ]);
 
     // Second tick (while rendering)
     operations.length = 0;
@@ -416,14 +437,25 @@ describe("ProgramPreview RAF Loop — Guard Ordering", () => {
 
     // First tick
     rafTickBroken();
-    expect(operations).toEqual(["raf_start", "sync_start", "sync_end", "guard_passed", "render_start"]);
+    expect(operations).toEqual([
+      "raf_start",
+      "sync_start",
+      "sync_end",
+      "guard_passed",
+      "render_start",
+    ]);
 
     // Second tick (while rendering)
     operations.length = 0;
     rafTickBroken();
 
-    // Bug: sync executed even though guard blocked render
-    expect(operations).toEqual(["raf_start", "sync_start", "sync_end", "guard_blocked"]);
+    // sync executed even though guard blocked render
+    expect(operations).toEqual([
+      "raf_start",
+      "sync_start",
+      "sync_end",
+      "guard_blocked",
+    ]);
     expect(operations).toContain("sync_start"); // ❌ Sync should not run
   });
 
@@ -559,7 +591,8 @@ describe("ProgramPreview RAF Loop: Separate needsSync from needsRender", () => {
     private isRendering = false;
     private lastRenderedTime = -1;
     private lastRenderedEpoch = -1;
-    private lastRenderedPlaybackState: "playing" | "paused" | "stopped" = "stopped";
+    private lastRenderedPlaybackState: "playing" | "paused" | "stopped" =
+      "stopped";
 
     private syncCallCount = 0;
     private renderCallCount = 0;
@@ -568,17 +601,28 @@ describe("ProgramPreview RAF Loop: Separate needsSync from needsRender", () => {
     /**
      * Simulate RAF tick WITH optimization
      */
-    tick(time: number, playbackState: "playing" | "paused" | "stopped", epoch: number, hasActiveTransform = false): void {
+    tick(
+      time: number,
+      playbackState: "playing" | "paused" | "stopped",
+      epoch: number,
+      hasActiveTransform = false,
+    ): void {
       const timeChanged = time !== this.lastRenderedTime;
       const epochChanged = epoch !== this.lastRenderedEpoch;
       const isFirstFrame = this.lastRenderedTime === -1;
       const isPlaying = playbackState === "playing";
 
       // needsRender: frame scheduling (every frame during playback or active transform)
-      const needsRender = isPlaying || timeChanged || epochChanged || isFirstFrame || hasActiveTransform;
+      const needsRender =
+        isPlaying ||
+        timeChanged ||
+        epochChanged ||
+        isFirstFrame ||
+        hasActiveTransform;
 
       // needsSync: element lifecycle (only on state changes)
-      const playbackStateChanged = playbackState !== this.lastRenderedPlaybackState;
+      const playbackStateChanged =
+        playbackState !== this.lastRenderedPlaybackState;
       const needsSync = epochChanged || playbackStateChanged || isFirstFrame;
 
       if (!needsRender) {
@@ -607,13 +651,18 @@ describe("ProgramPreview RAF Loop: Separate needsSync from needsRender", () => {
     /**
      * Simulate RAF tick WITHOUT optimization (old behavior)
      */
-    tickUnoptimized(time: number, playbackState: "playing" | "paused" | "stopped", epoch: number): void {
+    tickUnoptimized(
+      time: number,
+      playbackState: "playing" | "paused" | "stopped",
+      epoch: number,
+    ): void {
       const timeChanged = time !== this.lastRenderedTime;
       const epochChanged = epoch !== this.lastRenderedEpoch;
       const isFirstFrame = this.lastRenderedTime === -1;
       const isPlaying = playbackState === "playing";
 
-      const needsRender = isPlaying || timeChanged || epochChanged || isFirstFrame;
+      const needsRender =
+        isPlaying || timeChanged || epochChanged || isFirstFrame;
 
       if (!needsRender) {
         return;
@@ -782,7 +831,8 @@ describe("ProgramPreview RAF Loop: Separate needsSync from needsRender", () => {
     expect(stats.renderCalls).toBe(totalFrames);
 
     // Calculate savings: (3600 - 1) / 3600 = 99.97% reduction
-    const reductionPercent = ((totalFrames - stats.syncCalls) / totalFrames) * 100;
+    const reductionPercent =
+      ((totalFrames - stats.syncCalls) / totalFrames) * 100;
     expect(reductionPercent).toBeGreaterThan(98);
   });
 

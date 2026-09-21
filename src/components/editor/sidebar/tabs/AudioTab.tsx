@@ -1,8 +1,27 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle, Download, Loader2, Music2, Pause, Play, Plus, Search } from "lucide-react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/Tooltip";
+import {
+  AlertCircle,
+  CheckCircle,
+  Download,
+  Loader2,
+  Music2,
+  Pause,
+  Play,
+  Plus,
+  Search,
+} from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/Tooltip";
 import { NetworkError } from "@/components/ui/NetworkError";
-import { AUDIO_LIBRARY_CATEGORIES, AudioLibraryApi, type AudioLibraryCategory, type AudioLibraryItem } from "@/features/audio-library/api/audioLibraryApi";
+import {
+  AUDIO_LIBRARY_CATEGORIES,
+  AudioLibraryApi,
+  type AudioLibraryCategory,
+  type AudioLibraryItem,
+} from "@/features/audio-library/api/audioLibraryApi";
 import { useAudioLibraryStore } from "@/features/audio-library/store/audioLibraryStore";
 import { useUIStore } from "@/store/uiStore";
 import type { TabProps } from "../types";
@@ -11,7 +30,8 @@ import { platform } from "@/core/platform";
 
 export const AudioTab: React.FC<TabProps> = ({ onAddToTimeline }) => {
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeCategory, setActiveCategory] = useState<AudioLibraryCategory>("music");
+  const [activeCategory, setActiveCategory] =
+    useState<AudioLibraryCategory>("music");
   const [items, setItems] = useState<AudioLibraryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,10 +49,15 @@ export const AudioTab: React.FC<TabProps> = ({ onAddToTimeline }) => {
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          const errorMessage = err instanceof Error ? err.message : "Failed to load audio library";
+          const errorMessage =
+            err instanceof Error ? err.message : "Failed to load audio library";
           setError(errorMessage);
           // Detect network errors
-          const isNetwork = errorMessage.toLowerCase().includes("network") || errorMessage.toLowerCase().includes("fetch") || errorMessage.toLowerCase().includes("connection") || errorMessage.toLowerCase().includes("offline");
+          const isNetwork =
+            errorMessage.toLowerCase().includes("network") ||
+            errorMessage.toLowerCase().includes("fetch") ||
+            errorMessage.toLowerCase().includes("connection") ||
+            errorMessage.toLowerCase().includes("offline");
           setIsNetworkError(isNetwork);
         }
       })
@@ -53,14 +78,26 @@ export const AudioTab: React.FC<TabProps> = ({ onAddToTimeline }) => {
   const filteredItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return items;
-    return items.filter((item) => item.name.toLowerCase().includes(query) || item.author.toLowerCase().includes(query) || item.tags?.some((tag) => tag.toLowerCase().includes(query)));
+    return items.filter(
+      (item) =>
+        item.name.toLowerCase().includes(query) ||
+        item.author.toLowerCase().includes(query) ||
+        item.tags?.some((tag) => tag.toLowerCase().includes(query)),
+    );
   }, [items, searchQuery]);
 
   return (
     <>
-      <div className="flex gap-1 overflow-x-auto scrollbar-none border-b border-border p-1" style={{ scrollbarWidth: "none" }}>
+      <div
+        className="flex gap-1 overflow-x-auto scrollbar-none border-b border-border p-1"
+        style={{ scrollbarWidth: "none" }}
+      >
         {AUDIO_LIBRARY_CATEGORIES.map((category) => (
-          <button key={category} onClick={() => setActiveCategory(category)} className={`shrink-0 cursor-pointer rounded px-2 py-1 text-[11px] font-semibold capitalize transition-colors ${activeCategory === category ? "bg-accent text-white" : "text-text-muted hover:bg-surface-raised hover:text-text-primary"}`}>
+          <button
+            key={category}
+            onClick={() => setActiveCategory(category)}
+            className={`shrink-0 cursor-pointer rounded px-2 py-1 text-[11px] font-semibold capitalize transition-colors ${activeCategory === category ? "bg-accent text-white" : "text-text-muted hover:bg-surface-raised hover:text-text-primary"}`}
+          >
             {category === "sfx" ? "SFX" : category}
           </button>
         ))}
@@ -74,7 +111,12 @@ export const AudioTab: React.FC<TabProps> = ({ onAddToTimeline }) => {
           </div>
         )}
 
-        {!loading && error && isNetworkError && <NetworkError message="No internet connection." onRetry={fetchAudio} />}
+        {!loading && error && isNetworkError && (
+          <NetworkError
+            message="No internet connection."
+            onRetry={fetchAudio}
+          />
+        )}
 
         {!loading && error && !isNetworkError && (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300 flex items-start gap-2">
@@ -86,12 +128,25 @@ export const AudioTab: React.FC<TabProps> = ({ onAddToTimeline }) => {
         {!loading && !error && filteredItems.length === 0 && (
           <div className="rounded-lg border border-border bg-surface-raised/40 p-4 text-center">
             <Music2 className="mx-auto mb-2 h-5 w-5 text-text-muted" />
-            <p className="text-xs font-semibold text-text-primary">No approved audio yet</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-text-muted">Audio published from Clypra Studio will appear here after API cache refresh.</p>
+            <p className="text-xs font-semibold text-text-primary">
+              No approved audio yet
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+              Audio published from Clypra Studio will appear here after API
+              cache refresh.
+            </p>
           </div>
         )}
 
-        {!loading && !error && filteredItems.map((item) => <AudioItem key={item.id} item={item} onAddToTimeline={onAddToTimeline} />)}
+        {!loading &&
+          !error &&
+          filteredItems.map((item) => (
+            <AudioItem
+              key={item.id}
+              item={item}
+              onAddToTimeline={onAddToTimeline}
+            />
+          ))}
       </div>
     </>
   );
@@ -113,9 +168,10 @@ const AudioItem: React.FC<AudioItemProps> = ({ item, onAddToTimeline }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [imageError, setImageError] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const { getDownloadState, startDownload, isDownloaded } = useAudioLibraryStore();
+  const { getDownloadState, startDownload, isDownloaded } =
+    useAudioLibraryStore();
   const { previewAsset } = useUIStore();
-  // Note: addMediaAsset removed from here - only used when adding to timeline
+  // addMediaAsset removed from here - only used when adding to timeline
   const downloadState = getDownloadState(item.id);
   const isDownloadedFlag = isDownloaded(item.id);
 
@@ -145,7 +201,10 @@ const AudioItem: React.FC<AudioItemProps> = ({ item, onAddToTimeline }) => {
       // Convert relative cache path to absolute path for the webview
       // cachedFile.localPath is relative to AppCache (e.g., "audio-library/filename.wav")
       const appCache = await platform.appCacheDir();
-      const absolutePath = await platform.joinPaths(appCache, cachedFile.localPath);
+      const absolutePath = await platform.joinPaths(
+        appCache,
+        cachedFile.localPath,
+      );
 
       // Create MediaAsset from cached file
       const mediaAsset: MediaAsset = {
@@ -158,7 +217,7 @@ const AudioItem: React.FC<AudioItemProps> = ({ item, onAddToTimeline }) => {
         coverArt: item.coverArtUrl,
       };
 
-      // NOTE: Preview does NOT add to project store - only adding to timeline does that
+      // Preview does NOT add to project store - only adding to timeline does that
       // Open in SourcePreview
       previewAsset(mediaAsset);
     } catch (error) {
@@ -181,21 +240,50 @@ const AudioItem: React.FC<AudioItemProps> = ({ item, onAddToTimeline }) => {
   const isDownloading = downloadState?.status === "downloading";
 
   return (
-    <div onClick={handlePreview} className="group flex items-center gap-3 p-1 bg-surface-raised/40 hover:bg-surface-raised/60 rounded-lg transition-colors cursor-pointer">
+    <div
+      onClick={handlePreview}
+      className="group flex items-center gap-3 p-1 bg-surface-raised/40 hover:bg-surface-raised/60 rounded-lg transition-colors cursor-pointer"
+    >
       {/* Hidden audio element for inline streaming */}
-      <audio ref={audioRef} src={item.audioUrl} preload="none" onEnded={() => setIsPlaying(false)} onPause={() => setIsPlaying(false)} className="hidden" />
+      <audio
+        ref={audioRef}
+        src={item.audioUrl}
+        preload="none"
+        onEnded={() => setIsPlaying(false)}
+        onPause={() => setIsPlaying(false)}
+        className="hidden"
+      />
 
       {/* Cover Art with Play Overlay */}
-      <button onClick={handleInlinePlay} disabled={isDownloading} className="relative w-14 h-14 rounded-lg overflow-hidden shrink-0 bg-surface-raised border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed group/cover">
+      <button
+        onClick={handleInlinePlay}
+        disabled={isDownloading}
+        className="relative w-14 h-14 rounded-lg overflow-hidden shrink-0 bg-surface-raised border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed group/cover"
+      >
         {item.coverArtUrl && !imageError ? (
-          <img src={item.coverArtUrl} alt={item.name} className="w-full h-full object-cover" onError={() => setImageError(true)} />
+          <img
+            src={item.coverArtUrl}
+            alt={item.name}
+            className="w-full h-full object-cover"
+            onError={() => setImageError(true)}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-linear-to-br from-accent/20 to-accent/10">
-            <img src="/clypra.svg" alt="Clypra" className="w-8 h-8 object-contain opacity-60" />
+            <img
+              src="/clypra.svg"
+              alt="Clypra"
+              className="w-8 h-8 object-contain opacity-60"
+            />
           </div>
         )}
         {/* Play/Pause Overlay */}
-        <div className="absolute inset-0 bg-black/0 group-hover/cover:bg-black/60 transition-colors flex items-center justify-center">{isPlaying ? <Pause className="w-5 h-5 text-white opacity-0 group-hover/cover:opacity-100 transition-opacity" /> : <Play className="w-5 h-5 text-white opacity-0 group-hover/cover:opacity-100 transition-opacity" />}</div>
+        <div className="absolute inset-0 bg-black/0 group-hover/cover:bg-black/60 transition-colors flex items-center justify-center">
+          {isPlaying ? (
+            <Pause className="w-5 h-5 text-white opacity-0 group-hover/cover:opacity-100 transition-opacity" />
+          ) : (
+            <Play className="w-5 h-5 text-white opacity-0 group-hover/cover:opacity-100 transition-opacity" />
+          )}
+        </div>
         {/* Download Progress Indicator */}
         {isDownloading && (
           <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
@@ -206,7 +294,9 @@ const AudioItem: React.FC<AudioItemProps> = ({ item, onAddToTimeline }) => {
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <h4 className="text-sm font-medium text-text-primary truncate mb-0.5">{item.name}</h4>
+        <h4 className="text-sm font-medium text-text-primary truncate mb-0.5">
+          {item.name}
+        </h4>
         <div className="flex items-center gap-1.5 text-xs text-text-muted">
           <span className="truncate">{item.author}</span>
           <span>•</span>
@@ -235,8 +325,16 @@ const AudioItem: React.FC<AudioItemProps> = ({ item, onAddToTimeline }) => {
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <Tooltip>
           <TooltipTrigger asChild>
-            <button onClick={handleAddToTimeline} disabled={isDownloading} className="w-9 h-9 flex items-center justify-center hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              {isDownloading ? <Download className="w-4 h-4 text-accent animate-pulse" /> : <Plus className="w-4 h-4 text-text-primary" />}
+            <button
+              onClick={handleAddToTimeline}
+              disabled={isDownloading}
+              className="w-9 h-9 flex items-center justify-center hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isDownloading ? (
+                <Download className="w-4 h-4 text-accent animate-pulse" />
+              ) : (
+                <Plus className="w-4 h-4 text-text-primary" />
+              )}
             </button>
           </TooltipTrigger>
           <TooltipContent side="top">

@@ -10,7 +10,10 @@
 
 import type { CompositorClip, TimelineValidation, TimeRange } from "./types";
 import { hasContentAtTime } from "./resolver";
-import { getClipEndTime, getTimelineContentEnd } from "@/lib/timeline/timelineClip";
+import {
+  getClipEndTime,
+  getTimelineContentEnd,
+} from "@/lib/timeline/timelineClip";
 
 /**
  * Validate timeline and return diagnostic information.
@@ -20,7 +23,10 @@ import { getClipEndTime, getTimelineContentEnd } from "@/lib/timeline/timelineCl
  * @param sampleRate - How often to sample (in seconds) for gap detection
  * @returns Validation result with ranges and warnings
  */
-export function validateTimeline(clips: CompositorClip[], sampleRate: number = 0.1): TimelineValidation {
+export function validateTimeline(
+  clips: CompositorClip[],
+  sampleRate: number = 0.1,
+): TimelineValidation {
   if (clips.length === 0) {
     return {
       renderableRanges: [],
@@ -37,14 +43,31 @@ export function validateTimeline(clips: CompositorClip[], sampleRate: number = 0
   const totalDuration = getTimelineContentEnd(clips);
 
   // Sample timeline to find ranges
-  const renderableRanges = findRenderableRanges(clips, totalDuration, sampleRate);
+  const renderableRanges = findRenderableRanges(
+    clips,
+    totalDuration,
+    sampleRate,
+  );
   const gapRanges = findGapRanges(clips, totalDuration, sampleRate);
-  const primaryVideoRanges = findPrimaryVideoRanges(clips, totalDuration, sampleRate);
+  const primaryVideoRanges = findPrimaryVideoRanges(
+    clips,
+    totalDuration,
+    sampleRate,
+  );
   const audioOnlyRanges = findAudioOnlyRanges(clips, totalDuration, sampleRate);
-  const overlayOnlyRanges = findOverlayOnlyRanges(clips, totalDuration, sampleRate);
+  const overlayOnlyRanges = findOverlayOnlyRanges(
+    clips,
+    totalDuration,
+    sampleRate,
+  );
 
   // Generate warnings
-  const warnings = generateWarnings(clips, gapRanges, primaryVideoRanges, totalDuration);
+  const warnings = generateWarnings(
+    clips,
+    gapRanges,
+    primaryVideoRanges,
+    totalDuration,
+  );
 
   return {
     renderableRanges,
@@ -60,15 +83,29 @@ export function validateTimeline(clips: CompositorClip[], sampleRate: number = 0
 /**
  * Find ranges where any content exists (renderable).
  */
-function findRenderableRanges(clips: CompositorClip[], duration: number, sampleRate: number): TimeRange[] {
-  return findRangesWhere(duration, sampleRate, (time) => hasContentAtTime(time, clips));
+function findRenderableRanges(
+  clips: CompositorClip[],
+  duration: number,
+  sampleRate: number,
+): TimeRange[] {
+  return findRangesWhere(duration, sampleRate, (time) =>
+    hasContentAtTime(time, clips),
+  );
 }
 
 /**
  * Find ranges with no content (gaps).
  */
-function findGapRanges(clips: CompositorClip[], duration: number, sampleRate: number): TimeRange[] {
-  return findRangesWhere(duration, sampleRate, (time) => !hasContentAtTime(time, clips));
+function findGapRanges(
+  clips: CompositorClip[],
+  duration: number,
+  sampleRate: number,
+): TimeRange[] {
+  return findRangesWhere(
+    duration,
+    sampleRate,
+    (time) => !hasContentAtTime(time, clips),
+  );
 }
 
 /**
@@ -76,11 +113,17 @@ function findGapRanges(clips: CompositorClip[], duration: number, sampleRate: nu
  * Note: After z-order fix, inferred video tracks use role="overlay".
  * This function now detects explicitly-assigned primary layers only.
  */
-function findPrimaryVideoRanges(clips: CompositorClip[], duration: number, sampleRate: number): TimeRange[] {
+function findPrimaryVideoRanges(
+  clips: CompositorClip[],
+  duration: number,
+  sampleRate: number,
+): TimeRange[] {
   return findRangesWhere(duration, sampleRate, (time) => {
     return clips.some((clip) => {
       const clipEnd = getClipEndTime(clip);
-      return clip.role === "primary" && clip.startTime <= time && time < clipEnd;
+      return (
+        clip.role === "primary" && clip.startTime <= time && time < clipEnd
+      );
     });
   });
 }
@@ -88,7 +131,11 @@ function findPrimaryVideoRanges(clips: CompositorClip[], duration: number, sampl
 /**
  * Find ranges with only audio (no video).
  */
-function findAudioOnlyRanges(clips: CompositorClip[], duration: number, sampleRate: number): TimeRange[] {
+function findAudioOnlyRanges(
+  clips: CompositorClip[],
+  duration: number,
+  sampleRate: number,
+): TimeRange[] {
   return findRangesWhere(duration, sampleRate, (time) => {
     const hasAudio = clips.some((clip) => {
       const clipEnd = getClipEndTime(clip);
@@ -97,7 +144,10 @@ function findAudioOnlyRanges(clips: CompositorClip[], duration: number, sampleRa
 
     const hasVideo = clips.some((clip) => {
       const clipEnd = getClipEndTime(clip);
-      const isVideo = clip.role === "primary" || clip.role === "overlay" || clip.role === "background";
+      const isVideo =
+        clip.role === "primary" ||
+        clip.role === "overlay" ||
+        clip.role === "background";
       return isVideo && clip.startTime <= time && time < clipEnd;
     });
 
@@ -108,7 +158,11 @@ function findAudioOnlyRanges(clips: CompositorClip[], duration: number, sampleRa
 /**
  * Find ranges with only overlays/text (no primary video).
  */
-function findOverlayOnlyRanges(clips: CompositorClip[], duration: number, sampleRate: number): TimeRange[] {
+function findOverlayOnlyRanges(
+  clips: CompositorClip[],
+  duration: number,
+  sampleRate: number,
+): TimeRange[] {
   return findRangesWhere(duration, sampleRate, (time) => {
     const hasOverlay = clips.some((clip) => {
       const clipEnd = getClipEndTime(clip);
@@ -118,7 +172,9 @@ function findOverlayOnlyRanges(clips: CompositorClip[], duration: number, sample
 
     const hasPrimary = clips.some((clip) => {
       const clipEnd = getClipEndTime(clip);
-      return clip.role === "primary" && clip.startTime <= time && time < clipEnd;
+      return (
+        clip.role === "primary" && clip.startTime <= time && time < clipEnd
+      );
     });
 
     return hasOverlay && !hasPrimary;
@@ -128,7 +184,11 @@ function findOverlayOnlyRanges(clips: CompositorClip[], duration: number, sample
 /**
  * Generic range finder - samples timeline and groups consecutive matching times.
  */
-function findRangesWhere(duration: number, sampleRate: number, predicate: (time: number) => boolean): TimeRange[] {
+function findRangesWhere(
+  duration: number,
+  sampleRate: number,
+  predicate: (time: number) => boolean,
+): TimeRange[] {
   const ranges: TimeRange[] = [];
   let currentRange: TimeRange | null = null;
 
@@ -163,7 +223,10 @@ function findRangesWhere(duration: number, sampleRate: number, predicate: (time:
 /**
  * Merge adjacent ranges that are within tolerance of each other.
  */
-function mergeAdjacentRanges(ranges: TimeRange[], tolerance: number): TimeRange[] {
+function mergeAdjacentRanges(
+  ranges: TimeRange[],
+  tolerance: number,
+): TimeRange[] {
   if (ranges.length === 0) return [];
 
   const merged: TimeRange[] = [];
@@ -189,22 +252,35 @@ function mergeAdjacentRanges(ranges: TimeRange[], tolerance: number): TimeRange[
 /**
  * Generate user-facing warnings based on timeline state.
  */
-function generateWarnings(clips: CompositorClip[], gapRanges: TimeRange[], primaryVideoRanges: TimeRange[], totalDuration: number): string[] {
+function generateWarnings(
+  clips: CompositorClip[],
+  gapRanges: TimeRange[],
+  primaryVideoRanges: TimeRange[],
+  totalDuration: number,
+): string[] {
   const warnings: string[] = [];
 
   // Warn about gaps (informational only)
   if (gapRanges.length > 0) {
-    const totalGapDuration = gapRanges.reduce((sum, range) => sum + (range.end - range.start), 0);
+    const totalGapDuration = gapRanges.reduce(
+      (sum, range) => sum + (range.end - range.start),
+      0,
+    );
     if (totalGapDuration > 1) {
       // Only warn if gaps are significant
-      warnings.push(`Timeline has ${gapRanges.length} gap(s) totaling ${totalGapDuration.toFixed(1)}s`);
+      warnings.push(
+        `Timeline has ${gapRanges.length} gap(s) totaling ${totalGapDuration.toFixed(1)}s`,
+      );
     }
   }
 
   // Warn if no video content at all (informational only)
-  // Note: After z-order fix, inferred video tracks use role="overlay", not "primary"
+  // After z-order fix, inferred video tracks use role="overlay", not "primary"
   if (primaryVideoRanges.length === 0) {
-    const hasAnyVideo = clips.some((c) => c.role === "primary" || c.role === "overlay" || c.role === "background");
+    const hasAnyVideo = clips.some(
+      (c) =>
+        c.role === "primary" || c.role === "overlay" || c.role === "background",
+    );
     if (!hasAnyVideo) {
       warnings.push("Timeline has no video content");
     }
@@ -214,11 +290,17 @@ function generateWarnings(clips: CompositorClip[], gapRanges: TimeRange[], prima
   // Warn about very short clips (potential issues)
   const shortClips = clips.filter((c) => c.duration < 0.1);
   if (shortClips.length > 0) {
-    warnings.push(`${shortClips.length} clip(s) are very short (<0.1s) and may cause playback issues`);
+    warnings.push(
+      `${shortClips.length} clip(s) are very short (<0.1s) and may cause playback issues`,
+    );
   }
 
   // Warn about clips with invalid trim ranges
-  const invalidTrims = clips.filter((c) => c.trimIn >= c.trimOut || Math.abs((c.trimOut - c.trimIn) - c.duration) > 0.001);
+  const invalidTrims = clips.filter(
+    (c) =>
+      c.trimIn >= c.trimOut ||
+      Math.abs(c.trimOut - c.trimIn - c.duration) > 0.001,
+  );
   if (invalidTrims.length > 0) {
     warnings.push(`${invalidTrims.length} clip(s) have invalid trim ranges`);
   }
@@ -233,7 +315,10 @@ function generateWarnings(clips: CompositorClip[], gapRanges: TimeRange[], prima
  * @param clips - All clips in the timeline
  * @returns Object with isValid flag and reasons if invalid
  */
-export function validateForExport(clips: CompositorClip[]): { isValid: boolean; reasons: string[] } {
+export function validateForExport(clips: CompositorClip[]): {
+  isValid: boolean;
+  reasons: string[];
+} {
   const reasons: string[] = [];
 
   if (clips.length === 0) {
@@ -244,13 +329,19 @@ export function validateForExport(clips: CompositorClip[]): { isValid: boolean; 
   // Check for any renderable content
   const hasVisualContent = clips.some((c) => c.role !== "audio");
   if (!hasVisualContent) {
-    reasons.push("Timeline has no visual content (audio-only exports may require special handling)");
+    reasons.push(
+      "Timeline has no visual content (audio-only exports may require special handling)",
+    );
   }
 
   // Check for invalid clips
-  const invalidClips = clips.filter((c) => c.duration <= 0 || c.trimIn >= c.trimOut);
+  const invalidClips = clips.filter(
+    (c) => c.duration <= 0 || c.trimIn >= c.trimOut,
+  );
   if (invalidClips.length > 0) {
-    reasons.push(`${invalidClips.length} clip(s) have invalid durations or trim ranges`);
+    reasons.push(
+      `${invalidClips.length} clip(s) have invalid durations or trim ranges`,
+    );
   }
 
   return {

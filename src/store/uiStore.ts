@@ -42,7 +42,7 @@ interface UIStore {
   selectedGapId: string | null; // Gap selection (exclusive with clip selection)
   selectedTransitionId: string | null; // Selected transition
   selectedTrackId: string | null;
-  // Note: previewMediaId is used for MediaPanel selection state only.
+  // previewMediaId is used for MediaPanel selection state only.
   previewMediaId: string | null;
   activePanel: "media" | "properties";
   showExportModal: boolean;
@@ -230,7 +230,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   },
 
   // Preview mode actions
-  // NOTE: Transport context switching (program ↔ source) is handled
+  // Transport context switching (program ↔ source) is handled
   // by the consuming component via session.transportAuthority.setActiveContext().
   // This store only manages UI state (which panel is shown, in/out points).
   previewAsset: (asset) => {

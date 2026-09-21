@@ -9,7 +9,12 @@
  * - Pure functions, no side effects
  */
 
-import type { CompositorClip, RenderLayer, RenderStack, EvaluatedClip } from "./types";
+import type {
+  CompositorClip,
+  RenderLayer,
+  RenderStack,
+  EvaluatedClip,
+} from "./types";
 import { compareCompositorClips } from "./ordering";
 import { getClipEndTime } from "@/lib/timeline/timelineClip";
 
@@ -27,7 +32,10 @@ import { getClipEndTime } from "@/lib/timeline/timelineClip";
  * @param clips - All clips in the timeline
  * @returns Ordered render stack (background to foreground)
  */
-export function resolveRenderStack(time: number, clips: CompositorClip[]): RenderStack {
+export function resolveRenderStack(
+  time: number,
+  clips: CompositorClip[],
+): RenderStack {
   // Find all clips that are active at this time
   // Uses existing getClipEndTime utility for consistency
   const activeCandidates = clips.filter((clip) => {
@@ -44,10 +52,14 @@ export function resolveRenderStack(time: number, clips: CompositorClip[]): Rende
   }
 
   // Evaluate each clip at this time
-  const evaluatedLayers = activeCandidates.map((clip) => evaluateClipAtTime(clip, time)).filter((layer) => layer.opacity > 0); // Skip fully transparent layers
+  const evaluatedLayers = activeCandidates
+    .map((clip) => evaluateClipAtTime(clip, time))
+    .filter((layer) => layer.opacity > 0); // Skip fully transparent layers
 
   // Sort by the shared preview/export compositing contract.
-  const sortedLayers = evaluatedLayers.sort((a, b) => compareCompositorClips(a.clip, b.clip));
+  const sortedLayers = evaluatedLayers.sort((a, b) =>
+    compareCompositorClips(a.clip, b.clip),
+  );
 
   return {
     time,
@@ -64,10 +76,13 @@ export function resolveRenderStack(time: number, clips: CompositorClip[]): Rende
  * @param time - Timeline time in seconds
  * @returns Render layer with evaluated state
  */
-export function evaluateClipAtTime(clip: CompositorClip, time: number): RenderLayer {
+export function evaluateClipAtTime(
+  clip: CompositorClip,
+  time: number,
+): RenderLayer {
   const localTime = time - clip.startTime;
 
-  // TODO: Future enhancements
+  // Future enhancements
   // - Fade in/out detection
   // - Transition evaluation
   // - Keyframe interpolation
@@ -97,7 +112,10 @@ export function evaluateClipAtTime(clip: CompositorClip, time: number): RenderLa
  * @param time - Timeline time in seconds
  * @returns Complete evaluated state
  */
-export function evaluateClip(clip: CompositorClip, time: number): EvaluatedClip {
+export function evaluateClip(
+  clip: CompositorClip,
+  time: number,
+): EvaluatedClip {
   const clipEnd = getClipEndTime(clip);
   const isActive = clip.startTime <= time && time < clipEnd;
 
@@ -121,7 +139,7 @@ export function evaluateClip(clip: CompositorClip, time: number): EvaluatedClip 
 
   const localTime = time - clip.startTime;
 
-  // TODO: Future enhancements
+  // Future enhancements
   // - Speed ramp calculation
   // - Keyframe interpolation
   // - Effect evaluation
@@ -153,7 +171,11 @@ export function evaluateClip(clip: CompositorClip, time: number): EvaluatedClip 
  * @param clips - All clips to check
  * @returns Clips that overlap the range
  */
-export function getClipsInRange(startTime: number, endTime: number, clips: CompositorClip[]): CompositorClip[] {
+export function getClipsInRange(
+  startTime: number,
+  endTime: number,
+  clips: CompositorClip[],
+): CompositorClip[] {
   return clips.filter((clip) => {
     const clipEnd = getClipEndTime(clip);
     // Check for overlap: clip starts before range ends AND clip ends after range starts
@@ -168,7 +190,10 @@ export function getClipsInRange(startTime: number, endTime: number, clips: Compo
  * @param clips - All clips to check
  * @returns True if any clip is active at this time
  */
-export function hasContentAtTime(time: number, clips: CompositorClip[]): boolean {
+export function hasContentAtTime(
+  time: number,
+  clips: CompositorClip[],
+): boolean {
   return clips.some((clip) => {
     const clipEnd = getClipEndTime(clip);
     return clip.startTime <= time && time < clipEnd;
