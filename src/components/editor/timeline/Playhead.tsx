@@ -38,7 +38,7 @@ export const Playhead: React.FC<PlayheadProps> = ({
   pixelsPerSecond,
   duration,
   containerRef,
-  rulerHeight = 5,
+  rulerHeight = 24,
 }) => {
   const clockState = usePlaybackClock();
   const {
@@ -424,12 +424,13 @@ export const Playhead: React.FC<PlayheadProps> = ({
       }}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Visual line */}
+      {/* Visual line spanning from immediately below ruler to bottom */}
       <div
+        data-playhead-line="true"
         className="absolute pointer-events-none bg-accent"
         style={{
           left: "50%",
-          top: rulerHeight, // Start below ruler
+          top: `${rulerHeight}px`, // Start below ruler
           bottom: 0,
           transform: "translateX(-50%)",
           width: "2px",
@@ -438,33 +439,42 @@ export const Playhead: React.FC<PlayheadProps> = ({
         }}
       />
 
-      {/* Circle handle at top */}
+      {/* Sticky top container for handle and ruler hit target — remains docked in ruler during vertical scroll */}
       <div
-        className="absolute rounded-full pointer-events-auto bg-accent cursor-col-resize"
-        onPointerDown={handlePointerDown}
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          left: "50%",
-          transform: "translateX(-50%)",
-          top: "10px",
-          width: "12px",
-          height: "12px",
-          boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
-        }}
-      />
+        data-playhead-handle-dock="true"
+        className="sticky top-0 w-full pointer-events-none z-50"
+        style={{ height: `${rulerHeight}px` }}
+      >
+        {/* Circle handle at top */}
+        <div
+          data-playhead-handle="true"
+          className="absolute rounded-full pointer-events-auto bg-accent cursor-col-resize"
+          onPointerDown={handlePointerDown}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            left: "50%",
+            transform: "translateX(-50%)",
+            top: `${Math.max(0, Math.round((rulerHeight - 12) / 2))}px`,
+            width: "12px",
+            height: "12px",
+            boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
+          }}
+        />
 
-      {/* Ruler-only drag hit target so playhead never steals clip trim handles */}
-      <div
-        className="absolute left-1/2 -translate-x-1/2 pointer-events-auto cursor-col-resize"
-        onPointerDown={handlePointerDown}
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          top: 0,
-          width: "16px",
-          height: `${Math.max(12, rulerHeight)}px`,
-          background: "transparent",
-        }}
-      />
+        {/* Ruler-only drag hit target so playhead never steals clip trim handles */}
+        <div
+          data-playhead-hit-target="true"
+          className="absolute left-1/2 -translate-x-1/2 pointer-events-auto cursor-col-resize"
+          onPointerDown={handlePointerDown}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            top: 0,
+            width: "16px",
+            height: `${rulerHeight}px`,
+            background: "transparent",
+          }}
+        />
+      </div>
     </div>
   );
 };
