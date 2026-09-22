@@ -222,6 +222,22 @@ fn record_successful_readback_metrics(app: &tauri::AppHandle, request: &FrameReq
     );
 }
 
+fn classify_surface_transfer_path(
+    video_layer_count: usize,
+    used_dxgi_zero_copy: bool,
+    used_cpu_nv12: bool,
+) -> &'static str {
+    if video_layer_count == 0 {
+        "gpu-raster"
+    } else if used_dxgi_zero_copy && used_cpu_nv12 {
+        "mixed"
+    } else if used_dxgi_zero_copy {
+        "dxgi-zero-copy"
+    } else {
+        "cpu-nv12"
+    }
+}
+
 fn record_native_surface_sample(
     app: &tauri::AppHandle,
     request: &FrameRequest,
@@ -241,6 +257,7 @@ fn record_native_surface_sample(
     drop_reason: Option<&str>,
     capability_policy: Option<String>,
     capability_probe_us: Option<u64>,
+    transfer_path: Option<&str>,
 ) {
     let Some(service) = app.try_state::<tokio::sync::Mutex<NativeFrameService>>() else {
         return;
@@ -272,6 +289,7 @@ fn record_native_surface_sample(
             }
             .to_string(),
         ),
+        transfer_path: transfer_path.map(str::to_string),
         cancelled: false,
         stale,
         dropped,
@@ -3107,6 +3125,7 @@ pub(crate) async fn present_native_frame_internal(
             Some("lookahead-miss"),
             None,
             None,
+            None,
         );
         return Ok(NativeSurfacePresentation {
             contract_version: NATIVE_CORE_CONTRACT_VERSION,
@@ -3192,6 +3211,7 @@ pub(crate) async fn present_native_frame_internal(
                     Some("stale"),
                     None,
                     None,
+                    None,
                 );
                 return Err("Native preview frame request is stale".to_string());
             }
@@ -3267,6 +3287,7 @@ pub(crate) async fn present_native_frame_internal(
             Some("stale"),
             capability_policy_str.clone(),
             capability_probe_us_value,
+            None,
         );
         return Ok(NativeSurfacePresentation {
             contract_version: NATIVE_CORE_CONTRACT_VERSION,
@@ -3308,6 +3329,7 @@ pub(crate) async fn present_native_frame_internal(
             Some("late-for-audio"),
             capability_policy_str.clone(),
             capability_probe_us_value,
+            None,
         );
         return Ok(NativeSurfacePresentation {
             contract_version: NATIVE_CORE_CONTRACT_VERSION,
@@ -3360,6 +3382,8 @@ pub(crate) async fn present_native_frame_internal(
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
     let mut views: Vec<wgpu::TextureView> =
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
+    let mut used_dxgi_zero_copy = false;
+    let mut used_cpu_nv12 = false;
     for (layer_idx, (layer, (planes, width, height, color))) in legacy_request
         .layers
         .iter()
@@ -3440,11 +3464,17 @@ pub(crate) async fn present_native_frame_internal(
             }
 
             let texture = match layer_texture {
-                Some(t) => t,
+                Some(t) => {
+                    used_dxgi_zero_copy = true;
+                    t
+                }
                 None => match planes.cpu_planes() {
-                    Some((y_plane, uv_plane)) => session.render_nv12_frame_to_texture(
-                        layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
-                    )?,
+                    Some((y_plane, uv_plane)) => {
+                        used_cpu_nv12 = true;
+                        session.render_nv12_frame_to_texture(
+                            layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
+                        )?
+                    }
                     None => {
                         crate::wgpu_compositor::adapter_selector::mark_dxgi_runtime_disabled();
                         return Err(
@@ -3505,6 +3535,11 @@ pub(crate) async fn present_native_frame_internal(
     }
 
     let conversion_upload_us = conversion_started.elapsed().as_micros() as u64;
+    let transfer_path = classify_surface_transfer_path(
+        legacy_request.layers.len(),
+        used_dxgi_zero_copy,
+        used_cpu_nv12,
+    );
     let compose_started = Instant::now();
     let compositor_was_warm = session.has_compositor(
         legacy_request.canvas_width,
@@ -3708,6 +3743,7 @@ pub(crate) async fn present_native_frame_internal(
         None,
         capability_policy_str,
         capability_probe_us_value,
+        Some(transfer_path),
     );
 
     if request.mode.as_deref() != Some("prefetch") && request.mode.as_deref() != Some("scrub") {
@@ -3821,6 +3857,7 @@ pub async fn render_native_frame(
                 mode: PreviewMode::from_request_mode(request.mode.as_deref()),
                 quality: Some(format!("{:?}", request.quality)),
                 strategy: Some("HOT".to_string()),
+                transfer_path: Some("cpu-rgba".to_string()),
                 cancelled: false,
                 stale: false,
                 dropped: false,
@@ -3902,6 +3939,7 @@ pub async fn render_native_frame(
             mode: PreviewMode::from_request_mode(request.mode.as_deref()),
             quality: Some(format!("{:?}", request.quality)),
             strategy: Some("COLD".to_string()),
+            transfer_path: Some("cpu-rgba".to_string()),
             cancelled: false,
             stale: false,
             dropped: false,
@@ -4043,11 +4081,12 @@ pub async fn reset_native_preview_runtime(app: tauri::AppHandle) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::{
-        color_params, compute_text_layer_scale, deadline_aware_lookahead_count,
-        merge_color_metadata, parse_blend_mode, project_layer_transform, queue_residency_us,
-        validate_project_request, validate_video_project_request, NativeDecodeTimings,
-        NativePreviewFrameQueue, NativeProjectFrameRequest, NativeVideoProjectFrameRequest,
-        QueuedNativeFrame, MAX_LOOKAHEAD_EXPIRATION_US,
+        classify_surface_transfer_path, color_params, compute_text_layer_scale,
+        deadline_aware_lookahead_count, merge_color_metadata, parse_blend_mode,
+        project_layer_transform, queue_residency_us, validate_project_request,
+        validate_video_project_request, NativeDecodeTimings, NativePreviewFrameQueue,
+        NativeProjectFrameRequest, NativeVideoProjectFrameRequest, QueuedNativeFrame,
+        MAX_LOOKAHEAD_EXPIRATION_US,
     };
     use crate::native_core::TextLayerSnapshot;
     use crate::thumbnail_engine::decoder::VideoColorMetadata;
@@ -4069,6 +4108,20 @@ mod tests {
         // measured decoder lead while bounding the display latency to 100ms.
         assert_eq!(deadline_aware_lookahead_count(30, 16, Some(40_000)), 2);
         assert_eq!(deadline_aware_lookahead_count(30, 16, Some(500_000)), 3);
+    }
+
+    #[test]
+    fn classifies_surface_transfer_paths_without_guessing() {
+        assert_eq!(
+            classify_surface_transfer_path(0, false, false),
+            "gpu-raster"
+        );
+        assert_eq!(
+            classify_surface_transfer_path(1, true, false),
+            "dxgi-zero-copy"
+        );
+        assert_eq!(classify_surface_transfer_path(1, false, true), "cpu-nv12");
+        assert_eq!(classify_surface_transfer_path(2, true, true), "mixed");
     }
 
     #[test]
