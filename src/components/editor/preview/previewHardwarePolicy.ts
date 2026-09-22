@@ -4,9 +4,11 @@ import type { NativeQualityTier } from "@/lib/platform/nativeCore";
  * A conservative preview-only policy for GPU tiers established by production
  * telemetry. It never affects source media or export settings.
  *
- * Intel HD 520 cannot sustain a 4K HEVC editor preview. UHD 630 is viable at
- * 1080p but shows sustained compose/drop pressure at 4K. Other adapters keep
- * the user's selected quality until measured backpressure asks for more.
+ * Intel HD 520 and UHD 630 cannot sustain a reliable 4K HEVC editor preview.
+ * The production cohort for UHD 630 still showed sustained drops after the
+ * previous 1080p/half reduction, so both legacy generations start at a 720p
+ * proxy. Other adapters keep the user's selected quality until measured
+ * backpressure asks for more.
  */
 export interface PreviewHardwarePolicy {
   capabilityPolicy: "full" | "reduced" | "proxy";
@@ -34,12 +36,17 @@ export class PreviewPerformancePolicyController {
   observe(observation: PreviewPerformanceObservation): boolean {
     this.observations.push(observation);
     if (this.observations.length > 60) this.observations.shift();
-    if (this.observations.length < 30 || this.escalation >= 2) return false;
+    if (this.escalation >= 2) return false;
 
     const overloaded = this.observations.filter(
       (sample) => sample.dropped || sample.totalTimeUs > 16_667,
     ).length;
-    if (overloaded < 3) return false;
+    // A short run of missed real-time frames is enough evidence to reduce
+    // quality immediately. Waiting for 30 samples lets an Iris Xe/older Intel
+    // queue accumulate stale work during an interactive scrub. A single cold
+    // pipeline frame still cannot trigger this (the threshold is three).
+    const hasBurst = this.observations.length >= 12 && overloaded >= 3;
+    if (!hasBurst) return false;
 
     this.escalation += 1;
     this.observations = [];
@@ -83,9 +90,9 @@ export function selectPreviewHardwarePolicy(
 
   if (/intel.*uhd graphics 630/.test(adapter)) {
     return {
-      capabilityPolicy: "reduced",
-      maxDimension: 1_920,
-      maximumQuality: "half",
+      capabilityPolicy: "proxy",
+      maxDimension: 1_280,
+      maximumQuality: "proxy",
     };
   }
 
