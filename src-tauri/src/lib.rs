@@ -28,8 +28,9 @@ use diagnostics::crash_handler::{
     get_unreported_crashes, mark_crash_reported, purge_crash_reports,
 };
 use diagnostics::{
-    append_perf_log_entries, close_perf_log_session, list_perf_log_files, open_perf_log_session,
-    purge_perf_logs, upload_pending_perf_logs, upload_perf_log_session,
+    append_perf_log_entries, close_perf_log_session, list_perf_log_files, mark_perf_log_uploaded,
+    open_perf_log_session, purge_perf_logs, read_perf_log_file, upload_pending_perf_logs,
+    upload_perf_log_session,
 };
 use thumbnail_engine::init_thumbnail_engine;
 
@@ -517,6 +518,8 @@ pub fn run() {
             upload_pending_perf_logs,
             list_perf_log_files,
             purge_perf_logs,
+            read_perf_log_file,
+            mark_perf_log_uploaded,
             // Phone ↔ laptop file transfer (LocalSend protocol)
             get_transfer_service_status,
             get_discovered_devices,
