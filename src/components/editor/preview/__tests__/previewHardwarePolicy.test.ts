@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPreviewHardwarePolicy,
+  PreviewPerformancePolicyController,
   selectPreviewHardwarePolicy,
 } from "../previewHardwarePolicy";
 
@@ -39,6 +40,26 @@ describe("preview hardware policy", () => {
     ).toEqual({ capabilityPolicy: "full" });
     expect(
       selectPreviewHardwarePolicy("Intel(R) HD Graphics 520", 1920, 1080),
+    ).toEqual({ capabilityPolicy: "full" });
+  });
+
+  it("steps down modern integrated Intel only after sustained budget misses", () => {
+    const controller = new PreviewPerformancePolicyController();
+    for (let index = 0; index < 30; index += 1) {
+      controller.observe({ totalTimeUs: index < 3 ? 20_000 : 10_000, dropped: false });
+    }
+    expect(
+      controller.policyFor("Intel(R) Iris(R) Xe Graphics", 3840, 2160),
+    ).toMatchObject({ capabilityPolicy: "reduced", maximumQuality: "half" });
+  });
+
+  it("does not react to isolated cold frames", () => {
+    const controller = new PreviewPerformancePolicyController();
+    for (let index = 0; index < 60; index += 1) {
+      controller.observe({ totalTimeUs: index === 0 ? 100_000 : 10_000, dropped: false });
+    }
+    expect(
+      controller.policyFor("Intel(R) Iris(R) Xe Graphics", 3840, 2160),
     ).toEqual({ capabilityPolicy: "full" });
   });
 });

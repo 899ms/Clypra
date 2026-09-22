@@ -42,7 +42,7 @@ import {
 } from "./PreviewQualityManager";
 import {
   applyPreviewHardwarePolicy,
-  selectPreviewHardwarePolicy,
+  PreviewPerformancePolicyController,
 } from "./previewHardwarePolicy";
 import { cn } from "@/lib/utils";
 import { AspectRatio, type Clip } from "@/types";
@@ -514,6 +514,9 @@ export const NativeProgramPreview: React.FC = () => {
   // a measurement when the editor is idle.
   const lastNativeSampleSequenceRef = useRef(0);
   const nativeGpuAdapterNameRef = useRef<string | null>(null);
+  const previewPerformancePolicyRef = useRef(
+    new PreviewPerformancePolicyController(),
+  );
   const originalCanvasDimsRef = useRef<{
     projectId: string;
     width: number;
@@ -640,6 +643,10 @@ export const NativeProgramPreview: React.FC = () => {
       if (nativeSampleBatch) {
         for (let index = 0; index < samples.length; index += 1) {
           const sample = samples[index];
+          previewPerformancePolicyRef.current.observe({
+            totalTimeUs: sample.totalTimeUs,
+            dropped: sample.dropped === true,
+          });
           const sequence = nativeSampleBatch.firstSequence + index;
           telemetryCollector.recordNativeSyncSnapshot(
             nativeSync,
@@ -647,6 +654,13 @@ export const NativeProgramPreview: React.FC = () => {
             profile,
             previewTelemetryContextRef.current,
             `sequence:${sequence}:${sample.requestId}:${sample.frameIndex}`,
+            previewPerformancePolicyRef.current
+              .policyFor(
+                nativeGpuAdapterNameRef.current,
+                renderStateRef.current.canvasWidth,
+                renderStateRef.current.canvasHeight,
+              )
+              .capabilityPolicy,
           );
         }
         lastNativeSampleSequenceRef.current = nativeSampleBatch.nextSequence;
@@ -670,6 +684,13 @@ export const NativeProgramPreview: React.FC = () => {
             profile,
             previewTelemetryContextRef.current,
             nativeSampleCursor,
+            previewPerformancePolicyRef.current
+              .policyFor(
+                nativeGpuAdapterNameRef.current,
+                renderStateRef.current.canvasWidth,
+                renderStateRef.current.canvasHeight,
+              )
+              .capabilityPolicy,
           );
         }
       }
@@ -1478,7 +1499,7 @@ export const NativeProgramPreview: React.FC = () => {
         Math.max(1, profile.maxWidth),
         Math.max(1, profile.maxHeight),
         quality,
-        selectPreviewHardwarePolicy(
+        previewPerformancePolicyRef.current.policyFor(
           nativeGpuAdapterNameRef.current,
           state.canvasWidth,
           state.canvasHeight,

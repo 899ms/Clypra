@@ -2807,6 +2807,7 @@ class TelemetryCollector {
     videoProfile: Partial<TelemetryVideoProfile> = {},
     previewContext?: TelemetryPreviewContext,
     measurementId?: string,
+    capabilityPolicyOverride?: "full" | "reduced" | "proxy" | string,
   ): void {
     if (!this.isEnabled) return;
 
@@ -2878,7 +2879,7 @@ class TelemetryCollector {
           : undefined,
         forceSample: previewContext?.scenario === "qualification",
         cacheHit: last.cacheHit,
-        capabilityPolicy: last.capabilityPolicy,
+        capabilityPolicy: capabilityPolicyOverride ?? last.capabilityPolicy,
         capabilityProbeUs: last.capabilityProbeUs,
         // The native session is the authoritative frame stream for the Native
         // path. Frontend spans are used for WebView and compatibility fallback
