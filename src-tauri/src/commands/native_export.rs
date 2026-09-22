@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::ipc::Channel;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{sleep, Duration};

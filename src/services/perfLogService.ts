@@ -231,7 +231,20 @@ class PerfLogService {
         );
       }
     } catch (err) {
-      console.warn("[PerfLogService] Failed to upload pending perf logs:", err);
+      console.warn("[PerfLogService] Failed to upload pending perf logs via Rust:", err);
+    }
+
+    // If any pending files remain on disk, attempt upload via uploadSessionFile (with browser fallback)
+    try {
+      const files = await tauriInvoke<Array<{ filePath: string; fileName: string }>>("list_perf_log_files");
+      const pendingFiles = files.filter(
+        (f) => f.filePath !== this.filePath && !f.fileName.endsWith(".uploaded"),
+      );
+      for (const file of pendingFiles) {
+        await this.uploadSessionFile(file.filePath);
+      }
+    } catch (err) {
+      console.warn("[PerfLogService] Failed to process remaining pending perf logs:", err);
     }
   }
 
@@ -534,12 +547,69 @@ class PerfLogService {
         apiBaseUrl: getApiBaseUrl(),
         apiKey: getApiKey(),
       });
-    } catch (err) {
-      // Upload failure is non-fatal — the file stays on disk and will be
-      // listed by `list_perf_log_files` for manual retry / next launch.
+      return;
+    } catch (rustErr) {
       console.warn(
-        "[PerfLogService] Session upload failed (file retained on disk):",
-        err,
+        "[PerfLogService] Native session upload failed; attempting browser fetch fallback:",
+        rustErr,
+      );
+    }
+
+    // Secondary fallback: Read the raw file via Tauri and POST directly from the WebView
+    try {
+      const raw = await tauriInvoke<string>("read_perf_log_file", { filePath });
+      const entries: unknown[] = [];
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          entries.push(JSON.parse(trimmed));
+        } catch {
+          // ignore corrupted/incomplete line
+        }
+      }
+
+      if (entries.length === 0) {
+        await tauriInvoke<void>("mark_perf_log_uploaded", { filePath });
+        return;
+      }
+
+      const url = `${getApiBaseUrl().replace(/\/+$/, "")}/performance/telemetry/ingest/session`;
+      const apiKey = getApiKey();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (apiKey) {
+        headers["X-API-Key"] = apiKey;
+        headers["X-Clypra-Client"] = "clypra-desktop-v1";
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          entryCount: entries.length,
+          entries,
+        }),
+      });
+
+      if (response.ok) {
+        console.info(
+          `[PerfLogService] Browser fallback upload succeeded for '${filePath}' (${entries.length} entries)`,
+        );
+        await tauriInvoke<void>("mark_perf_log_uploaded", { filePath });
+      } else {
+        const errText = await response.text().catch(() => "");
+        console.warn(
+          `[PerfLogService] Browser fallback upload rejected (HTTP ${response.status}): ${errText}`,
+        );
+      }
+    } catch (fallbackErr) {
+      // Upload failure is non-fatal — the file stays on disk and will be
+      // listed by `list_perf_log_files` for retry on the next launch.
+      console.warn(
+        "[PerfLogService] Session upload failed after both native and browser attempts (file retained on disk):",
+        fallbackErr,
       );
     }
   }

@@ -1951,9 +1951,6 @@ async fn render_native_video_project_frame_bytes_timed(
 
     #[allow(unused_mut)]
     let mut render_path = FrameRenderPath::GpuUploadRing;
-    #[cfg(target_os = "windows")]
-    #[allow(unused_mut, unused_variables)]
-    let mut dxgi_active = false;
 
     #[cfg(target_os = "windows")]
     let can_use_dxgi = session.gpu.capabilities.zero_copy_available()
@@ -2028,7 +2025,6 @@ async fn render_native_video_project_frame_bytes_timed(
                     session.mark_dxgi_supported();
                     decode_time_us = max_dec_us;
                     decoder_mutex_wait_us = total_wait_us;
-                    dxgi_active = true;
                     render_path = FrameRenderPath::ZeroCopyDxgi;
                 } else {
                     views.clear();
@@ -2077,7 +2073,6 @@ async fn render_native_video_project_frame_bytes_timed(
                                 layer_key, *width, *height, &imported, &params,
                             ) {
                                 session.mark_dxgi_supported();
-                                render_path = FrameRenderPath::ZeroCopyDxgi;
                                 layer_texture = Some(texture);
                             }
                         }
