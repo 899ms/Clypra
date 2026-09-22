@@ -346,15 +346,18 @@ pub async fn upload_perf_log_session(
             request.body(json.clone())
         };
 
+        eprintln!("[perf_log] Attempt {}/{} mode={} sending to {}", attempt, max_attempts, if use_gzip { "gzip" } else { "raw" }, url);
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
+                eprintln!("[perf_log] Attempt {} received status: {}", attempt, status);
                 if status.is_success() {
                     let uploaded_path = format!("{file_path}.uploaded");
                     let _ = fs::rename(&file_path, &uploaded_path);
                     return Ok(());
                 } else {
                     let body_text = response.text().await.unwrap_or_default();
+                    eprintln!("[perf_log] Attempt {} rejected: {} - {}", attempt, status, body_text);
                     last_err = format!(
                         "Upload rejected — HTTP {status} (attempt {attempt}/{max_attempts}, mode={}, entries={}, raw_bytes={}): {body_text}",
                         if use_gzip { "gzip" } else { "raw_json" },
@@ -364,6 +367,7 @@ pub async fn upload_perf_log_session(
             }
             Err(e) => {
                 let formatted = format_reqwest_error(&e);
+                eprintln!("[perf_log] Attempt {} failed: {}", attempt, formatted);
                 last_err = format!(
                     "Upload request failed (attempt {attempt}/{max_attempts}, mode={}, entries={}, raw_bytes={}, gzip_bytes={}): {formatted}",
                     if use_gzip { "gzip" } else { "raw_json" },
