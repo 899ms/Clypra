@@ -57,6 +57,8 @@ import { MediaJobIndicator } from "./MediaJobIndicator";
 import { RenameClipDialog } from "./RenameClipDialog";
 import type { Gap } from "@/types/gap";
 
+const TIMELINE_RULER_HEIGHT = 24;
+
 export const Timeline: React.FC = () => {
   const tracks = useTimelineStore((s) => s.tracks);
   const mainVideoTrackId = useTimelineStore((s) => s.mainVideoTrackId);
@@ -69,6 +71,8 @@ export const Timeline: React.FC = () => {
   const setViewportWidth = useTimelineStore((s) => s.setViewportWidth);
   const snapGuides = useTimelineStore((s) => s.snapGuides);
   const hasClips = clips.length > 0;
+
+  const [containerHeight, setContainerHeight] = useState(0);
 
   const previewMode = useUIStore((s) => s.previewMode);
   const selectedClipIds = useUIStore((s) => s.selectedClipIds);
@@ -208,6 +212,7 @@ export const Timeline: React.FC = () => {
     if (!el) return;
     const measure = () => {
       setViewportWidth(getTimelineLaneWidth(el.clientWidth || 1200, hasClips));
+      setContainerHeight(Math.max(el.clientHeight, el.scrollHeight));
     };
     measure();
     if (typeof ResizeObserver !== "undefined") {
@@ -622,6 +627,22 @@ export const Timeline: React.FC = () => {
     Math.round(canvasDuration * pixelsPerSecond) +
     TIMELINE_CLIP_START_OFFSET_PX;
 
+  const tracksContentHeight = useMemo(() => {
+    if (!tracks.length) return 0;
+    const tracksTotal = tracks.reduce((sum, track) => {
+      const visualSpec = getTrackVisualSpec(track, tracks, mainVideoTrackId);
+      return (
+        sum +
+        (track.height === visualSpec.height ? track.height : visualSpec.height)
+      );
+    }, 0);
+    const gapsTotal = Math.max(0, tracks.length - 1) * 4;
+    return tracksTotal + gapsTotal;
+  }, [tracks, mainVideoTrackId]);
+
+  const totalContentHeight = TIMELINE_RULER_HEIGHT + tracksContentHeight;
+  const timelineContentHeight = Math.max(totalContentHeight, containerHeight);
+
   const seekFromPointer = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       const target = event.target as HTMLElement;
@@ -733,7 +754,7 @@ export const Timeline: React.FC = () => {
             gridTemplateRows: hasTimelineContent
               ? hasClips
                 ? "auto 1fr"
-                : "24px minmax(0, 1fr)"
+                : `${TIMELINE_RULER_HEIGHT}px minmax(0, 1fr)`
               : "minmax(0, 1fr)",
             alignContent: hasClips ? "start" : "stretch",
             scrollbarWidth: "none",
@@ -749,7 +770,7 @@ export const Timeline: React.FC = () => {
                 top: 0,
                 left: 0,
                 zIndex: 49,
-                height: "24px",
+                height: `${TIMELINE_RULER_HEIGHT}px`,
                 width: `${TIMELINE_TRACK_LABEL_WIDTH_PX}px`,
                 minWidth: `${TIMELINE_TRACK_LABEL_WIDTH_PX}px`,
                 background: "var(--color-timeline-track-bg)",
@@ -770,7 +791,7 @@ export const Timeline: React.FC = () => {
                 position: "sticky",
                 top: 0,
                 zIndex: 20,
-                height: "24px",
+                height: `${TIMELINE_RULER_HEIGHT}px`,
                 width: `${contentWidth}px`,
                 borderBottom: "1px solid var(--color-timeline-track-border)",
                 borderLeft: "1px solid var(--clypra-border-default)",
@@ -948,14 +969,16 @@ export const Timeline: React.FC = () => {
                   )}
               </div>
 
-              {/* Playhead spans the visible viewport (clips area only) */}
+              {/* Playhead spans the full content width and height (clips area only) */}
               <div
+                data-playhead-layer="true"
                 className="pointer-events-none absolute"
                 style={{
                   top: 0,
                   left: hasClips ? `${TIMELINE_TRACK_LABEL_WIDTH_PX}px` : "0px",
-                  bottom: 0,
                   width: `${contentWidth}px`,
+                  minHeight: "100%",
+                  height: `${timelineContentHeight}px`,
                   zIndex: 45,
                 }}
               >
@@ -963,6 +986,7 @@ export const Timeline: React.FC = () => {
                   pixelsPerSecond={pixelsPerSecond}
                   duration={duration}
                   containerRef={containerRef}
+                  rulerHeight={TIMELINE_RULER_HEIGHT}
                 />
               </div>
 
@@ -980,10 +1004,12 @@ export const Timeline: React.FC = () => {
                 return (
                   <div
                     key={`snap-guide-${index}-${guide.time}`}
-                    className="absolute top-0 bottom-0 pointer-events-none z-60"
+                    className="absolute top-0 pointer-events-none z-60"
                     style={{
                       left: `${guideLeft}px`,
                       width: "2px",
+                      minHeight: "100%",
+                      height: `${timelineContentHeight}px`,
                       background: guideColor,
                       boxShadow: `0 0 8px ${guideColor}`,
                     }}
