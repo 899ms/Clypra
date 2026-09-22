@@ -74,15 +74,64 @@ describe("Production Telemetry Collector in Clypra Desktop", () => {
     expect(telemetryCollector.getQueueLength()).toBe(1);
   });
 
-  it("records a cold seek span and enqueues event", () => {
+  it("records a cold seek span without inventing stage bottlenecks", () => {
+    const events: any[] = [];
+    const originalEnqueue = (telemetryCollector as any).enqueueEvent.bind(
+      telemetryCollector,
+    );
+    const enqueueSpy = vi
+      .spyOn(telemetryCollector as any, "enqueueEvent")
+      .mockImplementation(
+        (event: unknown) => {
+          events.push(event);
+          originalEnqueue(event);
+        },
+      );
+
     telemetryCollector.recordSeekSpan(120.5, true, {
       codec: "hevc",
       resolutionBucket: "4k",
     });
 
     expect(telemetryCollector.getQueueLength()).toBe(1);
+    expect(events[0].workload.stageTimingsSource).toBe("unattributed");
+    expect(events[0].workload.stageTimings).toEqual({ totalTimeUs: 120500 });
+    enqueueSpy.mockRestore();
   });
 
+  it("clamps aggregate frame counters to a valid drop ratio", () => {
+    const events: any[] = [];
+    const originalEnqueue = (telemetryCollector as any).enqueueEvent.bind(
+      telemetryCollector,
+    );
+    const enqueueSpy = vi
+      .spyOn(telemetryCollector as any, "enqueueEvent")
+      .mockImplementation(
+        (event: unknown) => {
+          events.push(event);
+          originalEnqueue(event);
+        },
+      );
+
+    telemetryCollector.recordRenderSpan(
+      { totalTimeUs: 25_000 },
+      80,
+      60,
+      {},
+      "playback",
+      undefined,
+      80,
+      80,
+      { forceSample: true },
+    );
+
+    expect(events[0].workload.totalFrames).toBe(60);
+    expect(events[0].workload.droppedFrames).toBe(60);
+    expect(events[0].workload.droppedFramesRatio).toBe(1);
+    expect(events[0].workload.staleFrames).toBe(60);
+    expect(events[0].workload.cancelledFrames).toBe(60);
+    enqueueSpy.mockRestore();
+});
   it("records a hardware fallback event and enqueues it for session-file upload", () => {
     // recordFallbackEvent enqueues the event then immediately calls flush(),
     // which drains this.queue to 0 (the event was already forwarded to
@@ -525,4 +574,3 @@ describe("Production Telemetry Collector in Clypra Desktop", () => {
     expect(telemetryCollector.getQueueLength()).toBe(20);
   });
 });
-

@@ -214,6 +214,10 @@ class NativePerfCollector {
                 : "present-failed")
           : undefined,
         forceSample: sample.previewContext?.scenario === "qualification",
+        // Native stage samples are the authoritative frame stream. The
+        // frontend span is still retained for boundary diagnostics, but must
+        // not count the same native frame a second time in session totals.
+        includeInRollup: sample.previewContext?.view !== "native",
       },
     );
   }

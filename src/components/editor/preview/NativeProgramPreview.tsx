@@ -40,6 +40,10 @@ import {
   PreviewQualityManager,
   PreviewQualityTier,
 } from "./PreviewQualityManager";
+import {
+  applyPreviewHardwarePolicy,
+  selectPreviewHardwarePolicy,
+} from "./previewHardwarePolicy";
 import { cn } from "@/lib/utils";
 import { AspectRatio, type Clip } from "@/types";
 import { formatTime } from "@/lib/utils/timeFormatting";
@@ -509,6 +513,7 @@ export const NativeProgramPreview: React.FC = () => {
   // This preserves every retained observation between polls without creating
   // a measurement when the editor is idle.
   const lastNativeSampleSequenceRef = useRef(0);
+  const nativeGpuAdapterNameRef = useRef<string | null>(null);
   const originalCanvasDimsRef = useRef<{
     projectId: string;
     width: number;
@@ -584,6 +589,7 @@ export const NativeProgramPreview: React.FC = () => {
       getNativeGpuStatus()
         .then((status) => {
           if (status) {
+            nativeGpuAdapterNameRef.current = status.adapterName;
             telemetryCollector.updateFromNativeGpu({
               adapterName: status.adapterName,
               backend: status.backend,
@@ -1468,11 +1474,16 @@ export const NativeProgramPreview: React.FC = () => {
           : tier === PreviewQualityTier.Playback
             ? "half"
             : "full";
-      return {
-        width: Math.max(1, profile.maxWidth),
-        height: Math.max(1, profile.maxHeight),
+      return applyPreviewHardwarePolicy(
+        Math.max(1, profile.maxWidth),
+        Math.max(1, profile.maxHeight),
         quality,
-      };
+        selectPreviewHardwarePolicy(
+          nativeGpuAdapterNameRef.current,
+          state.canvasWidth,
+          state.canvasHeight,
+        ),
+      );
     };
 
     const GLOBAL_MAX_BODY_MASKS = 16; // ~59MB at 3.68MB/mask — well under the shared 128MB Rust pool

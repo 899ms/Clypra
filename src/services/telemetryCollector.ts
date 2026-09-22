@@ -81,6 +81,9 @@ export interface TelemetryStageTimings {
   totalTimeUs: number;
 }
 
+/** Whether stage timings came from an instrumented pipeline or only a total duration. */
+export type TelemetryStageTimingsSource = "measured" | "unattributed";
+
 export interface TelemetryMetricPercentiles {
   p50: number;
   p95: number;
@@ -406,6 +409,8 @@ export interface TelemetryEvent {
     peakVramMb?: number;
     cacheHitRatio: number;
     stageTimings: TelemetryStageTimings;
+    /** Unattributed totals must not be used to name a decode/upload/compose bottleneck. */
+    stageTimingsSource?: TelemetryStageTimingsSource;
     capabilityPolicy?: "full" | "reduced" | "proxy" | string;
     capabilityProbeUs?: number;
     renderPercentiles?: TelemetryMetricPercentiles;
@@ -520,6 +525,7 @@ export interface TelemetryRenderOptions {
   capabilityPolicy?: "full" | "reduced" | "proxy" | string;
   capabilityProbeUs?: number;
   interaction?: TelemetryInteraction;
+  stageTimingsSource?: TelemetryStageTimingsSource;
   /** Native samples are stage evidence for a frontend frame, not a second frame. */
   includeInRollup?: boolean;
 }
@@ -701,11 +707,12 @@ class SessionRollupAccumulator {
 
   public recordFrame(
     timings: TelemetryStageTimings,
-    dropped: boolean,
+    droppedFrames: number,
+    totalFrames: number,
     videoProfile: Partial<TelemetryVideoProfile> = {},
     avDriftMs?: number,
-    isStale: boolean = false,
-    isCancelled: boolean = false,
+    staleFrames: number = 0,
+    cancelledFrames: number = 0,
     cacheHit: boolean = true,
     capabilityPolicy?: "full" | "reduced" | "proxy" | string,
     capabilityProbeUs?: number,
@@ -722,13 +729,27 @@ class SessionRollupAccumulator {
     }
     this.lastFrameTimestampMs = now;
 
-    this.totalFrames++;
+    const normalizedTotalFrames = Math.max(1, Math.floor(totalFrames));
+    const normalizedDroppedFrames = Math.min(
+      normalizedTotalFrames,
+      Math.max(0, Math.floor(droppedFrames)),
+    );
+    const normalizedStaleFrames = Math.min(
+      normalizedTotalFrames,
+      Math.max(0, Math.floor(staleFrames)),
+    );
+    const normalizedCancelledFrames = Math.min(
+      normalizedTotalFrames,
+      Math.max(0, Math.floor(cancelledFrames)),
+    );
+
+    this.totalFrames += normalizedTotalFrames;
     if (this.firstFrameVisibleMs === undefined) {
       this.firstFrameVisibleMs = timings.totalTimeUs / 1000;
     }
-    if (dropped) this.droppedFrames++;
-    if (isStale) this.staleFrames++;
-    if (isCancelled) this.cancelledFrames++;
+    this.droppedFrames += normalizedDroppedFrames;
+    this.staleFrames += normalizedStaleFrames;
+    this.cancelledFrames += normalizedCancelledFrames;
     if (cacheHit) this.cacheHits++;
     else this.cacheMisses++;
 
@@ -1555,15 +1576,33 @@ class TelemetryCollector {
   ): void {
     if (!this.isEnabled) return;
 
+    // Telemetry is occasionally reported from aggregate spans. Preserve the
+    // counter relationship at the collection boundary so no emitted event or
+    // session rollup can claim an impossible (>100%) drop ratio.
+    const normalizedTotalFrames = Math.max(1, Math.floor(totalFrames || 1));
+    const normalizedDroppedFrames = Math.min(
+      normalizedTotalFrames,
+      Math.max(0, Math.floor(droppedFrames || 0)),
+    );
+    const normalizedStaleFrames = Math.min(
+      normalizedTotalFrames,
+      Math.max(0, Math.floor(staleFrames || 0)),
+    );
+    const normalizedCancelledFrames = Math.min(
+      normalizedTotalFrames,
+      Math.max(0, Math.floor(cancelledFrames || 0)),
+    );
+
     if (options.includeInRollup !== false) {
       const accumulator = this.getRollupAccumulator(options.previewContext);
       accumulator.recordFrame(
         timings,
-        droppedFrames > 0,
+        normalizedDroppedFrames,
+        normalizedTotalFrames,
         videoProfile,
         avDriftMs,
-        staleFrames > 0,
-        cancelledFrames > 0,
+        normalizedStaleFrames,
+        normalizedCancelledFrames,
         options.cacheHit ?? true,
         options.capabilityPolicy,
         options.capabilityProbeUs,
@@ -1574,13 +1613,13 @@ class TelemetryCollector {
       }
     }
 
-    const droppedRatio = totalFrames > 0 ? droppedFrames / totalFrames : 0;
+    const droppedRatio = normalizedDroppedFrames / normalizedTotalFrames;
     const isAnomaly = droppedRatio > 0.05 || timings.totalTimeUs > 16667;
 
     const hasDroppedFrame =
-      droppedFrames > 0 ||
-      staleFrames > 0 ||
-      cancelledFrames > 0 ||
+      normalizedDroppedFrames > 0 ||
+      normalizedStaleFrames > 0 ||
+      normalizedCancelledFrames > 0 ||
       Boolean(options.dropReason);
 
     // Adaptive sampling:
@@ -1683,15 +1722,16 @@ class TelemetryCollector {
                 1000000 / timings.totalTimeUs,
               )
             : fullVideoProfile.nominalFps,
-        totalFrames: totalFrames || 1,
-        droppedFrames: droppedFrames || 0,
+        totalFrames: normalizedTotalFrames,
+        droppedFrames: normalizedDroppedFrames,
         droppedFramesRatio: droppedRatio,
-        staleFrames,
-        cancelledFrames,
+        staleFrames: normalizedStaleFrames,
+        cancelledFrames: normalizedCancelledFrames,
         avDriftMs,
         peakRamMb: perfLogService.getPeakMemoryMb() || 512,
         cacheHitRatio: 0.9,
         stageTimings: timings,
+        stageTimingsSource: options.stageTimingsSource ?? "measured",
         capabilityPolicy: options.capabilityPolicy,
         capabilityProbeUs: options.capabilityProbeUs,
       },
@@ -2546,12 +2586,10 @@ class TelemetryCollector {
         cancelledFrames: 0,
         peakRamMb: perfLogService.getPeakMemoryMb() || 512,
         cacheHitRatio: isColdSeek ? 0.0 : 1.0,
-        stageTimings: {
-          decodeUs: Math.round(seekLatencyMs * 600),
-          conversionUploadUs: Math.round(seekLatencyMs * 200),
-          composeUs: Math.round(seekLatencyMs * 200),
-          totalTimeUs: Math.round(seekLatencyMs * 1000),
-        },
+        // A seek span measures end-to-end settlement only. Do not invent
+        // stage percentages: they would make backend bottleneck analysis lie.
+        stageTimings: { totalTimeUs: Math.round(seekLatencyMs * 1000) },
+        stageTimingsSource: "unattributed",
       },
       timestampMs: Date.now(),
     };
