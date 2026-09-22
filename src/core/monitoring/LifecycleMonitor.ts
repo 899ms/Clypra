@@ -16,6 +16,7 @@
 
 export type LifecycleEventType =
   | "PROJECT_LOAD_START"
+  | "PROJECT_LOAD_STAGE"
   | "PROJECT_LOAD_COMPLETE"
   | "PROJECT_LOAD_FAILED"
   | "PROJECT_DISPOSE"

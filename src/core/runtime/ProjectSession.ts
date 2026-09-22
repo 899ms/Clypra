@@ -74,6 +74,19 @@ import {
   installDiagnostics,
 } from "@/core/monitoring/ResourceTracker";
 import { getFrameStartTime } from "@/lib/utils/frameTime";
+import { perfLogService } from "@/services/perfLogService";
+
+type SessionLoadStage =
+  | "stores"
+  | "preview-runtime"
+  | "audio-prewarm"
+  | "fonts"
+  | "native-raster-critical"
+  | "native-raster-deferred";
+
+type SessionLoadTimings = Partial<Record<SessionLoadStage, number>>;
+
+const CRITICAL_NATIVE_RASTER_BOUNDARIES = 3;
 
 /**
  * Project Session State
@@ -130,6 +143,10 @@ export class ProjectSession {
   private _previewMediaPool: PreviewMediaPool | null = null;
   private _asyncTasks = new Set<AbortController>();
   private _rafIds = new Set<number>();
+  private _nativeRasterIdlePrewarmTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  private _nativeRasterPrewarmInFlight: Promise<boolean> | null = null;
+  private _initializationTimingsMs: SessionLoadTimings = {};
 
   constructor(
     projectId: string,
@@ -200,6 +217,11 @@ export class ProjectSession {
    */
   get missingFontFamilies(): readonly string[] {
     return this._missingFontFamilies;
+  }
+
+  /** Content-free timing evidence for the current project-open sequence. */
+  get initializationTimingsMs(): Readonly<SessionLoadTimings> {
+    return { ...this._initializationTimingsMs };
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────
@@ -343,7 +365,9 @@ export class ProjectSession {
       // Initialize stores (timeline, UI) BEFORE creating RenderEngine so we
       // can read the hydrated zoom level and seed the engine at the correct
       // tier, eliminating the transient L1→L0 churn on first clip register.
-      await this._initializeStores();
+      await this._measureInitializationStage("stores", () =>
+        this._initializeStores(),
+      );
       this._onInitializationProgress?.(0.35, "Initializing preview runtime…");
 
       // Derive initial zoom from the store that was just hydrated.
@@ -357,10 +381,12 @@ export class ProjectSession {
       // Each project gets its own render engine with isolated GPU resources.
       // Seeding initialZoom ensures the first clip registers at the correct
       // tier before Timeline.tsx's RAF fires setZoom(TIMELINE_ZOOM_MIN).
-      this._renderRuntime = new RenderEngine(this.projectId, {
-        qualityPreset: QualityPreset.Medium,
-        rendererMode: RendererMode.Canvas2D,
-        initialZoom,
+      await this._measureInitializationStage("preview-runtime", async () => {
+        this._renderRuntime = new RenderEngine(this.projectId, {
+          qualityPreset: QualityPreset.Medium,
+          rendererMode: RendererMode.Canvas2D,
+          initialZoom,
+        });
       });
 
       // Browser audio is decoded before the session becomes active, matching
@@ -368,7 +394,9 @@ export class ProjectSession {
       // the complete native graph in NativeAudioPreviewController.initialize.
       if (!isTauriRuntime()) {
         this._onInitializationProgress?.(0.45, "Prewarming audio…");
-        await this._prewarmAudioAssets();
+        await this._measureInitializationStage("audio-prewarm", () =>
+          this._prewarmAudioAssets(),
+        );
       }
 
       // Warm existing text/image boundaries before the session becomes active.
@@ -386,18 +414,38 @@ export class ProjectSession {
         // warm both the browser (document.fonts) and the native Rust registry
         // in parallel. This ensures the subsequent _prewarmNativeRasterAssets
         // rasterization loop hits the fast-path cache and fontWaitMs = 0ms.
-        await this._prewarmProjectFonts();
+        await this._measureInitializationStage("fonts", () =>
+          this._prewarmProjectFonts(),
+        );
 
-        // Opening is not complete until every text/image boundary has been
-        // warmed. This is deliberately awaited: a background warmup can
-        // contend with the first transport frame and recreate the entry freeze
-        // we are eliminating.
-        await this._prewarmNativeRasterAssets();
+        // Only the first visible boundaries are part of the open barrier.
+        // Warming every future text/image boundary made project-open cost grow
+        // with timeline length, even though those assets cannot affect the
+        // first edit or playback frame. The remainder is yielded until the
+        // browser is idle and is still registered before it becomes visible.
+        const deferredRasterBoundaries = await this._measureInitializationStage(
+          "native-raster-critical",
+          () =>
+            this._prewarmNativeRasterAssets({
+              startIndex: 0,
+              limit: CRITICAL_NATIVE_RASTER_BOUNDARIES,
+            }),
+        );
+        if (deferredRasterBoundaries) {
+          this._scheduleDeferredNativeRasterPrewarm(
+            CRITICAL_NATIVE_RASTER_BOUNDARIES,
+          );
+        }
       }
 
       this._onInitializationProgress?.(0.95, "Finalizing preview session…");
 
       this._state = "active";
+
+      // The timer is registered above but must not run before the session is
+      // observable as active; otherwise a close during initialization can let
+      // background canvas work outlive this session.
+      this._startDeferredNativeRasterPrewarm();
 
       // ── Telemetry: record session creation ──────────────────────────────
       lifecycleMonitor.record("SESSION_CREATE", {
@@ -474,6 +522,10 @@ export class ProjectSession {
       // 6. Teardown render runtime (GPU resources, WebGL contexts)
       this._nativeRasterBridge?.dispose();
       this._nativeRasterBridge = null;
+      if (this._nativeRasterIdlePrewarmTimer !== null) {
+        clearTimeout(this._nativeRasterIdlePrewarmTimer);
+        this._nativeRasterIdlePrewarmTimer = null;
+      }
       if (this._renderRuntime) {
         this._renderRuntime.teardown();
         this._renderRuntime = null;
@@ -627,7 +679,10 @@ export class ProjectSession {
   // ─── Private Helpers ────────────────────────────────────────────────────
 
   private async _initializeStores(): Promise<void> {
-    const { useUIStore } = await import("@/store/uiStore");
+    const [{ useUIStore }, { getViewportController }] = await Promise.all([
+      import("@/store/uiStore"),
+      import("@/core/interactions"),
+    ]);
 
     // Reset UI store (selection state, preview mode)
     // Timeline store is managed by projectStore - don't touch it here
@@ -638,8 +693,40 @@ export class ProjectSession {
     });
 
     // Reset viewport controller (imperative state)
-    const { getViewportController } = await import("@/core/interactions");
     getViewportController().reset();
+  }
+
+  private async _measureInitializationStage<T>(
+    stage: SessionLoadStage,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      const durationMs = Math.max(0, performance.now() - startedAt);
+      this._initializationTimingsMs[stage] = durationMs;
+      const detail = {
+        stage,
+        durationMs: Math.round(durationMs),
+        projectSessionId: this.sessionId,
+      };
+      lifecycleMonitor.record("PROJECT_LOAD_STAGE", {
+        projectId: this.projectId,
+        sessionId: this.sessionId,
+        detail,
+      });
+      // Stage names, durations, and counts are deliberately content-free.
+      // They let fleet analysis identify whether stores, fonts, or raster
+      // preparation is responsible for slow opens without exporting projects,
+      // media paths, or text content.
+      perfLogService.enqueue({
+        kind: "project-session-load",
+        sessionId: this.sessionId,
+        timestampEpochMs: Date.now(),
+        payload: detail,
+      });
+    }
   }
 
   private async _prewarmProjectFonts(): Promise<void> {
@@ -708,9 +795,35 @@ export class ProjectSession {
     fontRegistry.prewarmNativeFontsOnIdle();
   }
 
-  private async _prewarmNativeRasterAssets(): Promise<void> {
+  private async _prewarmNativeRasterAssets(options: {
+    startIndex?: number;
+    limit?: number;
+    yieldBetweenBoundaries?: boolean;
+  } = {}): Promise<boolean> {
+    // Project open, timeline edits, and the idle queue can all request a
+    // prewarm. Native asset upload is backed by one GPU session mutex, so
+    // overlapping walks only add contention and duplicate canvas work.
+    if (this._nativeRasterPrewarmInFlight) {
+      return this._nativeRasterPrewarmInFlight;
+    }
+    const operation = this._prewarmNativeRasterAssetsInternal(options);
+    this._nativeRasterPrewarmInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this._nativeRasterPrewarmInFlight === operation) {
+        this._nativeRasterPrewarmInFlight = null;
+      }
+    }
+  }
+
+  private async _prewarmNativeRasterAssetsInternal(options: {
+    startIndex?: number;
+    limit?: number;
+    yieldBetweenBoundaries?: boolean;
+  }): Promise<boolean> {
     const bridge = this._nativeRasterBridge;
-    if (!bridge || typeof document === "undefined") return;
+    if (!bridge || typeof document === "undefined") return false;
 
     const [projectStore, timelineStore, evaluator, fontRegistry] =
       await Promise.all([
@@ -720,7 +833,7 @@ export class ProjectSession {
         import("@/core/fonts/nativeFontRegistry"),
       ]);
     const project = projectStore.useProjectStore.getState().project;
-    if (!project || project.id !== this.projectId) return;
+    if (!project || project.id !== this.projectId) return false;
 
     const { clips, tracks, transitions } =
       timelineStore.useTimelineStore.getState();
@@ -743,10 +856,18 @@ export class ProjectSession {
     const rasterBoundaries = clips
       .filter(isRasterClip)
       .sort((left, right) => left.startTime - right.startTime);
-    if (rasterBoundaries.length === 0) return;
+    if (rasterBoundaries.length === 0) return false;
+
+    const startIndex = Math.max(0, options.startIndex ?? 0);
+    const boundarySlice = rasterBoundaries.slice(
+      startIndex,
+      options.limit === undefined ? undefined : startIndex + options.limit,
+    );
+    if (boundarySlice.length === 0) return false;
 
     const frameRate = Math.max(1, project.frameRate ?? 30);
-    for (const clip of rasterBoundaries) {
+    for (const clip of boundarySlice) {
+      if (this._state === "disposed" || this._state === "disposing") break;
       const frameTime = getFrameStartTime(clip.startTime, frameRate);
       const scene = evaluator.evaluateTimelineScene(
         frameTime,
@@ -788,7 +909,39 @@ export class ProjectSession {
         });
       });
       await warmup;
+      if (options.yieldBetweenBoundaries) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
     }
+    return startIndex + boundarySlice.length < rasterBoundaries.length;
+  }
+
+  private _deferredNativeRasterStartIndex: number | null = null;
+
+  private _scheduleDeferredNativeRasterPrewarm(startIndex: number): void {
+    this._deferredNativeRasterStartIndex = startIndex;
+  }
+
+  private _startDeferredNativeRasterPrewarm(): void {
+    const startIndex = this._deferredNativeRasterStartIndex;
+    if (startIndex === null || this._nativeRasterIdlePrewarmTimer !== null) {
+      return;
+    }
+    this._nativeRasterIdlePrewarmTimer = setTimeout(() => {
+      this._nativeRasterIdlePrewarmTimer = null;
+      if (this._state !== "active") return;
+      void this._measureInitializationStage("native-raster-deferred", () =>
+        this._prewarmNativeRasterAssets({
+          startIndex,
+          yieldBetweenBoundaries: true,
+        }),
+      ).catch((error) => {
+        console.warn("[ProjectSession] Deferred native raster prewarm failed", {
+          projectId: this.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 250);
   }
 
   private async _prewarmAudioAssets(): Promise<void> {
@@ -1066,6 +1219,7 @@ export async function createProjectSession(
     };
   }
 
+  const projectLoadStartedAt = performance.now();
   lifecycleMonitor.record("PROJECT_LOAD_START", { projectId });
 
   sessionRegistry.setTargetProjectId(projectId);
@@ -1074,6 +1228,15 @@ export async function createProjectSession(
   try {
     await session.initialize();
   } catch (err) {
+    lifecycleMonitor.record("PROJECT_LOAD_FAILED", {
+      projectId,
+      sessionId: session.sessionId,
+      detail: {
+        durationMs: Math.round(
+          Math.max(0, performance.now() - projectLoadStartedAt),
+        ),
+      },
+    });
     if (sessionRegistry.getTargetProjectId() === projectId) {
       sessionRegistry.setTargetProjectId(null);
     }
@@ -1081,9 +1244,21 @@ export async function createProjectSession(
   }
   await sessionRegistry.setActiveSession(session);
 
+  const loadDurationMs = Math.max(0, performance.now() - projectLoadStartedAt);
+  const detail = {
+    durationMs: Math.round(loadDurationMs),
+    stagesMs: session.initializationTimingsMs,
+  };
   lifecycleMonitor.record("PROJECT_LOAD_COMPLETE", {
     projectId,
     sessionId: session.sessionId,
+    detail,
+  });
+  perfLogService.enqueue({
+    kind: "project-session-load",
+    sessionId: session.sessionId,
+    timestampEpochMs: Date.now(),
+    payload: { stage: "complete", ...detail },
   });
 
   return session;
