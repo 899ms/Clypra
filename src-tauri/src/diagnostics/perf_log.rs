@@ -270,6 +270,20 @@ pub async fn upload_perf_log_session(
     api_base_url: String,
     api_key: String,
 ) -> Result<(), String> {
+    // Guard against the race where the file was deleted or renamed to .uploaded
+    // between the directory scan in upload_pending_perf_logs and this read.
+    // This is especially common on Windows where antivirus or OS file indexing
+    // can transiently lock/delete files. Treat a missing file as already handled.
+    let path = std::path::Path::new(&file_path);
+    if !path.exists() {
+        let uploaded = format!("{file_path}.uploaded");
+        if std::path::Path::new(&uploaded).exists() {
+            return Ok(()); // already uploaded and renamed
+        }
+        // File is simply gone — nothing to upload, not an error.
+        return Ok(());
+    }
+
     // Read and parse the NDJSON file.
     let raw = fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read perf log '{file_path}': {e}"))?;
@@ -423,7 +437,16 @@ pub async fn upload_pending_perf_logs(
                 uploaded_count += 1;
             }
             Err(e) => {
-                eprintln!("[perf_log] Pending session upload failed for '{file_path}': {e}");
+                // Only log genuinely unexpected errors. Missing-file errors are
+                // normal on Windows — the file may have been deleted or renamed
+                // by the OS, antivirus, or a concurrent purge between the
+                // directory scan and the upload attempt.
+                let is_not_found = e.contains("cannot find the file")
+                    || e.contains("No such file")
+                    || e.contains("os error 2");
+                if !is_not_found {
+                    eprintln!("[perf_log] Pending session upload failed for '{file_path}': {e}");
+                }
             }
         }
     }
