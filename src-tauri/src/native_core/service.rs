@@ -350,6 +350,7 @@ mod tests {
             mode: Some(PreviewMode::Playback),
             quality: None,
             strategy: None,
+            transfer_path: None,
             cancelled: false,
             stale: false,
             dropped: false,

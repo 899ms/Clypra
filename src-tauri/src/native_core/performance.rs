@@ -90,6 +90,11 @@ pub struct PerformanceSample {
     pub quality: Option<String>,
     #[serde(default)]
     pub strategy: Option<String>,
+    /// Transfer path for this frame: `dxgi-zero-copy`, `cpu-nv12`,
+    /// `cpu-rgba`, `mixed`, or `gpu-raster`. This is separate from the
+    /// scheduling strategy so fleet analysis can isolate copy pressure.
+    #[serde(default)]
+    pub transfer_path: Option<String>,
     #[serde(default)]
     pub cancelled: bool,
     #[serde(default)]
@@ -329,6 +334,7 @@ mod tests {
             mode: None,
             quality: None,
             strategy: None,
+            transfer_path: None,
             cancelled: false,
             stale: false,
             dropped: false,

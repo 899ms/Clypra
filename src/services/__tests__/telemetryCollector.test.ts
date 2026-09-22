@@ -74,6 +74,45 @@ describe("Production Telemetry Collector in Clypra Desktop", () => {
     expect(telemetryCollector.getQueueLength()).toBe(1);
   });
 
+  it("preserves the native frame transfer path in render telemetry", () => {
+    const events: any[] = [];
+    const originalEnqueue = (telemetryCollector as any).enqueueEvent.bind(
+      telemetryCollector,
+    );
+    const enqueueSpy = vi
+      .spyOn(telemetryCollector as any, "enqueueEvent")
+      .mockImplementation((event: unknown) => {
+        events.push(event);
+        originalEnqueue(event);
+      });
+
+    try {
+      telemetryCollector.recordNativeSyncSnapshot(
+        null,
+        {
+          lastSample: {
+            decodeTimeUs: 4_000,
+            composeTimeUs: 3_000,
+            readbackTimeUs: 0,
+            presentTimeUs: 500,
+            totalTimeUs: 25_000,
+            transferPath: "dxgi-zero-copy",
+          },
+        },
+        {},
+        {
+          view: "native",
+          surface: "native-surface",
+          runtimeEnvironment: "development",
+        },
+      );
+
+      expect(events[0].workload.renderPath).toBe("dxgi-zero-copy");
+    } finally {
+      enqueueSpy.mockRestore();
+    }
+  });
+
   it("records a cold seek span without inventing stage bottlenecks", () => {
     const events: any[] = [];
     const originalEnqueue = (telemetryCollector as any).enqueueEvent.bind(

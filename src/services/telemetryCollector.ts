@@ -411,6 +411,7 @@ export interface TelemetryEvent {
     stageTimings: TelemetryStageTimings;
     /** Unattributed totals must not be used to name a decode/upload/compose bottleneck. */
     stageTimingsSource?: TelemetryStageTimingsSource;
+    renderPath?: string;
     capabilityPolicy?: "full" | "reduced" | "proxy" | string;
     capabilityProbeUs?: number;
     renderPercentiles?: TelemetryMetricPercentiles;
@@ -526,6 +527,7 @@ export interface TelemetryRenderOptions {
   capabilityProbeUs?: number;
   interaction?: TelemetryInteraction;
   stageTimingsSource?: TelemetryStageTimingsSource;
+  renderPath?: string;
   /** Native samples are stage evidence for a frontend frame, not a second frame. */
   includeInRollup?: boolean;
 }
@@ -1732,6 +1734,7 @@ class TelemetryCollector {
         cacheHitRatio: 0.9,
         stageTimings: timings,
         stageTimingsSource: options.stageTimingsSource ?? "measured",
+        renderPath: options.renderPath,
         capabilityPolicy: options.capabilityPolicy,
         capabilityProbeUs: options.capabilityProbeUs,
       },
@@ -2799,6 +2802,7 @@ class TelemetryCollector {
         demuxWaitUs?: number;
         containerFormat?: string;
         isHardwareAccelerated?: boolean;
+        transferPath?: string;
       } | null;
       windowDroppedFrames?: number;
       windowStaleFrames?: number;
@@ -2881,6 +2885,7 @@ class TelemetryCollector {
         cacheHit: last.cacheHit,
         capabilityPolicy: capabilityPolicyOverride ?? last.capabilityPolicy,
         capabilityProbeUs: last.capabilityProbeUs,
+        renderPath: last.transferPath,
         // The native session is the authoritative frame stream for the Native
         // path. Frontend spans are used for WebView and compatibility fallback
         // only, so Native samples can feed the session rollup without being

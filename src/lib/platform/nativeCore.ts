@@ -122,6 +122,8 @@ export interface NativePerformanceSample {
   mode?: NativePreviewMode;
   quality?: NativeQualityTier;
   strategy?: "HOT" | "WARM" | "COLD";
+  /** Actual decoded-frame transfer path, not the scheduling/cache strategy. */
+  transferPath?: "dxgi-zero-copy" | "cpu-nv12" | "cpu-rgba" | "mixed" | "gpu-raster" | string;
   cancelled?: boolean;
   stale?: boolean;
   dropped?: boolean;
