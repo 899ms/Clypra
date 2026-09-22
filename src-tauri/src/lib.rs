@@ -117,10 +117,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             diagnostics::initialize(app.handle());
-            // macOS uses the real traffic lights and native window corner
-            // treatment with an overlay title bar. Windows/Linux switch to
-            // borderless mode so the shared custom controls stay integrated
-            // with the app bar.
+            // Use the operating system's window chrome everywhere. Besides
+            // restoring native close/minimize/maximize behavior, this keeps
+            // title-bar controls outside the editor layout so they cannot
+            // displace toolbar actions when a window changes state.
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 window
@@ -128,13 +128,6 @@ pub fn run() {
                     .map_err(|error| {
                         format!("failed to enable macOS title bar overlay: {error}")
                     })?;
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            if let Some(window) = app.get_webview_window("main") {
-                window
-                    .set_decorations(false)
-                    .map_err(|error| format!("failed to enable custom title bar: {error}"))?;
             }
 
             // Build desktop application menu with event-driven Undo/Redo.

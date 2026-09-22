@@ -15,7 +15,7 @@ import { useProjectStore } from "@/store/projectStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { platform } from "@/core/platform";
-import { isMacOSPlatform, WindowControls, WindowDragRegion } from "../ui/WindowControls";
+import { isMacOSPlatform } from "@/lib/platform/windowPlatform";
 import { LayoutPresetMenu } from "./layout/LayoutPresetMenu";
 import { hideNativeSurfaceWhenIdle } from "@/core/runtime/nativeSurfaceLifecycle";
 import { useClickOutside } from "@/hooks";
@@ -68,10 +68,7 @@ const TopBarComponent: React.FC<TopBarProps> = ({ onRequestClose }) => {
 
   return (
     <>
-      {/* The drag region is intentionally separate from every interactive control. */}
       <div className="h-8 shrink-0 flex items-center gap-2 px-1 select-none">
-        {platform.type === "tauri" && !isMacNativeWindow && <WindowControls className="mr-1" />}
-
         <div className={`flex items-center gap-2 shrink-0 ${isMacNativeWindow ? "pl-[76px]" : "pl-1"}`} style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <Button variant="ghost" size="icon-sm" onClick={handleClose} title="Back to Home" style={{ WebkitAppRegion: "no-drag", cursor: "pointer" } as React.CSSProperties}>
             <Home className="w-4 h-4" />
@@ -83,7 +80,12 @@ const TopBarComponent: React.FC<TopBarProps> = ({ onRequestClose }) => {
           {projectName}
         </span>
 
-        <WindowDragRegion />
+        <div
+          className="min-w-0 flex-1 self-stretch"
+          aria-hidden="true"
+          data-tauri-drag-region
+          style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        />
 
         {/* Right side - Panel Toggles, Layout Switcher, Settings & Export */}
         <div className="flex items-center gap-1 shrink-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
@@ -217,4 +219,3 @@ const TopBarComponent: React.FC<TopBarProps> = ({ onRequestClose }) => {
 };
 
 export const TopBar = React.memo(TopBarComponent);
-
