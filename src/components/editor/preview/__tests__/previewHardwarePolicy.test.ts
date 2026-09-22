@@ -20,17 +20,17 @@ describe("preview hardware policy", () => {
     });
   });
 
-  it("uses a 1080p half-quality preview for 4K Intel UHD 630", () => {
+  it("uses a proxy-sized preview for 4K Intel UHD 630", () => {
     const policy = selectPreviewHardwarePolicy(
       "Intel(R) UHD Graphics 630",
       3840,
       2160,
     );
-    expect(policy.capabilityPolicy).toBe("reduced");
+    expect(policy.capabilityPolicy).toBe("proxy");
     expect(applyPreviewHardwarePolicy(3840, 2160, "full", policy)).toEqual({
-      width: 1920,
-      height: 1080,
-      quality: "half",
+      width: 1280,
+      height: 720,
+      quality: "proxy",
     });
   });
 
@@ -43,9 +43,9 @@ describe("preview hardware policy", () => {
     ).toEqual({ capabilityPolicy: "full" });
   });
 
-  it("steps down modern integrated Intel only after sustained budget misses", () => {
+  it("steps down modern integrated Intel after a bounded miss burst", () => {
     const controller = new PreviewPerformancePolicyController();
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 12; index += 1) {
       controller.observe({ totalTimeUs: index < 3 ? 20_000 : 10_000, dropped: false });
     }
     expect(
