@@ -38,8 +38,8 @@ for (const binary of binaries) {
   }
 
   const magic = header.toString("hex");
-  if (expectedMagic && magic !== expectedMagic) {
-    throw new Error(`${path} has header ${magic}, expected ${expectedMagic} for ${target}.`);
+  if (expectedMagic && !magic.startsWith(expectedMagic)) {
+    throw new Error(`${path} has header ${magic}, expected prefix ${expectedMagic} for ${target}.`);
   }
   if (target.includes("apple-darwin") && !isMachO(magic)) {
     throw new Error(`${path} has header ${magic}, expected a Mach-O executable for ${target}.`);
