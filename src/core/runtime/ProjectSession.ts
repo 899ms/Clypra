@@ -97,7 +97,10 @@ type SessionCloseStage =
 
 type SessionCloseTimings = Partial<Record<SessionCloseStage, number>>;
 
-const CRITICAL_NATIVE_RASTER_BOUNDARIES = 3;
+// The first boundary is the only one that can affect the initially visible
+// frame. Every additional boundary grows project-open time on older Intel
+// systems because it serializes canvas rasterization and native texture upload.
+const CRITICAL_NATIVE_RASTER_BOUNDARIES = 1;
 
 /**
  * Project Session State
@@ -156,6 +159,7 @@ export class ProjectSession {
   private _rafIds = new Set<number>();
   private _nativeRasterIdlePrewarmTimer: ReturnType<typeof setTimeout> | null =
     null;
+  private _fontIdlePrewarmTimer: ReturnType<typeof setTimeout> | null = null;
   private _nativeRasterPrewarmInFlight: Promise<boolean> | null = null;
   private _initializationTimingsMs: SessionLoadTimings = {};
   private _disposalTimingsMs: SessionCloseTimings = {};
@@ -426,14 +430,10 @@ export class ProjectSession {
           await import("@/core/render/nativeRasterBridge");
         this._nativeRasterBridge = new NativeRasterBridge();
 
-        // ── Project-scoped font prewarm ──────────────────────────────────
-        // Extract every font family used by text clips in this project and
-        // warm both the browser (document.fonts) and the native Rust registry
-        // in parallel. This ensures the subsequent _prewarmNativeRasterAssets
-        // rasterization loop hits the fast-path cache and fontWaitMs = 0ms.
-        await this._measureInitializationStage("fonts", () =>
-          this._prewarmProjectFonts(),
-        );
+        // Warming every project's font up front can take seconds on older
+        // Windows hardware. The first raster boundary still registers the
+        // font it needs; all other fonts warm once the editor is usable.
+        this._scheduleDeferredProjectFontPrewarm();
 
         // Only the first visible boundaries are part of the open barrier.
         // Warming every future text/image boundary made project-open cost grow
@@ -549,6 +549,10 @@ export class ProjectSession {
       if (this._nativeRasterIdlePrewarmTimer !== null) {
         clearTimeout(this._nativeRasterIdlePrewarmTimer);
         this._nativeRasterIdlePrewarmTimer = null;
+      }
+      if (this._fontIdlePrewarmTimer !== null) {
+        clearTimeout(this._fontIdlePrewarmTimer);
+        this._fontIdlePrewarmTimer = null;
       }
       this._cancelRAFLoops();
       this._playback = null;
@@ -992,6 +996,22 @@ export class ProjectSession {
   }
 
   private _deferredNativeRasterStartIndex: number | null = null;
+
+  private _scheduleDeferredProjectFontPrewarm(): void {
+    if (this._fontIdlePrewarmTimer !== null) return;
+    this._fontIdlePrewarmTimer = setTimeout(() => {
+      this._fontIdlePrewarmTimer = null;
+      if (this._state !== "active") return;
+      void this._measureInitializationStage("fonts", () =>
+        this._prewarmProjectFonts(),
+      ).catch((error) => {
+        console.warn("[ProjectSession] Deferred font prewarm failed", {
+          projectId: this.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 250);
+  }
 
   private _scheduleDeferredNativeRasterPrewarm(startIndex: number): void {
     this._deferredNativeRasterStartIndex = startIndex;

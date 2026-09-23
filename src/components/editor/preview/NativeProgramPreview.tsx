@@ -211,6 +211,19 @@ function getReusableCanvasImageData(
  * DPR would otherwise make every RGBA frame expensive.
  */
 const WEBVIEW_MAX_OUTPUT_DIMENSION = 960;
+const LOW_POWER_WEBVIEW_MAX_OUTPUT_DIMENSION = 720;
+
+function getWebViewReadbackLimit(): number {
+  // A full RGBA frame crosses the Rust/WebView boundary on this path. Four or
+  // fewer logical cores is a reliable low-power signal on the affected Intel
+  // laptops; reducing the proxy from 960px to 720px cuts transfer bytes by
+  // 44% while retaining a useful interactive preview.
+  return typeof navigator !== "undefined" &&
+    typeof navigator.hardwareConcurrency === "number" &&
+    navigator.hardwareConcurrency <= 4
+    ? LOW_POWER_WEBVIEW_MAX_OUTPUT_DIMENSION
+    : WEBVIEW_MAX_OUTPUT_DIMENSION;
+}
 
 function capWebViewRenderTarget(target: {
   width: number;
@@ -218,8 +231,9 @@ function capWebViewRenderTarget(target: {
   quality: NativeFrameRequest["quality"];
 }): typeof target {
   const largest = Math.max(target.width, target.height);
-  if (largest <= WEBVIEW_MAX_OUTPUT_DIMENSION) return target;
-  const scale = WEBVIEW_MAX_OUTPUT_DIMENSION / largest;
+  const limit = getWebViewReadbackLimit();
+  if (largest <= limit) return target;
+  const scale = limit / largest;
   return {
     ...target,
     width: Math.max(1, Math.floor(target.width * scale)),
