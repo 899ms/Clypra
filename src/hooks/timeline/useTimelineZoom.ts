@@ -11,6 +11,7 @@ import {
   getTimelineViewportEndForDuration,
 } from "@/lib/timeline/timelineViewport";
 import { TimelineZoomSpring, type ZoomAnchor } from "./useTimelineZoomSpring";
+import { filmstripTelemetry } from "@/lib/filmstrip/filmstripTelemetry";
 
 const WHEEL_ZOOM_SENSITIVITY = 0.006;
 const WHEEL_ZOOM_SPEED_MULTIPLIER = 2.5;
@@ -44,6 +45,18 @@ export function useTimelineZoom(
     let pendingDy = 0;
     let pendingClientX = 0;
     let wheelRafId = 0;
+    let zoomSettleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const noteZoomInput = () => {
+      filmstripTelemetry.beginZoomGesture();
+      if (zoomSettleTimer) clearTimeout(zoomSettleTimer);
+      // The spring converges in roughly 120ms. This leaves enough room for its
+      // final frames while grouping a continuous wheel/trackpad gesture once.
+      zoomSettleTimer = setTimeout(() => {
+        zoomSettleTimer = null;
+        filmstripTelemetry.endZoomGesture();
+      }, 300);
+    };
 
     const flushWheel = () => {
       wheelRafId = 0;
@@ -101,6 +114,7 @@ export function useTimelineZoom(
     const onWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
+      noteZoomInput();
 
       pendingDy += normalizeWheelDeltaY(e, container.clientHeight);
       pendingClientX = e.clientX;
@@ -220,6 +234,8 @@ export function useTimelineZoom(
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
       if (wheelRafId) cancelAnimationFrame(wheelRafId);
+      if (zoomSettleTimer) clearTimeout(zoomSettleTimer);
+      filmstripTelemetry.endZoomGesture();
       spring.dispose();
     };
   }, [containerRef, enabled]);

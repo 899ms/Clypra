@@ -56,6 +56,27 @@ describe("FilmstripTelemetryRecorder", () => {
     expect(summary.freshDecodes).toBe(1);
     expect(summary.hitRatePercentage).toBe(66.7);
     expect(summary.avgTimeToVisibleMs).toBeGreaterThan(0);
+    expect(summary.dominantBottleneck).toBe("native-request");
+  });
+
+  it("reports zoom tiles and presentation paint separately", () => {
+    recorder.record({
+      tileKey: "l2:1000",
+      source: "fresh_decode",
+      cacheLookupMs: 0,
+      ipcTransferMs: 4,
+      decodeMs: 0,
+      bitmapCreationMs: 1,
+      rasterPaintMs: 0,
+      totalTimeToVisibleMs: 5,
+      requestReason: "zoom",
+    });
+    recorder.recordPaintCommit(12);
+
+    const summary = recorder.getSummary();
+    expect(summary.zoomTiles).toBe(1);
+    expect(summary.avgPaintMs).toBe(12);
+    expect(summary.dominantBottleneck).toBe("paint");
   });
 
   it("evicts oldest records when capacity is exceeded", () => {
