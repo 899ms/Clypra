@@ -32,6 +32,7 @@ import { FilmstripTileCache } from "../filmstrip/FilmstripTileCache";
 import { generateViewportTileAddresses, FILMSTRIP_DENSITY_TIERS, type FilmstripTileAddress } from "../filmstrip/filmstripTiers";
 import { timeToPixel, pixelToTime } from "../timeline/timelineViewport";
 import { recordCacheApply } from "./filmstripMetrics";
+import { filmstripTelemetry, type FilmstripSourceType } from "../filmstrip/filmstripTelemetry";
 
 
 interface FilmstripCacheEntry {
@@ -75,6 +76,13 @@ interface PendingArtifact {
 
 function isValidArtifact(artifact: TransportArtifact): boolean {
   return !!artifact.bitmap && artifact.bitmap.width > 0 && artifact.bitmap.height > 0;
+}
+
+function sourceToTelemetrySource(source?: string): FilmstripSourceType {
+  if (/disk|atlas/i.test(source ?? "")) return "disk_atlas";
+  if (/memory|cache/i.test(source ?? "")) return "memory_tier";
+  if (/fallback|pyramid/i.test(source ?? "")) return "pyramid_fallback";
+  return "fresh_decode";
 }
 
 interface ViewportFilmstripOptions {
@@ -580,6 +588,7 @@ export class FilmstripCache {
     onUpdate: (artifacts: readonly TransportArtifact[]) => void;
   }): void {
     const { clipId, epochId, onUpdate, videoPath, spatialTier, duration } = options;
+    const requestedAt = performance.now();
     this._cancelPrefetch(clipId);
 
     // Generate tile addresses using FIXED grid (not dynamic timestamps)
@@ -612,6 +621,8 @@ export class FilmstripCache {
 
     let keptArtifacts: TransportArtifact[] = [];
     const existing = this.entries.get(clipId);
+    const requestReason: "viewport" | "zoom" =
+      existing && existing.spatialTier !== spatialTier ? "zoom" : "viewport";
     if (existing) {
       if (existing.epochId !== epochId) {
         // Epoch changed: cancel the old request, clean up clip-level entry, but keep matching artifacts and do NOT invalidate global tile cache!
@@ -687,6 +698,7 @@ export class FilmstripCache {
         const cached = this.tileCache.getTile(addr);
         if (cached && isValidArtifact(cached.artifact)) {
           keptArtifacts.push(cached.artifact);
+          this._recordTileTelemetry(cached.artifact, "memory_tier", requestedAt, requestReason);
         } else {
           const fallback = this.tileCache.findBestFallback(
             clipId,
@@ -698,6 +710,7 @@ export class FilmstripCache {
           );
           if (fallback && isValidArtifact(fallback.artifact)) {
             keptArtifacts.push(fallback.artifact);
+            this._recordTileTelemetry(fallback.artifact, "pyramid_fallback", requestedAt, requestReason);
           }
         }
       }
@@ -815,6 +828,12 @@ export class FilmstripCache {
       }
 
       arrivedCount++;
+      this._recordTileTelemetry(
+        artifact,
+        sourceToTelemetrySource(artifact.source),
+        requestedAt,
+        requestReason,
+      );
 
       // Find the tile address this artifact belongs to
       const matchingAddr = currentEntry.tileAddresses.find(
@@ -895,6 +914,28 @@ export class FilmstripCache {
       cancelVisible?.();
       cancelOverscan?.();
     };
+  }
+
+  private _recordTileTelemetry(
+    artifact: TransportArtifact,
+    source: FilmstripSourceType,
+    requestedAt: number,
+    requestReason: "viewport" | "zoom",
+  ): void {
+    const nativeRequestMs = Math.max(0, artifact.nativeRequestMs ?? performance.now() - requestedAt);
+    const bitmapCreationMs = Math.max(0, artifact.bitmapCreationMs ?? 0);
+    filmstripTelemetry.record({
+      // No project ID or path: rendering coordinates only.
+      tileKey: `${artifact.spatialTier}:${Math.round(artifact.timestampMs)}`,
+      source,
+      cacheLookupMs: source === "memory_tier" ? Math.max(0, performance.now() - requestedAt) : 0,
+      ipcTransferMs: source === "fresh_decode" ? nativeRequestMs : 0,
+      decodeMs: 0,
+      bitmapCreationMs,
+      rasterPaintMs: 0,
+      totalTimeToVisibleMs: nativeRequestMs + bitmapCreationMs,
+      requestReason,
+    });
   }
 
   /**

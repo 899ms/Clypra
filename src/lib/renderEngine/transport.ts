@@ -92,6 +92,10 @@ export interface TransportArtifact {
   epochId: RenderEpochId;
   // Optional source identifier for debugging / test assertions
   source?: string;
+  /** Native request latency before the RGBA payload reaches the WebView. */
+  nativeRequestMs?: number;
+  /** Browser-side RGBA → ImageBitmap conversion latency. */
+  bitmapCreationMs?: number;
 }
 
 /** Check if a TransportArtifact has a valid non-empty bitmap. */
@@ -258,6 +262,7 @@ export function requestNativeFilmstripArtifacts(opts: RequestNativeFilmstripArti
         .then(async (rgba) => {
           const decodeMs = performance.now() - tileStart;
           if (cancelled || !isEpochStillValid(epochId, clipId)) return;
+          const bitmapStartedAt = performance.now();
           const bitmap = await rgbaToImageBitmap(rgba, width, height, `${clipId}:${timestampMs}`);
           if (cancelled || !isEpochStillValid(epochId, clipId)) {
             bitmap.close();
@@ -273,6 +278,8 @@ export function requestNativeFilmstripArtifacts(opts: RequestNativeFilmstripArti
             timestampMs,
             epochId,
             source: "native-core",
+            nativeRequestMs: decodeMs,
+            bitmapCreationMs: performance.now() - bitmapStartedAt,
           });
         })
         .catch((error) => {
@@ -785,6 +792,7 @@ export function requestBatchRenderArtifacts(opts: RequestBatchRenderArtifactsOpt
     artifactCount++;
 
     try {
+      const bitmapStartedAt = performance.now();
       const bitmap = await rgbaToImageBitmap(raw.rgba_data, raw.width, raw.height);
       if (cancelled || !isEpochStillValid(epochId, clipId)) {
         bitmap.close();
@@ -799,6 +807,9 @@ export function requestBatchRenderArtifacts(opts: RequestBatchRenderArtifactsOpt
         height: raw.height,
         timestampMs: raw.timestamp_ms,
         epochId,
+        source: raw.source,
+        nativeRequestMs: performance.now() - dispatchStartTime,
+        bitmapCreationMs: performance.now() - bitmapStartedAt,
       });
     } catch (err) {
       onError?.(err);

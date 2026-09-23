@@ -41,6 +41,7 @@ import {
   startMetricsFlushLoop,
   recordPaintCommit,
 } from "@/lib/renderEngine/filmstripMetrics";
+import { filmstripTelemetry } from "@/lib/filmstrip/filmstripTelemetry";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|tiff?|heic|heif|avif)$/i;
 
@@ -414,7 +415,9 @@ export function ClipFilmstripInner({
       const t0 = typeof performance !== "undefined" ? performance.now() : 0;
       surface.drawFilmstrip(currentEpochArtifacts, layout);
       if (t0 > 0) {
-        recordPaintCommit(spatialTier, performance.now() - t0);
+        const paintMs = performance.now() - t0;
+        recordPaintCommit(spatialTier, paintMs);
+        filmstripTelemetry.recordPaintCommit(paintMs);
       }
       if (isReadyToCommit) {
         const previous = committedFilmstripRef.current;
