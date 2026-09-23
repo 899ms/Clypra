@@ -20,6 +20,8 @@ export interface FilmstripTileTelemetry {
   bitmapCreationMs: number;
   rasterPaintMs: number;
   totalTimeToVisibleMs: number;
+  /** Whether this tile was requested after a spatial-tier change. */
+  requestReason?: "viewport" | "zoom";
   recordedAt: number;
 }
 
@@ -35,12 +37,16 @@ export interface FilmstripSessionSummary {
   avgBitmapMs: number;
   avgPaintMs: number;
   avgTimeToVisibleMs: number;
+  p95TimeToVisibleMs: number;
+  zoomTiles: number;
+  dominantBottleneck: "native-request" | "bitmap" | "paint" | "cache-lookup" | "none";
 }
 
 import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 
 export class FilmstripTelemetryRecorder {
   private records: FilmstripTileTelemetry[] = [];
+  private paintTimesMs: number[] = [];
   private readonly maxRecords: number;
 
   constructor(maxRecords = 1000) {
@@ -80,11 +86,19 @@ export class FilmstripTelemetryRecorder {
     return this.records.length;
   }
 
+  /** Records a batched canvas/WebGL filmstrip presentation commit. */
+  recordPaintCommit(durationMs: number): void {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+    if (this.paintTimesMs.length >= this.maxRecords) this.paintTimesMs.shift();
+    this.paintTimesMs.push(durationMs);
+  }
+
   /**
    * Clear all recorded telemetry records.
    */
   clear(): void {
     this.records = [];
+    this.paintTimesMs = [];
   }
 
   /**
@@ -105,6 +119,9 @@ export class FilmstripTelemetryRecorder {
         avgBitmapMs: 0,
         avgPaintMs: 0,
         avgTimeToVisibleMs: 0,
+        p95TimeToVisibleMs: 0,
+        zoomTiles: 0,
+        dominantBottleneck: "none",
       };
     }
 
@@ -118,6 +135,9 @@ export class FilmstripTelemetryRecorder {
     let sumBitmap = 0;
     let sumPaint = 0;
     let sumTotal = 0;
+    let zoomTiles = 0;
+    const totals: number[] = [];
+    const stages = { nativeRequest: 0, bitmap: 0, paint: 0, cacheLookup: 0 };
 
     for (const r of this.records) {
       switch (r.source) {
@@ -139,8 +159,15 @@ export class FilmstripTelemetryRecorder {
       sumBitmap += r.bitmapCreationMs;
       sumPaint += r.rasterPaintMs;
       sumTotal += r.totalTimeToVisibleMs;
+      totals.push(r.totalTimeToVisibleMs);
+      if (r.requestReason === "zoom") zoomTiles++;
+      stages.nativeRequest += r.ipcTransferMs + r.decodeMs;
+      stages.bitmap += r.bitmapCreationMs;
+      stages.paint += r.rasterPaintMs;
+      stages.cacheLookup += r.cacheLookupMs;
     }
 
+    const paintTotal = this.paintTimesMs.reduce((total, value) => total + value, 0);
     const cacheHits = memoryHits + diskAtlasHits;
     const hitRatePercentage = total > 0 ? (cacheHits / total) * 100 : 0;
 
@@ -154,10 +181,30 @@ export class FilmstripTelemetryRecorder {
       avgLookupMs: Math.round((sumLookup / total) * 100) / 100,
       avgIpcMs: Math.round((sumIpc / total) * 100) / 100,
       avgBitmapMs: Math.round((sumBitmap / total) * 100) / 100,
-      avgPaintMs: Math.round((sumPaint / total) * 100) / 100,
+      avgPaintMs: Math.round(((paintTotal / Math.max(1, this.paintTimesMs.length)) || (sumPaint / total)) * 100) / 100,
       avgTimeToVisibleMs: Math.round((sumTotal / total) * 100) / 100,
+      p95TimeToVisibleMs: Math.round(percentile(totals, 0.95) * 100) / 100,
+      zoomTiles,
+      dominantBottleneck: dominantStage({ ...stages, paint: stages.paint + paintTotal }),
     };
   }
+}
+
+function percentile(values: readonly number[], fraction: number): number {
+  const ordered = [...values].sort((a, b) => a - b);
+  return ordered.length === 0 ? 0 : ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * fraction) - 1)];
+}
+
+function dominantStage(stages: Record<"nativeRequest" | "bitmap" | "paint" | "cacheLookup", number>): FilmstripSessionSummary["dominantBottleneck"] {
+  const winner = (Object.entries(stages) as Array<[keyof typeof stages, number]>).sort(([, a], [, b]) => b - a)[0];
+  if (!winner || winner[1] <= 0) return "none";
+  const labels: Record<keyof typeof stages, FilmstripSessionSummary["dominantBottleneck"]> = {
+    nativeRequest: "native-request",
+    bitmap: "bitmap",
+    paint: "paint",
+    cacheLookup: "cache-lookup",
+  };
+  return labels[winner[0]];
 }
 
 /** Global singleton telemetry instance for filmstrip pipeline */
