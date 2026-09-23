@@ -890,9 +890,9 @@ export const NativeProgramPreview: React.FC = () => {
               clearInterval(pollTimer);
               pollTimer = null;
             }
-            setNativeSurfaceError(
-              `GPU initialization failed: ${status.failureReason || "Unknown failure"}`,
-            );
+            const message = `GPU initialization failed: ${status.failureReason || "Unknown failure"}`;
+            nativeSurfaceErrorRef.current = message;
+            setNativeSurfaceError(message);
           }
         })
         .catch(() => {
@@ -922,7 +922,9 @@ export const NativeProgramPreview: React.FC = () => {
     void listenForGpuFailed((error) => {
       if (!disposed) {
         // Surface setup effect will gate and show a diagnostic.
-        setNativeSurfaceError(`GPU initialization failed: ${error}`);
+        const message = `GPU initialization failed: ${error}`;
+        nativeSurfaceErrorRef.current = message;
+        setNativeSurfaceError(message);
         if (pollTimer) {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -2861,6 +2863,21 @@ export const NativeProgramPreview: React.FC = () => {
         const qualificationForcesWebView =
           qualification.status === "running" &&
           qualification.path === "webview";
+        // Do not make the CPU readback path race native-surface startup. On
+        // affected macOS sessions the temporary fallback spent ~700ms moving a
+        // full RGBA frame through IPC, even though the retained surface became
+        // usable moments later. Keep the neutral/last canvas frame until that
+        // transition completes; explicit GPU errors and qualification runs
+        // remain eligible for the compatibility renderer.
+        const deferWebViewFallbackForNativeStartup =
+          isTauriRuntime() &&
+          isPlaying &&
+          Boolean(nativePlaybackRequest) &&
+          nativeAudioClockReady &&
+          !nativeSurfaceUsable &&
+          !nativeSurfaceErrorNow &&
+          !qualificationForcesWebView &&
+          nativeUnsupportedBlockers.length === 0;
         const nativeSurfaceOwnsCurrentFrame =
           nativeSurfaceShown &&
           isPlaying &&
@@ -2878,7 +2895,8 @@ export const NativeProgramPreview: React.FC = () => {
         const nativeReadbackFallbackPath =
           isPlaying &&
           nativePlaybackPath &&
-          (!nativeSurfaceUsable || qualificationForcesWebView);
+          (!nativeSurfaceUsable || qualificationForcesWebView) &&
+          !deferWebViewFallbackForNativeStartup;
         const telemetryScenario =
           qualification.status === "running"
             ? "qualification"
@@ -3552,7 +3570,8 @@ export const NativeProgramPreview: React.FC = () => {
           needsRender &&
           !nativeSurfaceShown &&
           !nativeOnlySceneBlocked &&
-          !nativeDirectSurfacePath
+          !nativeDirectSurfacePath &&
+          !deferWebViewFallbackForNativeStartup
         ) {
           try {
             // Hold the previous native image while a new seek is decoding. It
