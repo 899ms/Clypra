@@ -39,6 +39,10 @@ export interface FilmstripSessionSummary {
   avgTimeToVisibleMs: number;
   p95TimeToVisibleMs: number;
   zoomTiles: number;
+  zoomGestures: number;
+  zoomInputEvents: number;
+  zoomDurationMs: number;
+  zoomTierTransitions: number;
   dominantBottleneck: "native-request" | "bitmap" | "paint" | "cache-lookup" | "none";
 }
 
@@ -47,6 +51,12 @@ import { workerPerfCollector } from "@/core/monitoring/WorkerPerfCollector";
 export class FilmstripTelemetryRecorder {
   private records: FilmstripTileTelemetry[] = [];
   private paintTimesMs: number[] = [];
+  private completedZoomGestures: Array<{
+    durationMs: number;
+    inputEvents: number;
+  }> = [];
+  private activeZoomGesture: { startedAt: number; inputEvents: number } | null = null;
+  private zoomTierTransitions = 0;
   private readonly maxRecords: number;
 
   constructor(maxRecords = 1000) {
@@ -93,12 +103,46 @@ export class FilmstripTelemetryRecorder {
     this.paintTimesMs.push(durationMs);
   }
 
+  /** Starts or extends one wheel/trackpad zoom gesture; never records raw wheel events. */
+  beginZoomGesture(): void {
+    if (this.activeZoomGesture) {
+      this.activeZoomGesture.inputEvents++;
+      return;
+    }
+    this.activeZoomGesture = { startedAt: performance.now(), inputEvents: 1 };
+  }
+
+  /** Completes the compact gesture summary once input and spring motion settle. */
+  endZoomGesture(): void {
+    const gesture = this.activeZoomGesture;
+    if (!gesture) return;
+    this.activeZoomGesture = null;
+    if (this.completedZoomGestures.length >= this.maxRecords) {
+      this.completedZoomGestures.shift();
+    }
+    this.completedZoomGestures.push({
+      durationMs: Math.max(0, performance.now() - gesture.startedAt),
+      inputEvents: gesture.inputEvents,
+    });
+  }
+
+  isZoomGestureActive(): boolean {
+    return this.activeZoomGesture !== null;
+  }
+
+  recordZoomTierTransition(): void {
+    if (this.activeZoomGesture) this.zoomTierTransitions++;
+  }
+
   /**
    * Clear all recorded telemetry records.
    */
   clear(): void {
     this.records = [];
     this.paintTimesMs = [];
+    this.completedZoomGestures = [];
+    this.activeZoomGesture = null;
+    this.zoomTierTransitions = 0;
   }
 
   /**
@@ -121,6 +165,10 @@ export class FilmstripTelemetryRecorder {
         avgTimeToVisibleMs: 0,
         p95TimeToVisibleMs: 0,
         zoomTiles: 0,
+        zoomGestures: 0,
+        zoomInputEvents: 0,
+        zoomDurationMs: 0,
+        zoomTierTransitions: 0,
         dominantBottleneck: "none",
       };
     }
@@ -168,6 +216,15 @@ export class FilmstripTelemetryRecorder {
     }
 
     const paintTotal = this.paintTimesMs.reduce((total, value) => total + value, 0);
+    const zoomGestures = this.completedZoomGestures.length;
+    const zoomInputEvents = this.completedZoomGestures.reduce(
+      (total, gesture) => total + gesture.inputEvents,
+      0,
+    );
+    const zoomDurationMs = this.completedZoomGestures.reduce(
+      (total, gesture) => total + gesture.durationMs,
+      0,
+    );
     const cacheHits = memoryHits + diskAtlasHits;
     const hitRatePercentage = total > 0 ? (cacheHits / total) * 100 : 0;
 
@@ -185,6 +242,10 @@ export class FilmstripTelemetryRecorder {
       avgTimeToVisibleMs: Math.round((sumTotal / total) * 100) / 100,
       p95TimeToVisibleMs: Math.round(percentile(totals, 0.95) * 100) / 100,
       zoomTiles,
+      zoomGestures,
+      zoomInputEvents,
+      zoomDurationMs: Math.round(zoomDurationMs),
+      zoomTierTransitions: this.zoomTierTransitions,
       dominantBottleneck: dominantStage({ ...stages, paint: stages.paint + paintTotal }),
     };
   }

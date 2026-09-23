@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SpatialTier, VelocityState } from "../types";
 import type { RenderEpochId } from "../types";
+import { filmstripTelemetry } from "../../filmstrip/filmstripTelemetry";
 
 // Mock the native FrameRequest transport before importing FilmstripCache.
 const mockRequestNativeFilmstripArtifacts = vi.fn();
@@ -32,6 +33,7 @@ describe("FilmstripCache RAF Batching", () => {
 
   beforeEach(() => {
     cache = new FilmstripCache(100);
+    filmstripTelemetry.clear();
     rafCallbacks = new Map();
     nextRafId = 1;
 
@@ -113,6 +115,34 @@ describe("FilmstripCache RAF Batching", () => {
     // Should have called onUpdate ONCE with all 3 artifacts
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ timestampMs: 1000 }), expect.objectContaining({ timestampMs: 2000 }), expect.objectContaining({ timestampMs: 3000 })]));
+  });
+
+  it("does not restart media extraction when a zoom frame keeps the same tile coverage", () => {
+    const onUpdate = vi.fn();
+    mockRequestNativeFilmstripArtifacts.mockImplementation(() => vi.fn());
+
+    const request = (pixelsPerSecond: number) =>
+      cache.requestFilmstrip({
+        clipId: "clip-zoom",
+        videoPath: "/test.mp4",
+        trimIn: 0,
+        trimOut: 10,
+        duration: 10,
+        clipStartTime: 0,
+        clipWidthPx: 10 * pixelsPerSecond,
+        spatialTier: SpatialTier.L1,
+        epochId: eid("epoch-zoom"),
+        viewportScrollLeft: 0,
+        viewportWidth: 1920,
+        pixelsPerSecond,
+        onUpdate,
+      });
+
+    request(50);
+    filmstripTelemetry.beginZoomGesture();
+    request(50.01); // a spring animation frame; still covers the whole clip
+
+    expect(mockRequestNativeFilmstripArtifacts).toHaveBeenCalledTimes(1);
   });
 
   it("deduplicates artifacts by timestamp during batch", () => {
