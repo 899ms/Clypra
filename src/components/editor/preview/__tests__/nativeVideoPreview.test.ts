@@ -4,6 +4,7 @@ import {
   buildNativeFrameRequest,
   buildNativeVideoProjectRequest,
   getNativePreviewBlockers,
+  getNativePreviewReadinessBlockers,
   getNativeFrameRequestKey,
   isRenderableNativePreviewFrame,
 } from "../nativeVideoPreview";
@@ -956,6 +957,21 @@ describe("buildNativeVideoProjectRequest", () => {
       lutIntensity: 0.65,
       lutSize: 33,
     });
+  });
+});
+
+describe("native preview readiness", () => {
+  it("separates pending raster assets from unsupported native contracts", () => {
+    expect(
+      getNativePreviewReadinessBlockers([
+        "Still image image-1 is waiting for its alpha-preserving native raster frame.",
+        "Video effect blur on media layer clip-1 has no native compositor implementation.",
+        "The animated or gradient background has not produced its native raster asset yet.",
+      ]),
+    ).toEqual([
+      "Still image image-1 is waiting for its alpha-preserving native raster frame.",
+      "The animated or gradient background has not produced its native raster asset yet.",
+    ]);
   });
 });
 

@@ -115,6 +115,7 @@ import { buildNativePlaybackSnapshotKey } from "@/core/playback/nativePlaybackSn
 import {
   buildNativeFrameRequest,
   getNativePreviewBlockers,
+  getNativePreviewReadinessBlockers,
   getNativeFrameRequestKey,
   isRenderableNativePreviewFrame,
   isExpectedStaleNativePreviewError,
@@ -1347,6 +1348,7 @@ export const NativeProgramPreview: React.FC = () => {
     let lastRenderLoopError = "";
     let lastLoggedMissingTextSignature = "";
     let lastLoggedTextDropSignature = "";
+    let nativeReadinessQueueKey = "";
     const nativeTextPrefetchInFlight =
       nativePrefetchStateRef.current.textInFlight;
     const nativeTextPrefetchCompleted =
@@ -2772,16 +2774,42 @@ export const NativeProgramPreview: React.FC = () => {
           ? getNativeFrameRequestKey(nativePlaybackRequest)
           : nativeRequestKey;
         const nativeOnlyMode = isTauriRuntime() && NATIVE_PREVIEW_ONLY;
-        const nativeOnlySceneBlocked = nativeOnlyMode && !nativeRequest;
+        const nativeBlockers = nativeRequest
+          ? []
+          : getNativePreviewBlockers(scene, nativeRasterLayers);
+        const nativeReadinessBlockers =
+          getNativePreviewReadinessBlockers(nativeBlockers);
+        const nativeUnsupportedBlockers = nativeBlockers.filter(
+          (blocker) => !nativeReadinessBlockers.includes(blocker),
+        );
+        // A raster is an asynchronous dependency, not an unsupported scene.
+        // Keep the canvas representation usable while the bridge publishes its
+        // asset, then request a retry instead of hard-blocking native preview.
+        const nativeOnlySceneBlocked =
+          nativeOnlyMode && !nativeRequest && nativeUnsupportedBlockers.length > 0;
+        if (nativeReadinessBlockers.length > 0) {
+          const readinessKey = nativeReadinessBlockers.join("\n");
+          if (nativeReadinessQueueKey !== readinessKey) {
+            nativeReadinessQueueKey = readinessKey;
+            telemetryCollector.recordFallbackEvent(
+              "native-wgpu-preview",
+              "webview-canvas-readiness-queue",
+              "native-raster-asset-pending",
+            );
+          }
+          window.setTimeout(() => {
+            if (isActive) scheduleNextFrame();
+          }, 50);
+        } else {
+          nativeReadinessQueueKey = "";
+        }
         // Audit 4.6 fix: read nativeSurfaceReadyRef.current (imperative ref) rather than
         // the React state `nativeSurfaceReady` to avoid having the state in the effect deps.
         const nativeSurfaceReadyNow = nativeSurfaceReadyRef.current;
         const nativeSurfaceErrorNow = nativeSurfaceErrorRef.current;
         if (nativeOnlyMode) {
           const blockers = [
-            ...(!nativeRequest
-              ? getNativePreviewBlockers(scene, nativeRasterLayers)
-              : []),
+            ...nativeUnsupportedBlockers,
             ...(nativeSurfaceErrorNow
               ? [
                   `The retained native wgpu surface failed to initialize: ${nativeSurfaceErrorNow}`,
@@ -2805,7 +2833,7 @@ export const NativeProgramPreview: React.FC = () => {
               telemetryCollector.recordFallbackEvent(
                 "native-wgpu-preview",
                 "native-preview-blocked",
-                `${blockedSubsystem}-unsupported-or-unready`,
+                `${blockedSubsystem}-unsupported`,
               );
               toast.error(["Native-only preview", ...blockers].join("\n"), {
                 id: "native-only-preview-blocked",

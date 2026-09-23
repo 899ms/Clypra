@@ -1336,6 +1336,21 @@ export function getNativePreviewBlockers(
 }
 
 /**
+ * Temporary blockers are produced by asynchronous raster preparation, not by
+ * an unsupported scene. Callers can keep their compatible fallback visible
+ * and retry native presentation when these are the only blockers.
+ */
+export function getNativePreviewReadinessBlockers(
+  blockers: readonly string[],
+): string[] {
+  return blockers.filter((blocker) =>
+    /has not produced its native raster asset yet|is waiting for its (?:alpha-preserving )?native raster frame/i.test(
+      blocker,
+    ),
+  );
+}
+
+/**
  * Build the versioned native-core request used by all new frame callers.
  * The existing request builder remains available only as a compatibility
  * adapter while the rest of the graph migrates to ProjectSnapshot.
