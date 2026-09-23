@@ -96,6 +96,12 @@ interface PerfLogSessionInfo {
   openedAtEpochMs: number;
 }
 
+interface MediaRuntimeStatus {
+  available: boolean;
+  bundled: boolean;
+  ffmpegVersion: string | null;
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /** Lazy dynamic import of the Tauri invoke function so this module loads in non-Tauri environments. */
@@ -204,6 +210,7 @@ class PerfLogService {
           appEnvironment: import.meta.env.DEV ? "beta" : "production",
         },
       });
+      void this.captureMediaRuntimeStatus(this.sessionId);
 
       // Asynchronously retry uploading any pending session logs from previous runs / offline sessions.
       void this.retryPendingUploads();
@@ -678,6 +685,35 @@ class PerfLogService {
     if (this.syncPollTimer) {
       clearInterval(this.syncPollTimer);
       this.syncPollTimer = null;
+    }
+  }
+
+  /**
+   * Capture the selected media-runtime class once per session. Paths and
+   * diagnostics are intentionally excluded: fleet analysis only needs to
+   * distinguish Clypra's tested sidecar from a developer/system fallback.
+   */
+  private async captureMediaRuntimeStatus(sessionId: string): Promise<void> {
+    try {
+      const status = await tauriInvoke<MediaRuntimeStatus>(
+        "get_media_runtime_status",
+      );
+      this.enqueue({
+        kind: "native-diagnostic",
+        sessionId,
+        timestampEpochMs: Date.now(),
+        payload: {
+          marker: "media-runtime",
+          ffmpegRuntime: status.available
+            ? status.bundled
+              ? "bundled"
+              : "system"
+            : "unavailable",
+          ffmpegVersion: status.ffmpegVersion ?? undefined,
+        },
+      });
+    } catch {
+      // The telemetry contract remains optional in non-Tauri test/web builds.
     }
   }
 
