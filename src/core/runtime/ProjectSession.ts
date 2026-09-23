@@ -86,6 +86,17 @@ type SessionLoadStage =
 
 type SessionLoadTimings = Partial<Record<SessionLoadStage, number>>;
 
+type SessionCloseStage =
+  | "cancel-work"
+  | "stop-playback"
+  | "stop-audio"
+  | "release-media"
+  | "release-transport"
+  | "release-rendering"
+  | "reset-stores";
+
+type SessionCloseTimings = Partial<Record<SessionCloseStage, number>>;
+
 const CRITICAL_NATIVE_RASTER_BOUNDARIES = 3;
 
 /**
@@ -147,6 +158,7 @@ export class ProjectSession {
     null;
   private _nativeRasterPrewarmInFlight: Promise<boolean> | null = null;
   private _initializationTimingsMs: SessionLoadTimings = {};
+  private _disposalTimingsMs: SessionCloseTimings = {};
 
   constructor(
     projectId: string,
@@ -222,6 +234,11 @@ export class ProjectSession {
   /** Content-free timing evidence for the current project-open sequence. */
   get initializationTimingsMs(): Readonly<SessionLoadTimings> {
     return { ...this._initializationTimingsMs };
+  }
+
+  /** Content-free timing evidence for the current project-close sequence. */
+  get disposalTimingsMs(): Readonly<SessionCloseTimings> {
+    return { ...this._disposalTimingsMs };
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────
@@ -490,55 +507,54 @@ export class ProjectSession {
     }
 
     this._state = "disposing";
+    const disposalStartedAt = performance.now();
+    lifecycleMonitor.record("PROJECT_CLOSE_START", {
+      projectId: this.projectId,
+      sessionId: this.sessionId,
+    });
 
     try {
-      // Deterministic teardown order (critical for avoiding race conditions)
-
-      // 1. Cancel all async tasks (prevent new work)
-      await this._cancelAsyncTasks();
-
-      // 2. Stop playback (prevent time updates)
-      if (this._playback) {
-        this._playback.stop();
-      }
-
-      // 3. Teardown audio engine
-      if (this._audioEngine) {
-        stopSharedAudioEngine();
-        this._audioEngine = null;
-      }
-
-      // 4. Release media resources (video elements, audio nodes)
-      await this._releaseMediaResources();
-
-      // 5. Teardown transport authority (disposes contexts)
-      if (this._transportAuthority) {
-        this._transportAuthority.dispose();
+      // Stop producers before tearing down the resources they can touch. The
+      // remaining release operations are measured individually so a slow close
+      // can be attributed to media, audio, rendering, or UI-store cleanup.
+      await this._measureDisposalStage("cancel-work", () =>
+        this._cancelAsyncTasks(),
+      );
+      await this._measureDisposalStage("stop-playback", async () => {
+        this._playback?.stop();
+      });
+      await this._measureDisposalStage("stop-audio", async () => {
+        if (this._audioEngine) {
+          stopSharedAudioEngine();
+          this._audioEngine = null;
+        }
+      });
+      await this._measureDisposalStage("release-media", () =>
+        this._releaseMediaResources(),
+      );
+      await this._measureDisposalStage("release-transport", async () => {
+        this._transportAuthority?.dispose();
         this._transportAuthority = null;
         this._programContext = null;
         this._sourceContext = null;
-      }
-
-      // 6. Teardown render runtime (GPU resources, WebGL contexts)
-      this._nativeRasterBridge?.dispose();
-      this._nativeRasterBridge = null;
+      });
+      await this._measureDisposalStage("release-rendering", async () => {
+        this._nativeRasterBridge?.dispose();
+        this._nativeRasterBridge = null;
+        if (this._renderRuntime) {
+          this._renderRuntime.teardown();
+          this._renderRuntime = null;
+        }
+      });
       if (this._nativeRasterIdlePrewarmTimer !== null) {
         clearTimeout(this._nativeRasterIdlePrewarmTimer);
         this._nativeRasterIdlePrewarmTimer = null;
       }
-      if (this._renderRuntime) {
-        this._renderRuntime.teardown();
-        this._renderRuntime = null;
-      }
-
-      // 7. Cancel all RAF loops
       this._cancelRAFLoops();
-
-      // 8. Release references to global singletons (actual disposal handled by destroyRuntime)
       this._playback = null;
-
-      // 9. Reset stores
-      await this._resetStores();
+      await this._measureDisposalStage("reset-stores", () =>
+        this._resetStores(),
+      );
 
       this._state = "disposed";
 
@@ -547,12 +563,42 @@ export class ProjectSession {
         projectId: this.projectId,
         sessionId: this.sessionId,
       });
+      const detail = {
+        durationMs: Math.round(Math.max(0, performance.now() - disposalStartedAt)),
+        stagesMs: this.disposalTimingsMs,
+      };
+      lifecycleMonitor.record("PROJECT_CLOSE_COMPLETE", {
+        projectId: this.projectId,
+        sessionId: this.sessionId,
+        detail,
+      });
+      perfLogService.enqueue({
+        kind: "project-session-close",
+        sessionId: this.sessionId,
+        timestampEpochMs: Date.now(),
+        payload: { stage: "complete", ...detail },
+      });
       resourceTracker.release(this.sessionId);
 
       this._notifyListeners({ type: "disposed", session: this });
     } catch (error) {
       console.error(`[ProjectSession] Disposal error:`, error);
       this._state = "disposed"; // Mark as disposed even on error
+      const detail = {
+        durationMs: Math.round(Math.max(0, performance.now() - disposalStartedAt)),
+        stagesMs: this.disposalTimingsMs,
+      };
+      lifecycleMonitor.record("PROJECT_CLOSE_FAILED", {
+        projectId: this.projectId,
+        sessionId: this.sessionId,
+        detail,
+      });
+      perfLogService.enqueue({
+        kind: "project-session-close",
+        sessionId: this.sessionId,
+        timestampEpochMs: Date.now(),
+        payload: { stage: "failed", ...detail },
+      });
       // Still attempt telemetry on error path
       lifecycleMonitor.record("SESSION_DISPOSE", {
         projectId: this.projectId,
@@ -722,6 +768,35 @@ export class ProjectSession {
       // media paths, or text content.
       perfLogService.enqueue({
         kind: "project-session-load",
+        sessionId: this.sessionId,
+        timestampEpochMs: Date.now(),
+        payload: detail,
+      });
+    }
+  }
+
+  private async _measureDisposalStage<T>(
+    stage: SessionCloseStage,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      const durationMs = Math.max(0, performance.now() - startedAt);
+      this._disposalTimingsMs[stage] = durationMs;
+      const detail = {
+        stage,
+        durationMs: Math.round(durationMs),
+        projectSessionId: this.sessionId,
+      };
+      lifecycleMonitor.record("PROJECT_CLOSE_STAGE", {
+        projectId: this.projectId,
+        sessionId: this.sessionId,
+        detail,
+      });
+      perfLogService.enqueue({
+        kind: "project-session-close",
         sessionId: this.sessionId,
         timestampEpochMs: Date.now(),
         payload: detail,
@@ -1048,6 +1123,7 @@ export class ProjectSession {
     videoElements: number;
     asyncTasks: number;
     rafLoops: number;
+    disposalTimingsMs: Readonly<SessionCloseTimings>;
   } {
     return {
       sessionId: this.sessionId,
@@ -1060,6 +1136,7 @@ export class ProjectSession {
         : 0,
       asyncTasks: this._asyncTasks.size,
       rafLoops: this._rafIds.size,
+      disposalTimingsMs: this.disposalTimingsMs,
     };
   }
 }
