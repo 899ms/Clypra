@@ -57,6 +57,22 @@ function makeScene(
 }
 
 describe("buildNativeVideoProjectRequest", () => {
+  it("applies the source orientation tag before the authored rotation", () => {
+    const request = buildNativeVideoProjectRequest(makeScene([
+      makeVideoLayer({ sourceRotation: 90, rotation: 15 }),
+    ]));
+
+    expect(request?.layers[0]?.rotation).toBe(105);
+  });
+
+  it("normalizes a composed source orientation and authored rotation", () => {
+    const request = buildNativeVideoProjectRequest(makeScene([
+      makeVideoLayer({ sourceRotation: 270, rotation: 180 }),
+    ]));
+
+    expect(request?.layers[0]?.rotation).toBe(90);
+  });
+
   it("maps a supported two-video transition into the native graph", () => {
     const outgoing = makeVideoLayer({ layerId: "outgoing", clipId: "outgoing" });
     const incoming = makeVideoLayer({ layerId: "incoming", clipId: "incoming", sourcePath: "/Users/test/next.mp4" });
