@@ -639,12 +639,12 @@ const App = () => {
       const { closeProject } = useProjectStore.getState();
       await closeProject(); // closeProject handles saving internally
 
-      // Upload the completed perf-log session for this project, then open
-      // a fresh session so the next project gets its own log file.
-      void perfLogService.closeAndUpload().then(() => {
-        const nextSessionId = `launch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        void perfLogService.openSession(nextSessionId);
-      });
+      // The close lifecycle stages were just emitted by closeProject. Await
+      // their durable flush before opening the next session so production
+      // session rows cannot lose close telemetry during a rapid project swap.
+      await perfLogService.closeAndUpload();
+      const nextSessionId = `launch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await perfLogService.openSession(nextSessionId);
 
       updateStep("save", "completed");
       updateStep("session", "completed");
