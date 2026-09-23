@@ -3265,9 +3265,11 @@ pub(crate) async fn present_native_frame_internal(
     // Frame skipping occurs naturally at the scheduler boundary on the next tick.
     let late_for_audio = late_for_audio && !legacy_request.layers.is_empty() && !is_playback;
     if !surface.accept_presentation(presentation_sequence) {
-        SYNC_METRICS.record_dropped_frame();
         drop(surface);
         drop(session);
+        // A newer request already owns the retained surface. This frame was
+        // intentionally superseded, not missed by the user, so keep it out of
+        // visual-drop totals while preserving it as a stale diagnostic sample.
         record_native_surface_sample(
             &app,
             &request,
@@ -3282,9 +3284,9 @@ pub(crate) async fn present_native_frame_internal(
             None,
             None,
             None,
-            true,
             false,
-            Some("stale"),
+            true,
+            Some("superseded"),
             capability_policy_str.clone(),
             capability_probe_us_value,
             None,
@@ -3294,15 +3296,15 @@ pub(crate) async fn present_native_frame_internal(
             request_id: request.request_id,
             frame_index: request.frame_time.frame_index,
             presented: false,
-            dropped: true,
+            dropped: false,
             audio_position_ticks,
             frame_age_ticks,
             surface: probe,
             generation: request.generation,
             mode: request.mode.clone(),
-            stale: false,
+            stale: true,
             cancelled: false,
-            drop_reason: Some("stale".to_string()),
+            drop_reason: Some("superseded".to_string()),
             timings: None,
         });
     }
