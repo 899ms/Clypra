@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-09-22
+
+### 🐛 Bug Fixes
+
+- **Native OS window controls restored (Windows & Linux)** — removed the custom close/minimize/maximize overlay and the startup override that forced borderless decoration. Real OS window controls are now used on Windows and Linux. Editor and launch top bars retain their fixed heights; macOS keeps its traffic-light space and native drag region unchanged (#368).
+- **Sticky playhead handle + full-height needle** — the scrubber handle no longer scrolls off-screen when the user scrolls vertically through a tall track stack. The handle stays docked in the sticky ruler (24 px) and the needle spans the full content height including all tracks. Snap guides extend to the same height, eliminating premature clipping at horizontal scrollbar boundaries (#360).
+- **Windows TLS upload failure resolved** — telemetry session uploads were failing silently on Windows machines with enterprise root certificates, antivirus SSL inspection, or system proxies (`UnknownIssuer` TLS error). Fixed by adding `rustls-tls-native-roots` to reqwest, which reads the Windows CryptoAPI certificate store. Added a 3-attempt retry loop with exponential backoff (1 s, 2 s) and a gzip → uncompressed JSON fallback on the third attempt. If the native Rust upload still fails, the frontend falls back to browser `fetch()` inside the WebView (#359).
+- **Windows startup perf-log noise silenced** — eliminated spurious `file not found` diagnostic errors on Windows when the session log file was not yet created at startup (#363).
+- **3 Rust compiler warnings eliminated** — removed an unused `tokio::process::Command` import (guarded to macOS/Linux), a dead `dxgi_active` mutable variable, and a duplicate `render_path` assignment that was overwritten before being read (#359).
+
+### ⚡ Performance
+
+- **Adaptive Intel GPU preview quality stepping** — introduced a hardware-aware preview quality policy for Intel GPUs:
+  - _Intel HD 520 + 4K canvas_ → pinned to 1280 px proxy preview (no stepping).
+  - _Intel UHD 630 + 4K canvas_ → starts at 720 p proxy; can step down to a lower proxy under sustained frame pressure.
+  - _Intel Iris Xe (modern)_ → starts full quality; steps down to reduced after 3 budget misses in a 12-sample sliding window, preventing queue buildup during scrub bursts.
+  - Policy is session-stable; a single cold frame does not trigger oscillation. Export and source media are never affected (#364, #365, #367).
+- **Parallelized project-session loading** — startup load time reduced by parallelizing store-module setup and deferring non-critical native raster prewarm:
+  - First 3 native text/image shader boundaries remain startup-critical.
+  - Remaining boundaries prewarm asynchronously after editor activation with yields between batches to avoid starving the main thread.
+  - A single in-flight guard prevents concurrent raster-prewarm walks from contending for the native GPU session.
+  - Per-stage timing added for stores, preview runtime, font loading, audio initialization, and native raster prewarm (#369).
+
+### 📡 Telemetry
+
+- **Transfer-path classification per frame** — every presented native frame is now tagged with its actual render path: `dxgi-zero-copy`, `cpu-nv12`, `cpu-rgba`, `mixed`, or `gpu-raster`. Pre-render drops remain unlabelled. Path flows through the Rust performance contract → TypeScript interface → telemetry events, enabling fleet analytics to break down decode and upload costs by render path (#366).
+- **Telemetry integrity fixes** — three data-quality issues resolved:
+  - Aggregate `droppedFramesRatio` now clamped to 1.0; impossible >100 % drop rates no longer reach the database.
+  - Native frames no longer double-count in session rollups when both native and frontend traces fire for the same frame.
+  - Seek telemetry no longer fabricates 60 / 20 / 20 % decode/upload/compose splits; records only the measured end-to-end latency and marks stage attribution as unavailable (#364).
+- **Effective preview policy in telemetry** — every native performance sample carries the current `capabilityPolicy` (`full` / `reduced` / `proxy`), enabling fleet reports to measure whether Intel quality mitigation is working (#365).
+- **End-to-end worker performance telemetry** — unified `WorkerPerfCollector` tracking p50/p95/p99 round-trip and worker-internal compute times across all Web Workers: `KeyframeEval`, `TimelineSnap`, `Project`, `ColorScopes`, `WaveformLod`, `SubtitleParser`, sticker/template rasterizers, and body-segmentation ML inference. Worker errors are written to the session NDJSON log in real time (#356).
+- **Session load timing in lifecycle diagnostics** — total load duration, per-stage breakdown, and failure duration are now recorded in lifecycle diagnostics and session performance logs without capturing any content (#369).
+
+### 🛠️ Developer / CI
+
+- **`test:all` unified test runner** — added a single `pnpm test:all` script that runs the full Vitest suite, TypeScript typecheck, and focused Rust unit tests in sequence (#362).
+- **RC1 benchmark suite** — added a release-gate benchmark suite with a YouTube upload acceptance scenario for automated performance regression detection (#361).
+
 ## [1.5.2] - 2026-09-21
 
 ### 🎨 Spatial Motion Paths & GPU Shutter Motion Blur
@@ -37,12 +76,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### 🎞️ Native Preview & Playback Stability Remediation (macOS & Windows)
 
 - **Six Critical Playback Instability Fixes (BUG-1 through BUG-6)**:
-  - *BUG-1*: Eliminated audio pops and glitches during timeline split operations under active playback.
-  - *BUG-2B*: Resolved timeline playhead drift during rapid scrubbing.
-  - *BUG-3*: Fixed timeline scrub stutter and decoder stalls when crossing clip boundaries.
-  - *BUG-4*: Eliminated playhead jumps when clicking to seek during active playback.
-  - *BUG-5*: Fixed track desynchronization following gap deletion.
-  - *BUG-6*: Resolved race conditions between transport state transitions and decoder thread pools.
+  - _BUG-1_: Eliminated audio pops and glitches during timeline split operations under active playback.
+  - _BUG-2B_: Resolved timeline playhead drift during rapid scrubbing.
+  - _BUG-3_: Fixed timeline scrub stutter and decoder stalls when crossing clip boundaries.
+  - _BUG-4_: Eliminated playhead jumps when clicking to seek during active playback.
+  - _BUG-5_: Fixed track desynchronization following gap deletion.
+  - _BUG-6_: Resolved race conditions between transport state transitions and decoder thread pools.
 - **Backward Seek & Clock Re-anchoring** — resolved backward seek freezes caused by monotonic clock (`Instant`) and epoch timestamp (`request_started_at`) mismatches. Stabilized A/V sync drift to sub-millisecond tolerances (-0.67 ms average).
 - **Lock-Free Live Timeline Editing** — replaced `Mutex<FrameRequest>` with `parking_lot::RwLock<Arc<FrameRequest>>` in `NativeRenderSession`. Render ticks read double-buffered snapshots in ~5 ns without locking, allowing seamless clip trimming, splitting, and movement during active 60fps playback without audio glitches or lookahead flushes.
 - **Lookahead Timing Re-attribution** — re-anchored lookahead cache hits to presentation start time rather than queue residency, eliminating 13,657 false frame-anomalies and saving ~48 MB of telemetry log bloat per editing session.
