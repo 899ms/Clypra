@@ -634,8 +634,11 @@ const SLEEP_DISCONTINUITY_THRESHOLD_MS = 1500; // Discard time gaps > 1.5s as sl
 const MAX_LATENCY_ANOMALIES_PER_MINUTE = 10;
 /** Maximum individual dropped/stale/cancelled frame samples emitted per minute. */
 const MAX_DROP_ANOMALIES_PER_MINUTE = 10;
-/** Maximum individual seek latency anomalies emitted per minute. */
-const MAX_SEEK_ANOMALIES_PER_MINUTE = 10;
+/**
+ * Maximum individual seek anomalies emitted per minute. The rollup keeps the
+ * distribution; individual samples are only for representative outliers.
+ */
+const MAX_SEEK_ANOMALIES_PER_MINUTE = 3;
 /** Window duration for anomaly quota replenishment (1 minute). */
 const ANOMALY_QUOTA_WINDOW_MS = 60000;
 /** Minimum interval between intermediate superseded scrub drag events (max 2/sec). */

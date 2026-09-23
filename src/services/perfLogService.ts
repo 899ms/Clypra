@@ -102,6 +102,19 @@ interface MediaRuntimeStatus {
   ffmpegVersion: string | null;
 }
 
+/**
+ * Native sync snapshots contain an observation timestamp which changes even
+ * when the metrics do not. Exclude it so idle sessions do not archive the
+ * same counters every interval.
+ */
+function nativeSyncFingerprint(snapshot: unknown): string {
+  if (!snapshot || typeof snapshot !== "object") return JSON.stringify(snapshot);
+  const stable = { ...(snapshot as Record<string, unknown>) };
+  delete stable.timestamp_epoch_ms;
+  delete stable.timestampEpochMs;
+  return JSON.stringify(stable);
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /** Lazy dynamic import of the Tauri invoke function so this module loads in non-Tauri environments. */
@@ -137,6 +150,8 @@ class PerfLogService {
   private closeInFlight: Promise<void> | null = null;
   /** Peak process RSS observed since the current session opened (MB). */
   private peakMemoryMb: number = 0;
+  /** Last native-sync content persisted in this session (timestamps excluded). */
+  private lastNativeSyncFingerprint: string | null = null;
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -170,6 +185,7 @@ class PerfLogService {
       this.sessionId = info.sessionId;
       this.filePath = info.filePath;
       this.peakMemoryMb = 0; // reset peak for the new session
+      this.lastNativeSyncFingerprint = null;
 
       this.startFlushTimer();
       this.startSyncPollTimer();
@@ -204,8 +220,6 @@ class PerfLogService {
         timestampEpochMs: Date.now(),
         payload: {
           marker: "session-open",
-          userAgent:
-            typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
           appVersion: await getAppVersion(),
           appEnvironment: import.meta.env.DEV ? "beta" : "production",
         },
@@ -722,6 +736,9 @@ class PerfLogService {
     try {
       const snapshot = await tauriInvoke<unknown>("get_sync_metrics_snapshot");
       if (!snapshot) return;
+      const fingerprint = nativeSyncFingerprint(snapshot);
+      if (fingerprint === this.lastNativeSyncFingerprint) return;
+      this.lastNativeSyncFingerprint = fingerprint;
       this.enqueue({
         kind: "native-sync",
         sessionId: this.sessionId,
