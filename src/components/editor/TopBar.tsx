@@ -68,17 +68,33 @@ const TopBarComponent: React.FC<TopBarProps> = ({ onRequestClose }) => {
 
   return (
     <>
-      <div className="h-8 shrink-0 flex items-center gap-2 px-1 select-none">
-        <div className={`flex items-center gap-2 shrink-0 ${isMacNativeWindow ? "pl-[76px]" : "pl-1"}`} style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <Button variant="ghost" size="icon-sm" onClick={handleClose} title="Back to Home" style={{ WebkitAppRegion: "no-drag", cursor: "pointer" } as React.CSSProperties}>
+      {/* The native menu/title bar owns window controls. This is the editor's
+          document-command row: identity stays left, commands stay right, and
+          neither competes with native chrome for horizontal space. */}
+      <div className="h-9 shrink-0 flex items-center gap-2 border-b border-border/70 bg-bg/95 px-2 shadow-[0_1px_0_rgba(255,255,255,0.025)] select-none">
+        <div
+          className={`flex min-w-0 items-center gap-2 shrink-0 ${isMacNativeWindow ? "pl-[76px]" : "pl-0"}`}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={handleClose}
+            title="Back to projects"
+            aria-label="Back to projects"
+            className="text-text-muted hover:text-text-primary"
+            style={{ WebkitAppRegion: "no-drag", cursor: "pointer" } as React.CSSProperties}
+          >
             <Home className="w-4 h-4" />
           </Button>
+          <div className="h-4 w-px bg-border/70" aria-hidden="true" />
+          <span
+            className="max-w-[180px] truncate text-xs font-semibold text-text-primary sm:max-w-[320px]"
+            title={projectName}
+          >
+            {projectName || "Untitled project"}
+          </span>
         </div>
-
-        {/* Project Name (Center) */}
-        <span className="text-xs font-semibold text-text-primary truncate max-w-[120px] sm:max-w-[240px] text-center shrink-0" title={projectName}>
-          {projectName}
-        </span>
 
         <div
           className="min-w-0 flex-1 self-stretch"
@@ -87,7 +103,8 @@ const TopBarComponent: React.FC<TopBarProps> = ({ onRequestClose }) => {
           style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
         />
 
-        {/* Right side - Panel Toggles, Layout Switcher, Settings & Export */}
+        {/* Fixed command cluster: its own row and shrink-0 keep action buttons
+            aligned regardless of title length or native window state. */}
         <div className="flex items-center gap-1 shrink-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <Button
             variant="ghost"

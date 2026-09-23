@@ -77,7 +77,8 @@ export type PerfLogKind =
   | "worker-rollup"
   | "animation-eval"
   | "worker-error"
-  | "project-session-load";
+  | "project-session-load"
+  | "project-session-close";
 
 export interface PerfLogEntry {
   kind: PerfLogKind;
