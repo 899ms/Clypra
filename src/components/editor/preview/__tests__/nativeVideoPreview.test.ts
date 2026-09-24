@@ -57,20 +57,22 @@ function makeScene(
 }
 
 describe("buildNativeVideoProjectRequest", () => {
-  it("applies the source orientation tag before the authored rotation", () => {
+  it("preserves authored rotation without double-applying source orientation", () => {
     const request = buildNativeVideoProjectRequest(makeScene([
       makeVideoLayer({ sourceRotation: 90, rotation: 15 }),
     ]));
 
-    expect(request?.layers[0]?.rotation).toBe(105);
+    // Source orientation is corrected at pixel level in native decoder/upload;
+    // layer.rotation carries only authored rotation so it is not double-rotated.
+    expect(request?.layers[0]?.rotation).toBe(15);
   });
 
-  it("normalizes a composed source orientation and authored rotation", () => {
+  it("normalizes authored rotation into [0, 360) range", () => {
     const request = buildNativeVideoProjectRequest(makeScene([
-      makeVideoLayer({ sourceRotation: 270, rotation: 180 }),
+      makeVideoLayer({ sourceRotation: 270, rotation: -90 }),
     ]));
 
-    expect(request?.layers[0]?.rotation).toBe(90);
+    expect(request?.layers[0]?.rotation).toBe(270);
   });
 
   it("maps a supported two-video transition into the native graph", () => {
