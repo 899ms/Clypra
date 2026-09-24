@@ -2557,8 +2557,8 @@ mod tests {
 
         let mut decoder = crate::thumbnail_engine::decoder::VideoDecoder::open_hardware(video_path)
             .expect("open decoder");
-        let (y_plane, uv_plane, width, height, color, _is_approx) = decoder
-            .decode_frame(
+        let (y_plane, uv_plane, width, height, color) = decoder
+            .decode_frame_raw_nv12_with_options(
                 0.0,
                 crate::thumbnail_engine::decoder::DecodeFrameOptions::default(),
                 || false,
