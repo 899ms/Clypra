@@ -153,6 +153,19 @@ interface TimelineStore {
   addClip: (clip: Clip) => void;
   removeClip: (clipId: string) => void;
   updateClip: (clipId: string, updates: Partial<Clip>) => void;
+  /**
+   * Apply a `PlaybackMapping` to a clip.
+   *
+   * This is the preferred API for anything that changes how a clip maps
+   * global timeline time to source-media time (speed, reverse, freeze,
+   * speed ramp). Callers receive a clearly-named action rather than
+   * constructing a `Partial<Clip>` with `playbackMapping` by hand.
+   *
+   * @param clipId  - Target clip
+   * @param mapping - The desired PlaybackMapping (or `undefined` to clear,
+   *                  which falls back to legacy `speed` scalar → 1×).
+   */
+  setClipPlaybackMapping: (clipId: string, mapping: import("@/types").PlaybackMapping | undefined) => void;
   addTransition: (transition: TransitionTimelineItem) => void;
   removeTransition: (transitionId: string) => void;
   updateTransition: (
@@ -1185,6 +1198,11 @@ export const useTimelineStore = create<TimelineStore>(
           .catch(() => {});
       }
     },
+
+    setClipPlaybackMapping: (clipId, mapping) => {
+      get().updateClip(clipId, { playbackMapping: mapping });
+    },
+
 
     moveClip: (clipId, startTime) => {
       set((state) => {

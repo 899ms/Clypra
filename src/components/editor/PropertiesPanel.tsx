@@ -43,6 +43,7 @@ import { TransitionSection } from "./properties/TransitionSection";
 import { StickerSettingsSection } from "./properties/StickerSettingsSection";
 import { TimelineEffectSection } from "./properties/TimelineEffectSection";
 import { AdjustmentsSection } from "./properties/AdjustmentsSection";
+import { PlaybackSection } from "./properties/PlaybackSection";
 import { ChromaKeySection } from "./properties/ChromaKeySection";
 import {
   getPreviewInteractionCoordinator,
@@ -1069,6 +1070,11 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               canvasWidth={canvasWidth}
               canvasHeight={canvasHeight}
             />
+          )}
+
+          {/* Playback speed, reverse, freeze frame */}
+          {(isVideoClip || isAudioClip) && (
+            <PlaybackSection selectedClip={selectedClip} />
           )}
 
           {/* Color Adjustments */}

@@ -27,8 +27,15 @@ import {
   Pencil,
   Link2,
   Sparkles,
+  Gauge,
+  Snowflake,
+  FlipHorizontal2,
+  RotateCcw,
 } from "lucide-react";
 import type { ClipCommand, ClipCommandContext } from "./types";
+import type { PlaybackMapping } from "@/types";
+import { resolveClipSourceTime } from "@/core/timeline/sourceTime";
+import { getPlaybackClock } from "@/hooks/usePlaybackClock";
 import { clipboardService } from "@/core/clipboard/clipboardService";
 import { EditingActions } from "@/core/interactions";
 import { useTimelineStore } from "@/store/timelineStore";
@@ -586,6 +593,192 @@ export const clipCommands: ClipCommand[] = [
         useUIStore.getState().selectClip(ids[0]);
         useUIStore.getState().setActivePanel("properties");
       }
+    },
+  },
+
+  // ─── Speed & Playback ────────────────────────────────────────────────────────
+  {
+    id: "clip.freezeFrame",
+    label: "Freeze Frame at Playhead",
+    icon: Snowflake,
+    group: "speed",
+    isVisible: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      if (ids.length !== 1) return false;
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      return !!clip && (clip.kind === "video" || clip.kind === "image");
+    },
+    isEnabled: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      if (!clip) return false;
+      const isUnlocked = !ctx.tracks.find((t) => t.id === clip.trackId)?.locked;
+      return isUnlocked && ctx.playheadTime >= clip.startTime && ctx.playheadTime < clip.startTime + clip.duration;
+    },
+    disabledReason: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      if (!clip) return "No clip selected";
+      if (ctx.tracks.find((t) => t.id === clip.trackId)?.locked) return "Clip is on a locked track";
+      return "Playhead must be inside the clip to freeze a frame";
+    },
+    execute: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const clip = ctx.clips.find((c) => c.id === ids[0]);
+      if (!clip) return;
+
+      const store = useTimelineStore.getState();
+
+      // Toggle: if already frozen, unfreeze
+      if (clip.playbackMapping?.kind === "freeze") {
+        store.updateClip(clip.id, { playbackMapping: { kind: "normal", speed: 1 } });
+        toast.info("Clip unfrozen");
+        return;
+      }
+
+      const clock = getPlaybackClock();
+      const { sourceTime } = resolveClipSourceTime(clip, clock.time, { clampToRange: true });
+      const mapping: PlaybackMapping = { kind: "freeze", atSourceTime: sourceTime };
+      store.updateClip(clip.id, { playbackMapping: mapping });
+      toast.success(`Frozen at ${sourceTime.toFixed(3)}s`);
+    },
+  },
+  {
+    id: "clip.reverseClip",
+    label: "Reverse Clip",
+    icon: FlipHorizontal2,
+    group: "speed",
+    isVisible: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => {
+        const c = ctx.clips.find((clip) => clip.id === id);
+        return !!c && (c.kind === "video" || c.kind === "audio");
+      });
+    },
+    isEnabled: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => {
+        const c = ctx.clips.find((clip) => clip.id === id);
+        return !!c && !ctx.tracks.find((t) => t.id === c.trackId)?.locked;
+      });
+    },
+    disabledReason: () => "Selected clips are on a locked track",
+    execute: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const store = useTimelineStore.getState();
+      store.withBatch(() => {
+        ids.forEach((id) => {
+          const clip = store.clips.find((c) => c.id === id);
+          if (!clip) return;
+          const currentMapping = clip.playbackMapping;
+          const currentSpeed = (currentMapping?.kind === "normal" || currentMapping?.kind === "reverse")
+            ? currentMapping.speed
+            : (clip.speed ?? 1);
+          const isCurrentlyReversed = currentMapping?.kind === "reverse";
+          const mapping: PlaybackMapping = isCurrentlyReversed
+            ? { kind: "normal", speed: currentSpeed }
+            : { kind: "reverse", speed: currentSpeed };
+          store.updateClip(id, { playbackMapping: mapping });
+        });
+      });
+      const anyReversed = ids.some((id) => {
+        const c = store.clips.find((clip) => clip.id === id);
+        return c?.playbackMapping?.kind === "reverse";
+      });
+      toast.info(anyReversed ? "Clips reversed" : "Clips unreversed");
+    },
+  },
+  {
+    id: "clip.setSpeedHalf",
+    label: "Set Speed 0.5×",
+    icon: Gauge,
+    group: "speed",
+    isVisible: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => ctx.clips.some((c) => c.id === id && (c.kind === "video" || c.kind === "audio")));
+    },
+    isEnabled: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => {
+        const c = ctx.clips.find((clip) => clip.id === id);
+        return !!c && !ctx.tracks.find((t) => t.id === c.trackId)?.locked;
+      });
+    },
+    disabledReason: () => "Selected clips are on a locked track",
+    execute: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const store = useTimelineStore.getState();
+      store.withBatch(() => {
+        ids.forEach((id) => {
+          const clip = store.clips.find((c) => c.id === id);
+          if (!clip) return;
+          const isReversed = clip.playbackMapping?.kind === "reverse";
+          const mapping: PlaybackMapping = { kind: isReversed ? "reverse" : "normal", speed: 0.5 };
+          store.updateClip(id, { playbackMapping: mapping });
+        });
+      });
+      toast.info("Speed set to 0.5×");
+    },
+  },
+  {
+    id: "clip.setSpeedNormal",
+    label: "Reset Speed (1×)",
+    icon: RotateCcw,
+    group: "speed",
+    isVisible: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => {
+        const c = ctx.clips.find((clip) => clip.id === id);
+        return !!c && (c.kind === "video" || c.kind === "audio");
+      });
+    },
+    isEnabled: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => {
+        const c = ctx.clips.find((clip) => clip.id === id);
+        return !!c && !ctx.tracks.find((t) => t.id === c.trackId)?.locked;
+      });
+    },
+    disabledReason: () => "Selected clips are on a locked track",
+    execute: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const store = useTimelineStore.getState();
+      store.withBatch(() => {
+        ids.forEach((id) => store.updateClip(id, { playbackMapping: { kind: "normal", speed: 1 } }));
+      });
+      toast.success("Speed reset to 1×");
+    },
+  },
+  {
+    id: "clip.setSpeed2x",
+    label: "Set Speed 2×",
+    icon: Gauge,
+    group: "speed",
+    isVisible: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => ctx.clips.some((c) => c.id === id && (c.kind === "video" || c.kind === "audio")));
+    },
+    isEnabled: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      return ids.some((id) => {
+        const c = ctx.clips.find((clip) => clip.id === id);
+        return !!c && !ctx.tracks.find((t) => t.id === c.trackId)?.locked;
+      });
+    },
+    disabledReason: () => "Selected clips are on a locked track",
+    execute: (ctx) => {
+      const ids = getTargetClipIds(ctx);
+      const store = useTimelineStore.getState();
+      store.withBatch(() => {
+        ids.forEach((id) => {
+          const clip = store.clips.find((c) => c.id === id);
+          if (!clip) return;
+          const isReversed = clip.playbackMapping?.kind === "reverse";
+          const mapping: PlaybackMapping = { kind: isReversed ? "reverse" : "normal", speed: 2 };
+          store.updateClip(id, { playbackMapping: mapping });
+        });
+      });
+      toast.info("Speed set to 2×");
     },
   },
 ];
