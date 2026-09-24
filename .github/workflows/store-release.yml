@@ -1,0 +1,176 @@
+name: "Microsoft Store Release (MSIX)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_commit:
+        description: "Automatically commit submission to certification"
+        type: boolean
+        required: true
+        default: true
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish-store:
+    name: Build & Publish MSIX to Microsoft Store
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── LLVM / Clang Toolchain ─────────────────────────────────────────────
+      - name: Set LIBCLANG_PATH (Windows)
+        shell: powershell
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvm) {
+            echo "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV
+            Write-Host "Using runner LLVM at $llvm"
+          } else {
+            choco install llvm -y --no-progress
+            echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          }
+
+      # ── FFmpeg Native Dependencies (vcpkg for static linking) ──────────────
+      - name: Install FFmpeg Libraries (Windows)
+        shell: powershell
+        run: |
+          cd C:\vcpkg
+          git pull --quiet
+          vcpkg install ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static-md
+          echo "FFMPEG_DIR=C:/vcpkg/installed/x64-windows-static-md" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=C:/vcpkg/installed/x64-windows-static-md/lib/pkgconfig" >> $env:GITHUB_ENV
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          echo "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
+
+      # ── Toolchains ─────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Dependencies & Verified Runtime ────────────────────────────────────
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Setup Verified Static FFmpeg Sidecars (Windows)
+        shell: pwsh
+        run: .\scripts\setup-sidecars.ps1 -Target x86_64-pc-windows-msvc -Force
+
+      - name: Verify bundled media runtime
+        run: node scripts/verify-sidecars.mjs --target x86_64-pc-windows-msvc
+
+      - name: Verify MSIX Staging & Assets
+        run: npm run verify:msix
+
+      # ── Build Clypra Store Profile ─────────────────────────────────────────
+      - name: Build Clypra (Store Configuration, Unbundled)
+        run: npm run tauri build -- --no-bundle -c src-tauri/tauri.microsoftstore.conf.json
+
+      # ── Package MSIX Bundle ────────────────────────────────────────────────
+      - name: Package MSIX for Microsoft Store
+        shell: pwsh
+        run: |
+          $rawVer = if ("${{ github.ref_name }}".StartsWith("v")) {
+            "${{ github.ref_name }}".Substring(1)
+          } else {
+            (Get-Content package.json | ConvertFrom-Json).version
+          }
+          $quadVer = if ($rawVer.Split('.').Count -eq 3) { "$rawVer.0" } else { $rawVer }
+
+          $pkgName = if ("${{ secrets.MS_STORE_PACKAGE_NAME }}") {
+            "${{ secrets.MS_STORE_PACKAGE_NAME }}"
+          } else {
+            "AIEraDev.Clypra"
+          }
+
+          $pubId = if ("${{ secrets.MS_STORE_PUBLISHER_ID }}") {
+            "${{ secrets.MS_STORE_PUBLISHER_ID }}"
+          } else {
+            "CN=4FAAB289-A6A7-4C83-ADB7-10B14A849298"
+          }
+
+          $pubName = if ("${{ secrets.MS_STORE_PUBLISHER_DISPLAY_NAME }}") {
+            "${{ secrets.MS_STORE_PUBLISHER_DISPLAY_NAME }}"
+          } else {
+            "AIEraDev"
+          }
+
+          Write-Host "Invoking package-msix.ps1 with version $quadVer..."
+          .\scripts\package-msix.ps1 `
+            -Version $quadVer `
+            -PackageName $pkgName `
+            -PublisherId $pubId `
+            -PublisherDisplayName $pubName `
+            -OutputDir "dist"
+
+      # ── Save MSIX as Artifact ──────────────────────────────────────────────
+      - name: Upload MSIX Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clypra-msix-x64
+          path: dist/*.msix
+          retention-days: 14
+
+      # ── Publish to Partner Center ──────────────────────────────────────────
+      - name: Setup Microsoft Store Developer CLI
+        if: env.HAS_STORE_SECRETS == 'true'
+        env:
+          HAS_STORE_SECRETS: ${{ secrets.MS_STORE_CLIENT_ID != '' && secrets.MS_STORE_SELLER_ID != '' }}
+        uses: microsoft/microsoft-store-apppublisher@v1
+
+      - name: Publish MSIX to Microsoft Store
+        if: env.HAS_STORE_SECRETS == 'true'
+        shell: pwsh
+        env:
+          HAS_STORE_SECRETS: ${{ secrets.MS_STORE_CLIENT_ID != '' && secrets.MS_STORE_SELLER_ID != '' }}
+          TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+          SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
+          CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+          APP_ID: ${{ secrets.MS_STORE_APP_ID || '9PC3QJKK4QVW' }}
+          AUTO_COMMIT: ${{ github.event.inputs.auto_commit != 'false' }}
+        run: |
+          Write-Host "Authenticating with Microsoft Partner Center..."
+          msstore reconfigure `
+            --tenantId $env:TENANT_ID `
+            --sellerId $env:SELLER_ID `
+            --clientId $env:CLIENT_ID `
+            --clientSecret $env:CLIENT_SECRET
+
+          $msix = Get-ChildItem "dist\*.msix" | Select-Object -First 1
+          if (-not $msix) {
+            Write-Error "No MSIX file found in dist directory!"
+            exit 1
+          }
+
+          Write-Host "Submitting $($msix.FullName) for app $env:APP_ID..."
+          if ($env:AUTO_COMMIT -eq "true") {
+            msstore publish --appId $env:APP_ID --inputFile $msix.FullName
+          } else {
+            msstore publish --appId $env:APP_ID --inputFile $msix.FullName --noCommit
+          }
+
+      - name: Notice when Store secrets are not yet configured
+        if: env.HAS_STORE_SECRETS != 'true'
+        env:
+          HAS_STORE_SECRETS: ${{ secrets.MS_STORE_CLIENT_ID != '' && secrets.MS_STORE_SELLER_ID != '' }}
+        shell: pwsh
+        run: |
+          Write-Host "::notice::MSIX package generated and uploaded as artifact, but Microsoft Store credentials (MS_STORE_CLIENT_ID, MS_STORE_SELLER_ID) are not yet configured in GitHub Secrets. Skipping automatic upload."
