@@ -134,8 +134,12 @@ struct QueuedNativeFrame {
 /// visible latency buffer. This is intentionally a presentation-latency budget,
 /// not a cache-capacity limit: the cache can retain decoded frames, but the
 /// playback queue must stay close to the audio clock.
-const MAX_LOOKAHEAD_RESIDENCY_US: u64 = 100_000;
-const MAX_LOOKAHEAD_EXPIRATION_US: u64 = 250_000;
+///
+/// At 30fps (33ms budget) this allows up to ~9 frames of lookahead headroom,
+/// which absorbs decode jitter without causing lookahead-misses on the first
+/// decode-speed bump.
+const MAX_LOOKAHEAD_RESIDENCY_US: u64 = 300_000;
+const MAX_LOOKAHEAD_EXPIRATION_US: u64 = 600_000;
 const MIN_LOOKAHEAD_FRAMES: usize = 2;
 
 fn native_presentation_timing(
@@ -550,15 +554,22 @@ fn deadline_aware_lookahead_count(
     estimated_decode_us: Option<u64>,
 ) -> usize {
     let frame_budget_us = 1_000_000u64 / u64::from(frame_rate.max(1));
+    // Presentation-latency budget: don't queue frames so far ahead that they
+    // become stale before the audio clock reaches them.
     let latency_cap = (MAX_LOOKAHEAD_RESIDENCY_US / frame_budget_us).max(1) as usize;
-    let decode_coverage = estimated_decode_us
+    // Minimum frames needed to keep the sequential decode pipeline ahead of
+    // the audio clock at the measured decode speed. This is a FLOOR: if decode
+    // takes 80ms and the frame budget is 33ms, we need at least 3 frames ahead
+    // to absorb a single slow decode without a miss. Using it as a ceiling
+    // (the prior bug) guaranteed misses on any jitter.
+    let decode_floor = estimated_decode_us
         .map(|decode_us| decode_us.div_ceil(frame_budget_us) as usize)
         .unwrap_or(MIN_LOOKAHEAD_FRAMES)
         .max(MIN_LOOKAHEAD_FRAMES);
 
     configured_count
-        .min(latency_cap.max(MIN_LOOKAHEAD_FRAMES))
-        .min(decode_coverage)
+        .min(latency_cap)
+        .max(decode_floor)
         .max(1)
 }
 
@@ -3131,7 +3142,7 @@ pub(crate) async fn present_native_frame_internal(
             request.frame_time.timescale,
             is_playback,
         );
-        SYNC_METRICS.record_dropped_frame();
+        SYNC_METRICS.record_lookahead_miss();
         record_native_surface_sample(
             &app,
             &request,

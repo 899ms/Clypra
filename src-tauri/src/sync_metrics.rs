@@ -379,6 +379,7 @@ pub struct SyncMetricsSnapshot {
     pub av_drift: DriftSnapshot,
     pub frame_pacing: FramePacingSnapshot,
     pub dropped_frames: u64,
+    pub lookahead_misses: u64,
     pub seeks: SeekSnapshot,
     pub timestamp_epoch_ms: u64,
 }
@@ -388,6 +389,7 @@ pub struct SyncMetricsRegistry {
     pub av_drift: DriftAccumulator,
     pub frame_pacing: FramePacingAccumulator,
     pub dropped_frames: AtomicU64,
+    pub lookahead_misses: AtomicU64,
     seek_events: parking_lot::Mutex<VecDeque<SeekEvent>>,
     pending_seeks: parking_lot::Mutex<VecDeque<(i64, Instant)>>,
 }
@@ -397,6 +399,14 @@ impl SyncMetricsRegistry {
         // This is a realtime hot path. Keep the counter lock-free and emit the
         // result only from the bounded periodic aggregate below.
         self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a lookahead queue miss: the playback demand arrived before
+    /// the background decoder had a frame ready. This is NOT a visual drop
+    /// (the compositor shows the closest queued frame), but it is a signal
+    /// that the lookahead depth or decode throughput is insufficient.
+    pub fn record_lookahead_miss(&self) {
+        self.lookahead_misses.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_seek_requested(&self, requested_ticks: i64) {
@@ -477,11 +487,12 @@ impl SyncMetricsRegistry {
         let av_drift = self.av_drift.take_and_reset();
         let frame_pacing = self.frame_pacing.take_and_reset();
         let dropped_frames = self.dropped_frames.swap(0, Ordering::Relaxed);
+        let lookahead_misses = self.lookahead_misses.swap(0, Ordering::Relaxed);
         let seeks = {
             let mut events = self.seek_events.lock();
             seek_snapshot(events.drain(..).collect())
         };
-        snapshot_with(av_drift, frame_pacing, dropped_frames, seeks)
+        snapshot_with(av_drift, frame_pacing, dropped_frames, lookahead_misses, seeks)
     }
 
     pub fn snapshot(&self) -> SyncMetricsSnapshot {
@@ -490,6 +501,7 @@ impl SyncMetricsRegistry {
             self.av_drift.snapshot(),
             self.frame_pacing.snapshot(),
             self.dropped_frames.load(Ordering::Relaxed),
+            self.lookahead_misses.load(Ordering::Relaxed),
             seeks,
         )
     }
@@ -522,6 +534,7 @@ fn snapshot_with(
     av_drift: DriftSnapshot,
     frame_pacing: FramePacingSnapshot,
     dropped_frames: u64,
+    lookahead_misses: u64,
     seeks: SeekSnapshot,
 ) -> SyncMetricsSnapshot {
     let timestamp_epoch_ms = SystemTime::now()
@@ -532,6 +545,7 @@ fn snapshot_with(
         av_drift,
         frame_pacing,
         dropped_frames,
+        lookahead_misses,
         seeks,
         timestamp_epoch_ms,
     }

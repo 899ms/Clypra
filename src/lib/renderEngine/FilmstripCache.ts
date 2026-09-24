@@ -954,13 +954,24 @@ export class FilmstripCache {
     requestedAt: number,
     requestReason: "viewport" | "zoom",
   ): void {
-    const nativeRequestMs = Math.max(0, artifact.nativeRequestMs ?? performance.now() - requestedAt);
+    // For pyramid_fallback the tile is served from an in-memory cache —
+    // artifact.nativeRequestMs reflects a *prior* IPC decode's round-trip
+    // time, not this retrieval. Using it would inflate totalTimeToVisibleMs
+    // to the age of that historical decode (tens of seconds). Zero it out
+    // and measure only the actual bitmap-creation cost instead.
+    const isPyramidFallback = source === "pyramid_fallback";
+    const nativeRequestMs = isPyramidFallback
+      ? 0
+      : Math.max(0, artifact.nativeRequestMs ?? performance.now() - requestedAt);
     const bitmapCreationMs = Math.max(0, artifact.bitmapCreationMs ?? 0);
     filmstripTelemetry.record({
       // No project ID or path: rendering coordinates only.
       tileKey: `${artifact.spatialTier}:${Math.round(artifact.timestampMs)}`,
       source,
-      cacheLookupMs: source === "memory_tier" ? Math.max(0, performance.now() - requestedAt) : 0,
+      cacheLookupMs:
+        source === "memory_tier" || isPyramidFallback
+          ? Math.max(0, performance.now() - requestedAt)
+          : 0,
       ipcTransferMs: source === "fresh_decode" ? nativeRequestMs : 0,
       decodeMs: 0,
       bitmapCreationMs,

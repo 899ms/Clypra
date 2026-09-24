@@ -280,7 +280,7 @@ export interface NativeSurfacePresentation {
   mode?: "playback" | "scrub" | "seek" | "frameStep";
   stale?: boolean;
   cancelled?: boolean;
-  dropReason?: "stale" | "cancelled" | "late-for-audio" | "present-failed";
+  dropReason?: "stale" | "cancelled" | "late-for-audio" | "present-failed" | "lookahead-miss";
   timings?: {
     totalUs: number;
     decodeUs: number;
