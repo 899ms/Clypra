@@ -1007,3 +1007,82 @@ fn test_decode_4k_sustained_deep_zoom_memory_pressure() {
     );
     assert_eq!(total_decoded, 48);
 }
+
+#[test]
+fn test_rotate_nv12_all_orientations() {
+    use super::decoder::rotate_nv12;
+
+    // 4x2 input frame:
+    // Luma:
+    // 1 2 3 4
+    // 5 6 7 8
+    let y_src = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    // Chroma (2x1 UV pairs for 4x2 luma):
+    // Block [1,2 / 5,6] -> (10, 20)
+    // Block [3,4 / 7,8] -> (30, 40)
+    let uv_src = vec![10, 20, 30, 40];
+
+    // 90° CW -> 2x4
+    let (y_90, uv_90, w_90, h_90) = rotate_nv12(&y_src, &uv_src, 4, 2, 90);
+    assert_eq!((w_90, h_90), (2, 4));
+    assert_eq!(y_90, vec![5, 1, 6, 2, 7, 3, 8, 4]);
+    assert_eq!(uv_90, vec![10, 20, 30, 40]);
+
+    // 180° -> 4x2
+    let (y_180, uv_180, w_180, h_180) = rotate_nv12(&y_src, &uv_src, 4, 2, 180);
+    assert_eq!((w_180, h_180), (4, 2));
+    assert_eq!(y_180, vec![8, 7, 6, 5, 4, 3, 2, 1]);
+    assert_eq!(uv_180, vec![30, 40, 10, 20]);
+
+    // 270° CW -> 2x4
+    let (y_270, uv_270, w_270, h_270) = rotate_nv12(&y_src, &uv_src, 4, 2, 270);
+    assert_eq!((w_270, h_270), (2, 4));
+    assert_eq!(y_270, vec![4, 8, 3, 7, 2, 6, 1, 5]);
+    assert_eq!(uv_270, vec![30, 40, 10, 20]);
+
+    // 0° / unrotated
+    let (y_0, uv_0, w_0, h_0) = rotate_nv12(&y_src, &uv_src, 4, 2, 0);
+    assert_eq!((w_0, h_0), (4, 2));
+    assert_eq!(y_0, y_src);
+    assert_eq!(uv_0, uv_src);
+}
+
+#[test]
+fn test_pixel_video_decoder_rotation_and_nv12() {
+    let path = "/Users/AIEraDev/Documents/clypra-testing-assets/PXL_20260722_113228968.mp4";
+    if !std::path::Path::new(path).exists() {
+        return;
+    }
+    let mut decoder = super::decoder::VideoDecoder::open(path).expect("open pixel video");
+    assert_eq!(
+        decoder.rotation(),
+        90,
+        "Expected Pixel video to have 90 degree rotation metadata"
+    );
+    assert_eq!(decoder.width(), 3840);
+    assert_eq!(decoder.height(), 2160);
+    let (display_w, display_h) = decoder.display_dimensions();
+    assert_eq!(
+        (display_w, display_h),
+        (2160, 3840),
+        "Display dimensions should be swapped (portrait)"
+    );
+
+    let (y, uv, w, h, _color) = decoder
+        .decode_frame_raw_nv12(0.5)
+        .expect("decode raw nv12");
+    assert_eq!(
+        (w, h),
+        (3840, 2160),
+        "Raw NV12 frame is decoded in storage orientation"
+    );
+
+    let (ry, ruv, rw, rh) = super::decoder::rotate_nv12(&y, &uv, w, h, decoder.rotation());
+    assert_eq!(
+        (rw, rh),
+        (2160, 3840),
+        "Rotated NV12 should match display dimensions (portrait)"
+    );
+    assert_eq!(ry.len(), 2160 * 3840);
+    assert_eq!(ruv.len(), 2160 * (3840 / 2));
+}

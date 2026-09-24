@@ -1005,13 +1005,13 @@ function getNativeBodyEffect(
 }
 
 /**
- * Source orientation is metadata on the encoded frame, while `rotation` is an
- * authoring transform.  The native compositor receives decoded pixels, so it
- * must apply both transforms itself.  Keep the result in the compositor's
- * canonical [0, 360) range so a user rotation cannot undo this distinction.
+ * Returns the user/author rotation for the compositor transform matrix.
+ * Source orientation (e.g. a Pixel portrait video stored landscape) is now
+ * corrected at the pixel level via `rotate_nv12` in Rust before GPU upload,
+ * so it must NOT also be applied here — doing so would double-rotate the image.
  */
 function getNativeLayerRotation(layer: EvaluatedMediaLayer): number {
-  const rotation = (layer.rotation ?? 0) + (layer.sourceRotation ?? 0);
+  const rotation = layer.rotation ?? 0;
   return ((rotation % 360) + 360) % 360;
 }
 

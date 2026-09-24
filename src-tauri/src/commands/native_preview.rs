@@ -37,7 +37,7 @@ use tauri::{Emitter, Manager};
 
 use crate::thumbnail_engine::stream_actor::DecodedVideoPlanes;
 
-type DecodedNativeVideoFrame = (DecodedVideoPlanes, u32, u32, VideoColorMetadata);
+type DecodedNativeVideoFrame = (DecodedVideoPlanes, u32, u32, VideoColorMetadata, u32);
 static NATIVE_SURFACE_PRESENTATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Register an editor font before a frame request references it. The native
@@ -2064,7 +2064,7 @@ async fn render_native_video_project_frame_bytes_timed(
         decoder_mutex_wait_us = decode_timings.decoder_mutex_wait_us;
 
         session = state.lock().await;
-        for (layer, (planes, width, height, color)) in
+        for (layer, (planes, width, height, color, source_rotation)) in
             request.layers.iter().zip(decoded_frames.iter())
         {
             let params = color_params(color)?;
@@ -2104,9 +2104,35 @@ async fn render_native_video_project_frame_bytes_timed(
                     let (y_plane, uv_plane) = planes.cpu_planes().ok_or_else(|| {
                         "CPU fallback planes unavailable for preview rendering".to_string()
                     })?;
-                    session.render_nv12_frame_to_texture(
-                        layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
-                    )?
+
+                    // Rotate NV12 pixels to upright orientation when the source has a
+                    // non-zero display rotation (e.g. portrait Pixel video stored landscape).
+                    // This matches the thumbnail path's rotate_rgba step so the GPU compositor
+                    // always receives an already-upright texture and applies only the
+                    // user/author rotation via the transform matrix.
+                    let (tex_w, tex_h);
+                    let texture = if *source_rotation != 0 {
+                        let (ry, ruv, rw, rh) =
+                            crate::thumbnail_engine::decoder::rotate_nv12(
+                                y_plane,
+                                uv_plane,
+                                *width,
+                                *height,
+                                *source_rotation,
+                            );
+                        tex_w = rw;
+                        tex_h = rh;
+                        session.render_nv12_frame_to_texture(
+                            layer_key, tex_w, tex_h, tex_w, tex_h, &ry, &ruv, &params,
+                        )?
+                    } else {
+                        tex_w = *width;
+                        tex_h = *height;
+                        session.render_nv12_frame_to_texture(
+                            layer_key, tex_w, tex_h, tex_w, tex_h, y_plane, uv_plane, &params,
+                        )?
+                    };
+                    texture
                 }
             };
             views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
@@ -3386,7 +3412,7 @@ pub(crate) async fn present_native_frame_internal(
         Vec::with_capacity(legacy_request.layers.len() + legacy_request.raster_layers.len());
     let mut used_dxgi_zero_copy = false;
     let mut used_cpu_nv12 = false;
-    for (layer_idx, (layer, (planes, width, height, color))) in legacy_request
+    for (layer_idx, (layer, (planes, width, height, color, source_rotation))) in legacy_request
         .layers
         .iter()
         .zip(decoded_frames.iter())
@@ -3473,9 +3499,29 @@ pub(crate) async fn present_native_frame_internal(
                 None => match planes.cpu_planes() {
                     Some((y_plane, uv_plane)) => {
                         used_cpu_nv12 = true;
-                        session.render_nv12_frame_to_texture(
-                            layer_key, *width, *height, *width, *height, y_plane, uv_plane, &params,
-                        )?
+                        let (tex_w, tex_h);
+                        let texture = if *source_rotation != 0 {
+                            let (ry, ruv, rw, rh) =
+                                crate::thumbnail_engine::decoder::rotate_nv12(
+                                    y_plane,
+                                    uv_plane,
+                                    *width,
+                                    *height,
+                                    *source_rotation,
+                                );
+                            tex_w = rw;
+                            tex_h = rh;
+                            session.render_nv12_frame_to_texture(
+                                layer_key, tex_w, tex_h, tex_w, tex_h, &ry, &ruv, &params,
+                            )?
+                        } else {
+                            tex_w = *width;
+                            tex_h = *height;
+                            session.render_nv12_frame_to_texture(
+                                layer_key, tex_w, tex_h, tex_w, tex_h, y_plane, uv_plane, &params,
+                            )?
+                        };
+                        texture
                     }
                     None => {
                         crate::wgpu_compositor::adapter_selector::mark_dxgi_runtime_disabled();

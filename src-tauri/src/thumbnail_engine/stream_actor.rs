@@ -77,6 +77,11 @@ pub struct DecodedActorFrame {
     pub planes: DecodedVideoPlanes,
     pub width: u32,
     pub height: u32,
+    /// Source orientation from container metadata (0, 90, 180, 270 degrees).
+    /// The raw NV12 planes are in storage/encoded orientation; callers that
+    /// composite at the pixel level (i.e. native preview) must rotate the
+    /// pixel data by this amount before uploading to the GPU.
+    pub source_rotation: u32,
     pub color: VideoColorMetadata,
     pub decode_us: u32,
     pub decoder_mutex_wait_us: u64,
@@ -90,8 +95,16 @@ pub struct DecodedActorFrame {
 }
 
 impl DecodedActorFrame {
-    pub fn into_native_video_frame(self) -> (DecodedVideoPlanes, u32, u32, VideoColorMetadata) {
-        (self.planes, self.width, self.height, self.color)
+    pub fn into_native_video_frame(
+        self,
+    ) -> (DecodedVideoPlanes, u32, u32, VideoColorMetadata, u32) {
+        (
+            self.planes,
+            self.width,
+            self.height,
+            self.color,
+            self.source_rotation,
+        )
     }
 
     pub fn y_plane(&self) -> Option<&Arc<[u8]>> {
@@ -470,6 +483,7 @@ impl StreamDecoderActor {
             let stream_color = guard.metadata().color;
             let container_format = guard.container_format().to_string();
             let is_hardware_accelerated = guard.is_hardware_accelerated();
+            let source_rotation = guard.rotation();
 
             #[cfg(target_os = "windows")]
             if crate::wgpu_compositor::adapter_selector::is_dxgi_runtime_enabled() {
@@ -504,6 +518,7 @@ impl StreamDecoderActor {
                             demux_us,
                             container_format,
                             is_hardware_accelerated,
+                            source_rotation,
                         ));
                     }
                     Ok(None) => {
@@ -540,6 +555,7 @@ impl StreamDecoderActor {
                         demux_us,
                         container_format,
                         is_hardware_accelerated,
+                        source_rotation,
                     ))
                 }
                 Err(err) => Err(err),
@@ -559,6 +575,7 @@ impl StreamDecoderActor {
             demux_us,
             container_format,
             is_hardware_accelerated,
+            source_rotation,
         ) = result?;
 
         Ok(DecodedActorFrame {
@@ -566,6 +583,7 @@ impl StreamDecoderActor {
             planes,
             width,
             height,
+            source_rotation,
             color,
             decode_us,
             decoder_mutex_wait_us: mutex_wait_us,
@@ -650,6 +668,7 @@ mod tests {
             },
             width: 4,
             height: 4,
+            source_rotation: 0,
             color: VideoColorMetadata::default(),
             decode_us: 100,
             decoder_mutex_wait_us: 50,
@@ -703,6 +722,7 @@ mod tests {
             },
             width: 4,
             height: 4,
+            source_rotation: 0,
             color: VideoColorMetadata::default(),
             decode_us: 10,
             decoder_mutex_wait_us: 5,
