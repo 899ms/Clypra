@@ -4,9 +4,9 @@
   "version": "1.5.3",
   "identifier": "com.deenminder.clypra",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run ensure:sidecars && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run ensure:sidecars && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

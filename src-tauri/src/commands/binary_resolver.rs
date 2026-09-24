@@ -213,6 +213,11 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
                 ];
                 for candidate in candidates {
                     if is_real_executable(&candidate) {
+                        log::info!(
+                            "[BinaryResolver] Resolved '{}' via Tier 1 (bundled runtime) -> {:?}",
+                            base_name,
+                            candidate
+                        );
                         return Some(candidate);
                     }
                 }
@@ -233,10 +238,26 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
             ];
             for candidate in candidates {
                 if is_real_executable(&candidate) {
+                    log::info!(
+                        "[BinaryResolver] Resolved '{}' via Tier 2 (workspace sidecar) -> {:?}",
+                        base_name,
+                        candidate
+                    );
                     return Some(candidate);
                 }
             }
         }
+    }
+
+    // Strict isolation guard: if CLYPRA_REQUIRE_BUNDLED_MEDIA is set, disallow system PATH fallback
+    if std::env::var("CLYPRA_REQUIRE_BUNDLED_MEDIA")
+        .map_or(false, |v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        log::error!(
+            "[BinaryResolver] CLYPRA_REQUIRE_BUNDLED_MEDIA is active but '{}' was not found in Tier 1 or Tier 2. Refusing system PATH fallback.",
+            base_name
+        );
+        return None;
     }
 
     // Tier 3: Search within the augmented PATH
@@ -254,8 +275,8 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
         for name in &names {
             let candidate = dir.join(name);
             if is_real_executable(&candidate) {
-                log::debug!(
-                    "[BinaryResolver] Resolved '{}' via PATH -> {:?}",
+                log::warn!(
+                    "[BinaryResolver] Resolved '{}' via Tier 3 (system PATH fallback) -> {:?}. Verified bundled/workspace sidecars are recommended.",
                     base_name,
                     candidate
                 );
@@ -488,5 +509,13 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_strict_bundled_media_guard_rejects_fallback() {
+        std::env::set_var("CLYPRA_REQUIRE_BUNDLED_MEDIA", "1");
+        let result = resolve_binary_path("non_existent_media_tool_12345");
+        std::env::remove_var("CLYPRA_REQUIRE_BUNDLED_MEDIA");
+        assert!(result.is_none());
     }
 }
