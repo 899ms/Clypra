@@ -351,6 +351,69 @@ export type {
   SmartOverlayPreset,
 } from "./smartOverlay";
 
+// ─── Per-clip time remapping ──────────────────────────────────────────────────
+//
+// A clip's source-time is derived from global timeline time via a PlaybackMapping.
+// This is the single abstraction that covers freeze-frames, slow-motion, speed
+// ramps, reverse playback, and all future time-remapping effects:
+//
+//   timeline_time → PlaybackMapping → source_time
+//
+// The evaluator calls resolveClipSourceTime() which dispatches on the mapping kind.
+// Freeze is just "constant source_time". SpeedRamp integrates a speed curve.
+// Normal is trimIn + localTime * speed. Reverse is trimOut − localTime.
+//
+// NOTE: These are per-clip settings, fully independent of the global PlaybackClock
+// pause/play state. A frozen clip stays frozen while other clips keep playing.
+
+/** Constant-speed playback (speed=1 for normal, >1 for fast, <1 for slow). */
+export interface PlaybackMappingNormal {
+  kind: "normal";
+  /** Playback rate multiplier. 1.0 = real-time. Must be > 0. */
+  speed: number;
+}
+
+/** Clip plays from trimOut back to trimIn at the given speed. */
+export interface PlaybackMappingReverse {
+  kind: "reverse";
+  /** Playback rate multiplier applied to reverse playback. Default 1.0. */
+  speed: number;
+}
+
+/** Source time is held constant at `atSourceTime` regardless of timeline position. */
+export interface PlaybackMappingFreeze {
+  kind: "freeze";
+  /** Source-media time (seconds) to hold. */
+  atSourceTime: number;
+}
+
+/**
+ * Variable-speed playback driven by a sequence of (timeline_time, speed) keyframes.
+ * Source time is the integral of the speed curve from 0 to localTime.
+ */
+export interface PlaybackMappingSpeedRamp {
+  kind: "speed_ramp";
+  keyframes: Array<{
+    /** Timeline-local time in seconds (relative to clip start). */
+    time: number;
+    /** Instantaneous playback speed at this keyframe. Must be > 0. */
+    speed: number;
+    /** Optional cubic bezier easing to the next keyframe [x1,y1,x2,y2]. */
+    easing?: [number, number, number, number];
+  }>;
+}
+
+/**
+ * Per-clip time-remapping policy.
+ *
+ * Absent or undefined → treated as `{ kind: "normal", speed: 1 }`.
+ */
+export type PlaybackMapping =
+  | PlaybackMappingNormal
+  | PlaybackMappingReverse
+  | PlaybackMappingFreeze
+  | PlaybackMappingSpeedRamp;
+
 export interface Clip {
   id: string;
   name?: string;
@@ -366,6 +429,22 @@ export interface Clip {
   height: number;
   opacity: number;
   rotation: number;
+
+  // ── Time remapping ─────────────────────────────────────────────────────────
+  /**
+   * Per-clip playback mapping. Absent → normal speed (1.0).
+   *
+   * Use this instead of the legacy `speed` scalar when you need freeze-frames,
+   * reverse, or variable-speed ramps. resolveClipSourceTime dispatches on this.
+   */
+  playbackMapping?: PlaybackMapping;
+  /**
+   * Legacy flat-scalar speed. Kept for backward compat with clips that predate
+   * `playbackMapping`. resolveClipSourceTime reads `playbackMapping` first;
+   * this field is the fallback.
+   * @deprecated Prefer `playbackMapping: { kind: "normal", speed }`.
+   */
+  speed?: number;
   /** Compositor layer blend mode (e.g. normal, multiply, screen, overlay, additive, difference) */
   blendMode?: BlendMode;
   /** Base unscaled dimensions for GPU quad transform calculation */

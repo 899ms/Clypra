@@ -76,9 +76,73 @@ export class PlaybackClock {
   private _lastNotifyTime: number = 0;
   private _notifyThrottleMs: number = 100; // Notify UI max 10fps
 
+  /** @private Per-clip freeze overrides: clipId → source-media time (seconds) to hold. */
+  private _clipFreezeMap: Map<string, number> = new Map();
+
   constructor() {
     // Constructor initialization
   }
+
+  // ─── Clip-level freeze API ─────────────────────────────────────────────────
+  //
+  // This is DISTINCT from the global timeline pause.
+  //
+  //   Global pause (this.pause()):
+  //     The entire timeline stops. PlaybackClock._state = "paused".
+  //     Every clip freezes at the global time position.
+  //
+  //   Per-clip freeze (freezeClipAt / unfreezeClip):
+  //     Only one clip's source-media progression stops at a chosen frame.
+  //     The global clock continues ticking; other clips keep playing.
+  //     Internally this sets playbackMapping: { kind: "freeze", atSourceTime }
+  //     on the clip data, but PlaybackClock also tracks it here so the preview
+  //     engine can read it without going through the store.
+  //
+  // Typical call-sites:
+  //   - Timeline store: when user applies a "Freeze Frame" action
+  //   - Evaluator: reads via getClipFreezeTime to short-circuit source resolution
+
+  /**
+   * Record a per-clip freeze at the given source-media time.
+   * The global clock is NOT paused.
+   *
+   * @param clipId       - The clip to freeze
+   * @param sourceTime   - Source-media time (seconds) to hold indefinitely
+   */
+  freezeClipAt(clipId: string, sourceTime: number): void {
+    if (!Number.isFinite(sourceTime) || sourceTime < 0) return;
+    this._clipFreezeMap.set(clipId, sourceTime);
+  }
+
+  /**
+   * Remove a per-clip freeze, returning the clip to normal PlaybackMapping.
+   */
+  unfreezeClip(clipId: string): void {
+    this._clipFreezeMap.delete(clipId);
+  }
+
+  /**
+   * Returns the frozen source-media time for a clip, or `undefined` if the clip
+   * is not frozen at the clock level.
+   *
+   * NOTE: The authoritative freeze source is the clip's `playbackMapping` field.
+   * This map is a runtime shadow that lets the preview engine skip a store lookup.
+   */
+  getClipFreezeTime(clipId: string): number | undefined {
+    return this._clipFreezeMap.get(clipId);
+  }
+
+  /** True if any per-clip freezes are currently active. */
+  get hasClipFreezes(): boolean {
+    return this._clipFreezeMap.size > 0;
+  }
+
+  /** Clear all per-clip freezes (called on stop() or project close). */
+  clearAllClipFreezes(): void {
+    this._clipFreezeMap.clear();
+  }
+
+
 
   /** Attach the shared audio clock used by the program audio engine. */
   attachAudioContext(audioContext: AudioContext): void {
@@ -423,6 +487,9 @@ export class PlaybackClock {
     this._time = 0;
     this._isSeeking = false;
     this._nativeClockPosition = null;
+    // Per-clip freezes are session-scoped — clear them when the project stops.
+    this._clipFreezeMap.clear();
+
 
     // Single notification for all changes
     this._notifyListeners();
