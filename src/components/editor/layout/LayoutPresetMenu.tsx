@@ -3,6 +3,7 @@ import { LayoutGrid, Check } from "lucide-react";
 import { useSettingsStore, type LayoutPreset } from "@/store/settingsStore";
 import { useClickOutside } from "@/hooks";
 import { hideNativeSurfaceWhenIdle } from "@/core/runtime/nativeSurfaceLifecycle";
+import { forceRepaintNativeProgramPreview } from "@/components/editor/preview/NativeProgramPreview";
 
 interface PresetOption {
   id: LayoutPreset;
@@ -22,6 +23,9 @@ export const LayoutPresetMenu: React.FC = () => {
   useEffect(() => {
     if (isOpen) {
       void hideNativeSurfaceWhenIdle().catch(() => undefined);
+    } else {
+      // Menu closed — repaint the canvas so the current frame is visible again.
+      forceRepaintNativeProgramPreview();
     }
   }, [isOpen]);
 

@@ -18,7 +18,11 @@ import { useProjectStore } from "@/store/projectStore";
 import { useTimelineStore } from "@/store/timelineStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSettingsStore } from "@/store/settingsStore";
-import { getActiveSessionOrNull } from "@/core/runtime/ProjectSession";
+import {
+  getActiveSessionOrNull,
+  subscribeToSessionChanges,
+  type ProjectSession,
+} from "@/core/runtime/ProjectSession";
 import { isProtectedInteractiveElement } from "@/core/selection/selectionCoordinator";
 import {
   getPreviewInteractionCoordinator,
@@ -204,6 +208,42 @@ function getReusableCanvasImageData(
   const image = context.createImageData(width, height);
   reusableCanvasImages.set(canvas, { width, height, image });
   return image;
+}
+
+/**
+ * Module-level registry for the active program preview render-loop wakeup fn.
+ *
+ * External callers (TopBar, modal overlays) that call `hideNativeSurfaceWhenIdle`
+ * must also call `wakeNativeProgramPreviewRenderLoop()` when they are done, so
+ * the WebView canvas is repainted with a fresh frame instead of staying black.
+ *
+ * The function is a no-op when the preview is not mounted or is actively playing
+ * (the RAF loop is already running in that case).
+ */
+let _globalPreviewWakeFn: (() => void) | null = null;
+let _globalPreviewForceRepaintFn: (() => void) | null = null;
+let _pendingForceRepaint = false;
+
+export function wakeNativeProgramPreviewRenderLoop(): void {
+  _globalPreviewWakeFn?.();
+}
+
+/**
+ * Force an unconditional canvas repaint on the next RAF tick.
+ *
+ * Use this after `hideNativeSurfaceWhenIdle()` or on editor project session start
+ * to guarantee the WebView canvas is repainted with the current frame even if
+ * time/epoch/clips haven't changed.
+ *
+ * If called before the preview render loop is mounted, the request is latched
+ * and executed as soon as the render loop initializes.
+ */
+export function forceRepaintNativeProgramPreview(): void {
+  if (_globalPreviewForceRepaintFn) {
+    _globalPreviewForceRepaintFn();
+  } else {
+    _pendingForceRepaint = true;
+  }
 }
 
 /**
@@ -423,6 +463,20 @@ export const NativeProgramPreview: React.FC = () => {
 
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(100);
+
+  const [activeSession, setActiveSession] = useState<ProjectSession | null>(
+    () => getActiveSessionOrNull(),
+  );
+
+  useEffect(() => {
+    return subscribeToSessionChanges(() => {
+      const nextSession = getActiveSessionOrNull();
+      setActiveSession(nextSession);
+      if (nextSession) {
+        forceRepaintNativeProgramPreview();
+      }
+    });
+  }, []);
 
   // Tauri Program Preview has one native A/V authority. Browser Web Audio is
   // retained only for browser preview; native failures must surface through
@@ -669,13 +723,11 @@ export const NativeProgramPreview: React.FC = () => {
             profile,
             previewTelemetryContextRef.current,
             `sequence:${sequence}:${sample.requestId}:${sample.frameIndex}`,
-            previewPerformancePolicyRef.current
-              .policyFor(
-                nativeGpuAdapterNameRef.current,
-                renderStateRef.current.canvasWidth,
-                renderStateRef.current.canvasHeight,
-              )
-              .capabilityPolicy,
+            previewPerformancePolicyRef.current.policyFor(
+              nativeGpuAdapterNameRef.current,
+              renderStateRef.current.canvasWidth,
+              renderStateRef.current.canvasHeight,
+            ).capabilityPolicy,
           );
         }
         lastNativeSampleSequenceRef.current = nativeSampleBatch.nextSequence;
@@ -699,13 +751,11 @@ export const NativeProgramPreview: React.FC = () => {
             profile,
             previewTelemetryContextRef.current,
             nativeSampleCursor,
-            previewPerformancePolicyRef.current
-              .policyFor(
-                nativeGpuAdapterNameRef.current,
-                renderStateRef.current.canvasWidth,
-                renderStateRef.current.canvasHeight,
-              )
-              .capabilityPolicy,
+            previewPerformancePolicyRef.current.policyFor(
+              nativeGpuAdapterNameRef.current,
+              renderStateRef.current.canvasWidth,
+              renderStateRef.current.canvasHeight,
+            ).capabilityPolicy,
           );
         }
       }
@@ -1312,10 +1362,23 @@ export const NativeProgramPreview: React.FC = () => {
     const capturedSession = getActiveSessionOrNull();
     if (!capturedSession) return;
 
+    // Guard: the render loop is keyed on activeSession?.sessionId as a dep.
+    // If the React state (activeSession) and the global session registry have
+    // diverged — which happens during a fast project switch where the dep
+    // fires before subscribeToSessionChanges has resolved — bail immediately.
+    // The dep change will fire again once activeSession catches up, restarting
+    // the loop with the correct session.
+    if (
+      activeSession &&
+      capturedSession.sessionId !== activeSession.sessionId
+    ) {
+      return;
+    }
+
     let rafId: number | null = null;
     let isActive = true;
     let renderInFlight = false;
-    let forceRenderNeeded = false;
+    let forceRenderNeeded = true;
     let lastRenderedFrameIndex = -1;
     let lastRenderedEpoch = -1;
     let lastRenderedTransportRevision = -1;
@@ -2322,6 +2385,21 @@ export const NativeProgramPreview: React.FC = () => {
       });
     };
     wakeNativeRenderLoopRef.current = scheduleNextFrame;
+    // Publish to the module-level registry so external callers (TopBar, modals)
+    // can force a canvas repaint after hiding the native surface.
+    _globalPreviewWakeFn = scheduleNextFrame;
+    // forceRepaint sets the dirty flag first so mightNeedRender is guaranteed true,
+    // then schedules the next frame — needed when time/epoch/clips are all unchanged
+    // (e.g. immediately after closing the export dialog with a hidden native surface).
+    _globalPreviewForceRepaintFn = () => {
+      forceRenderNeeded = true;
+      scheduleNextFrame();
+    };
+    if (_pendingForceRepaint) {
+      _pendingForceRepaint = false;
+      forceRenderNeeded = true;
+      scheduleNextFrame();
+    }
 
     // Transform feedback is an ephemeral render concern. Keep it outside
     // renderStateRef and Zustand so a pointer drag cannot invalidate every
@@ -2446,7 +2524,9 @@ export const NativeProgramPreview: React.FC = () => {
         // Lane 1: Low-resolution proxy scrub lane (capped <= 480px, proxy/quarter quality)
         // Lane 2: Full-resolution settled lane (full quality, full dimensions)
         let effectiveRenderTarget = renderTarget;
-        const isCoarseSeek = Boolean(latestSeekIntent?.allowKeyframeApprox && !isSettling);
+        const isCoarseSeek = Boolean(
+          latestSeekIntent?.allowKeyframeApprox && !isSettling,
+        );
         if (isScrubbing || isCoarseSeek) {
           const maxScrubDim = 480;
           const scrubScale = Math.min(
@@ -2474,13 +2554,14 @@ export const NativeProgramPreview: React.FC = () => {
                 isPlaying && latestSeekIntent.mode !== "scrub"
                   ? ("playback" as const)
                   : latestSeekIntent.mode,
-              quality: isScrubbing || isCoarseSeek
-                ? effectiveRenderTarget.quality
-                : isSettling
-                  ? ("full" as const)
-                  : latestSeekIntent.quality !== "full"
-                    ? latestSeekIntent.quality
-                    : effectiveRenderTarget.quality,
+              quality:
+                isScrubbing || isCoarseSeek
+                  ? effectiveRenderTarget.quality
+                  : isSettling
+                    ? ("full" as const)
+                    : latestSeekIntent.quality !== "full"
+                      ? latestSeekIntent.quality
+                      : effectiveRenderTarget.quality,
               velocityPxPerSecond: latestSeekIntent.velocityPxPerSecond,
               requestedAtMs: latestSeekIntent.issuedAtMs,
               isScrubbing: latestSeekIntent.isScrubbing,
@@ -2638,7 +2719,10 @@ export const NativeProgramPreview: React.FC = () => {
           ) {
             return false;
           }
-          const currentFrame = getFrameIndexAtTime(current.clock.time, frameRate);
+          const currentFrame = getFrameIndexAtTime(
+            current.clock.time,
+            frameRate,
+          );
           return Math.abs(currentFrame - frameIndex) <= 1;
         };
         if (!playbackTargetStillCurrent()) {
@@ -2788,7 +2872,9 @@ export const NativeProgramPreview: React.FC = () => {
         // Keep the canvas representation usable while the bridge publishes its
         // asset, then request a retry instead of hard-blocking native preview.
         const nativeOnlySceneBlocked =
-          nativeOnlyMode && !nativeRequest && nativeUnsupportedBlockers.length > 0;
+          nativeOnlyMode &&
+          !nativeRequest &&
+          nativeUnsupportedBlockers.length > 0;
         if (nativeReadinessBlockers.length > 0) {
           const readinessKey = nativeReadinessBlockers.join("\n");
           if (nativeReadinessQueueKey !== readinessKey) {
@@ -2995,10 +3081,10 @@ export const NativeProgramPreview: React.FC = () => {
         const cachedNativeFrame =
           nativeRequestKey !== ""
             ? (nativePreviewScheduler.getCached(nativeRequestKey) ??
-               (clampedNativeRequestKey !== "" &&
-               clampedNativeRequestKey !== nativeRequestKey
-                 ? nativePreviewScheduler.getCached(clampedNativeRequestKey)
-                 : null))
+              (clampedNativeRequestKey !== "" &&
+              clampedNativeRequestKey !== nativeRequestKey
+                ? nativePreviewScheduler.getCached(clampedNativeRequestKey)
+                : null))
             : null;
         const nativePausedReadbackPath = nativePausedPath;
         const nativeFrameNeedsRetry =
@@ -3475,7 +3561,9 @@ export const NativeProgramPreview: React.FC = () => {
                     demandDelayUs,
                   );
                 }
-                const readbackRequest = clampReadbackRequest(requestSource.request);
+                const readbackRequest = clampReadbackRequest(
+                  requestSource.request,
+                );
                 const readbackRequestKey =
                   readbackRequest === requestSource.request
                     ? requestKey
@@ -3994,6 +4082,13 @@ export const NativeProgramPreview: React.FC = () => {
       if (wakeNativeRenderLoopRef.current === scheduleNextFrame) {
         wakeNativeRenderLoopRef.current = null;
       }
+      // Clear module-level registry if this instance still owns it.
+      if (_globalPreviewWakeFn === scheduleNextFrame) {
+        _globalPreviewWakeFn = null;
+      }
+      if (_globalPreviewForceRepaintFn) {
+        _globalPreviewForceRepaintFn = null;
+      }
       if (rafId !== null) cancelAnimationFrame(rafId);
       frameScheduled = false;
       standaloneVideoCache.forEach((video) => {
@@ -4016,7 +4111,7 @@ export const NativeProgramPreview: React.FC = () => {
     // Audit 4.6 fix: nativeSurfaceReady removed from deps — it is now read from
     // nativeSurfaceReadyRef.current inside the loop, preventing the loop from restarting
     // (and emitting a blank frame) on every native surface probe and window resize.
-  }, [canvasEl, project?.id, projectInitializing]);
+  }, [canvasEl, project?.id, projectInitializing, activeSession?.sessionId]);
 
   // Wake the paused native renderer for timeline edits, text input, seeks,
   // and viewport changes. When actively playing, the RAF loop runs continuously;

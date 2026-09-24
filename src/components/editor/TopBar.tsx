@@ -18,6 +18,7 @@ import { platform } from "@/core/platform";
 import { isMacOSPlatform } from "@/lib/platform/windowPlatform";
 import { LayoutPresetMenu } from "./layout/LayoutPresetMenu";
 import { hideNativeSurfaceWhenIdle } from "@/core/runtime/nativeSurfaceLifecycle";
+import { forceRepaintNativeProgramPreview } from "@/components/editor/preview/NativeProgramPreview";
 import { useClickOutside } from "@/hooks";
 
 // Lazy load ExportDialog
@@ -53,6 +54,15 @@ const TopBarComponent: React.FC<TopBarProps> = ({ onRequestClose }) => {
   useEffect(() => {
     if (showExportDialog || showThumbnailWorkspace || showExportMenu) {
       void hideNativeSurfaceWhenIdle().catch(() => undefined);
+    }
+  }, [showExportDialog, showThumbnailWorkspace, showExportMenu]);
+
+  // When every overlay closes, the native surface has been hidden and the
+  // WebView canvas is black. Force an unconditional repaint so the current
+  // frame is painted onto the canvas — even if time/epoch/clips are unchanged.
+  useEffect(() => {
+    if (!showExportDialog && !showThumbnailWorkspace && !showExportMenu) {
+      forceRepaintNativeProgramPreview();
     }
   }, [showExportDialog, showThumbnailWorkspace, showExportMenu]);
 

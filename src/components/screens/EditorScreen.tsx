@@ -23,6 +23,15 @@ export const EditorScreen: React.FC<EditorScreenProps> = ({ onRequestClose }) =>
     setDuration(projectDuration);
   }, [projectDuration, setDuration]);
 
+  // Force page/preview rendering when the editor screen mounts
+  useEffect(() => {
+    import("@/components/editor/preview/NativeProgramPreview")
+      .then(({ forceRepaintNativeProgramPreview }) => {
+        forceRepaintNativeProgramPreview();
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <ErrorBoundary>
       <DndProvider backend={HTML5Backend}>

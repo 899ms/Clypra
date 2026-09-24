@@ -662,6 +662,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (state.projectInitialization?.id !== initializationId) return state;
       return { projectInitialization: null };
     });
+    // Force preview rendering on editor project session start
+    import("@/components/editor/preview/NativeProgramPreview")
+      .then(({ forceRepaintNativeProgramPreview }) => {
+        forceRepaintNativeProgramPreview();
+      })
+      .catch(() => {});
   },
   failProjectInitialization: (initializationId, error) => {
     set((state) => {
