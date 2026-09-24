@@ -18,7 +18,7 @@ export interface NativeFrontendPerfSample {
   dropped: boolean;
   stale: boolean;
   cancelled: boolean;
-  dropReason?: "stale" | "cancelled" | "late-for-audio" | "present-failed";
+  dropReason?: "stale" | "cancelled" | "late-for-audio" | "present-failed" | "lookahead-miss";
   previewContext?: TelemetryPreviewContext;
   stageTimings?: Partial<TelemetryStageTimings>;
 }
@@ -108,7 +108,7 @@ export class NativePerfSpan {
     dropped?: boolean;
     stale?: boolean;
     cancelled?: boolean;
-    dropReason?: "stale" | "cancelled" | "late-for-audio" | "present-failed";
+    dropReason?: "stale" | "cancelled" | "late-for-audio" | "present-failed" | "lookahead-miss";
     stageTimings?: Partial<TelemetryStageTimings>;
   } = {}): void {
     if (this.finished) return;

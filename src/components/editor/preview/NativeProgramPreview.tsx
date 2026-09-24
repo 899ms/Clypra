@@ -3289,7 +3289,14 @@ export const NativeProgramPreview: React.FC = () => {
                       });
                       lastNativePlaybackRequestKey = "";
                       if (presentation.dropped) {
-                        nativeDroppedFrameCount += 1;
+                        // A "lookahead-miss" is a queue scheduling event: the
+                        // background decoder hadn't produced the frame yet, so
+                        // the compositor uses the closest queued frame. It is
+                        // NOT a visual frame drop and must not inflate the
+                        // dropped-frame counter shown to users.
+                        if (presentation.dropReason !== "lookahead-miss") {
+                          nativeDroppedFrameCount += 1;
+                        }
                         if (
                           isPlaying &&
                           nativePlaybackRenderSnapshotInFlight === null &&
