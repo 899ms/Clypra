@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
+use std::sync::OnceLock;
 use web_time::Instant;
 use wgpu::util::DeviceExt;
 
@@ -231,7 +232,7 @@ pub struct LayerUniforms {
     pub body_effect: BodyEffectUniforms, // 32 bytes
     /// Motion blur: [displacement_x, displacement_y, sample_count, enabled(0/1)]
     /// displacement in UV-space units; enabled=1.0 activates the blur pass.
-    pub motion_blur: [f32; 4],           // 16 bytes
+    pub motion_blur: [f32; 4], // 16 bytes
 }
 
 /// A single renderable layer on the timeline.
@@ -272,6 +273,27 @@ impl<'a> CompositeLayer<'a> {
 struct QuadVertex {
     position: [f32; 2],
     uv: [f32; 2],
+}
+
+const QUAD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 8,
+        shader_location: 1,
+    },
+];
+
+fn quad_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<QuadVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &QUAD_VERTEX_ATTRIBUTES,
+    }
 }
 
 /// Uniforms for dual-texture GPU transitions matching gpu_transitions.wgsl (48 bytes).
@@ -355,10 +377,14 @@ pub struct MultiTrackCompositor {
     pub width: u32,
     pub height: u32,
     pub pipeline_normal: wgpu::RenderPipeline,
-    pub pipeline_additive: wgpu::RenderPipeline,
-    pub pipeline_multiply: wgpu::RenderPipeline,
-    pub pipeline_screen: wgpu::RenderPipeline,
-    pub pipeline_transition: wgpu::RenderPipeline,
+    pipeline_additive: OnceLock<wgpu::RenderPipeline>,
+    pipeline_multiply: OnceLock<wgpu::RenderPipeline>,
+    pipeline_screen: OnceLock<wgpu::RenderPipeline>,
+    pipeline_transition: OnceLock<wgpu::RenderPipeline>,
+    layer_shader: wgpu::ShaderModule,
+    transition_shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    transition_pipeline_layout: wgpu::PipelineLayout,
     pub uniform_bind_group_layout: wgpu::BindGroupLayout,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     pub transition_uniform_bind_group_layout: wgpu::BindGroupLayout,
@@ -374,6 +400,151 @@ pub struct MultiTrackCompositor {
 }
 
 impl MultiTrackCompositor {
+    fn create_layer_pipeline(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        pipeline_layout: &wgpu::PipelineLayout,
+        target_format: wgpu::TextureFormat,
+        blend: wgpu::BlendState,
+        label: &'static str,
+    ) -> wgpu::RenderPipeline {
+        let vertex_buffer_layout = quad_vertex_layout();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&vertex_buffer_layout),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        })
+    }
+
+    fn blend_pipeline(&self, device: &wgpu::Device, mode: BlendMode) -> &wgpu::RenderPipeline {
+        match mode {
+            BlendMode::Additive => self.pipeline_additive.get_or_init(|| {
+                Self::create_layer_pipeline(
+                    device,
+                    &self.layer_shader,
+                    &self.pipeline_layout,
+                    self.target_format,
+                    wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    },
+                    "Compositor Additive Render Pipeline",
+                )
+            }),
+            BlendMode::Multiply => self.pipeline_multiply.get_or_init(|| {
+                Self::create_layer_pipeline(
+                    device,
+                    &self.layer_shader,
+                    &self.pipeline_layout,
+                    self.target_format,
+                    wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Dst,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    },
+                    "Compositor Multiply Render Pipeline",
+                )
+            }),
+            BlendMode::Screen => self.pipeline_screen.get_or_init(|| {
+                Self::create_layer_pipeline(
+                    device,
+                    &self.layer_shader,
+                    &self.pipeline_layout,
+                    self.target_format,
+                    wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    },
+                    "Compositor Screen Render Pipeline",
+                )
+            }),
+            _ => &self.pipeline_normal,
+        }
+    }
+
+    fn transition_pipeline(&self, device: &wgpu::Device) -> &wgpu::RenderPipeline {
+        self.pipeline_transition.get_or_init(|| {
+            let vertex_buffer_layout = quad_vertex_layout();
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Compositor Transition Render Pipeline"),
+                layout: Some(&self.transition_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &self.transition_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: std::slice::from_ref(&vertex_buffer_layout),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.transition_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: self.target_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        })
+    }
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
         Self::new_with_target_format(
             device,
@@ -652,165 +823,189 @@ impl MultiTrackCompositor {
         });
 
         // Additive blending pipeline
-        let pipeline_additive = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Compositor Additive Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_buffer_layout),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
+        let _legacy_pipeline_additive = if false {
+            Some(
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Compositor Additive Render Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: std::slice::from_ref(&vertex_buffer_layout),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
                     }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                }),
+            )
+        } else {
+            None
+        };
 
         // Multiply blending pipeline
-        let pipeline_multiply = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Compositor Multiply Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_buffer_layout),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Dst,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
+        let _legacy_pipeline_multiply = if false {
+            Some(
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Compositor Multiply Render Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: std::slice::from_ref(&vertex_buffer_layout),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::Dst,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
                     }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                }),
+            )
+        } else {
+            None
+        };
 
         // Screen blending pipeline
-        let pipeline_screen = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Compositor Screen Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_buffer_layout),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
+        let _legacy_pipeline_screen = if false {
+            Some(
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Compositor Screen Render Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: std::slice::from_ref(&vertex_buffer_layout),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
                     }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                }),
+            )
+        } else {
+            None
+        };
 
         // Dual-texture transition pipeline
-        let pipeline_transition = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Compositor Transition Render Pipeline"),
-            layout: Some(&transition_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &transition_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[vertex_buffer_layout],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &transition_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let _legacy_pipeline_transition = if false {
+            Some(
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Compositor Transition Render Pipeline"),
+                    layout: Some(&transition_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &transition_shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[vertex_buffer_layout],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &transition_shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                }),
+            )
+        } else {
+            None
+        };
 
         // Fullscreen quad [-1..1] with texture UVs [0..1]
         let vertices = &[
@@ -872,10 +1067,14 @@ impl MultiTrackCompositor {
             width,
             height,
             pipeline_normal,
-            pipeline_additive,
-            pipeline_multiply,
-            pipeline_screen,
-            pipeline_transition,
+            pipeline_additive: OnceLock::new(),
+            pipeline_multiply: OnceLock::new(),
+            pipeline_screen: OnceLock::new(),
+            pipeline_transition: OnceLock::new(),
+            layer_shader: shader,
+            transition_shader,
+            pipeline_layout,
+            transition_pipeline_layout,
             uniform_bind_group_layout,
             texture_bind_group_layout,
             transition_uniform_bind_group_layout,
@@ -1024,12 +1223,7 @@ impl MultiTrackCompositor {
             render_pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
 
             for (idx, layer) in sorted_layers.iter().enumerate() {
-                let pipeline = match layer.blend_mode {
-                    BlendMode::Additive => &self.pipeline_additive,
-                    BlendMode::Multiply => &self.pipeline_multiply,
-                    BlendMode::Screen => &self.pipeline_screen,
-                    _ => &self.pipeline_normal,
-                };
+                let pipeline = self.blend_pipeline(device, layer.blend_mode);
 
                 render_pass.set_pipeline(pipeline);
                 render_pass.set_bind_group(
@@ -1337,7 +1531,7 @@ impl MultiTrackCompositor {
             });
 
             render_pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
-            render_pass.set_pipeline(&self.pipeline_transition);
+            render_pass.set_pipeline(self.transition_pipeline(device));
             render_pass.set_bind_group(0, &uniform_bind_group, &[]);
             render_pass.set_bind_group(1, &texture_bind_group, &[]);
             render_pass.draw(0..6, 0..1);

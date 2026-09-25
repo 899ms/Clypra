@@ -356,11 +356,11 @@ continue producing duplicate windows or growing telemetry indefinitely.
 
 ## 8. Telemetry and analysis source of truth
 
-`session_perf_logs` in `clypra-api` is the storage foundation.
-One row per editor session holds the complete NDJSON entry array in an
-`entries` JSONB column plus denormalised summary columns (`os_family`,
-`gpu_vendor`, `app_version`, `received_at`) for fast B-tree-indexed
-dashboard filtering.
+Cloudflare R2 is the telemetry source of truth. One raw JSON session archive
+is written to R2 per editor session, while `session_perf_logs` in `clypra-api`
+keeps only an R2 key, denormalised filter columns (`os_family`, `gpu_vendor`,
+`app_version`, `received_at`), and a bounded representative rollup sample for
+fast B-tree-indexed dashboard filtering.
 
 Events and rollups carry the identity needed to prevent cross-path
 contamination:
@@ -372,9 +372,10 @@ contamination:
 - frame sequence/sample kind/drop reason/deadline where applicable.
 
 The API accepts a single session-file upload per session
-(`POST /performance/telemetry/ingest/session`), expands `entries` JSONB at
-query time, and uses the unique measurement identity to ignore duplicate
-logical measurements. Percentiles never mix unrelated measurement sources.
+(`POST /performance/telemetry/ingest/session`), archives it to R2 before
+acknowledging the upload, and expands `metrics_summary` at query time. Full
+forensic detail is retrieved from the linked R2 archive. Percentiles never mix
+unrelated measurement sources.
 
 The canonical inspection surfaces are:
 

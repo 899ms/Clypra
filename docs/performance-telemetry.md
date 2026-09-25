@@ -81,7 +81,8 @@ The following are collected — all anonymous and numerical:
 │  │  workload_modes TEXT[]                                 │      │
 │  │  total_entries  INT                                    │      │
 │  │  telemetry_events INT                                  │      │
-│  │  entries        JSONB   ← complete session payload     │      │
+│  │  metrics_summary JSONB  ← bounded analytics sample     │      │
+│  │  r2_key         TEXT    ← complete raw R2 archive      │      │
 │  │  received_at    TIMESTAMPTZ  ← indexed                 │      │
 │  └────────────────────────────────────────────────────────┘      │
 │                                                                  │
@@ -95,7 +96,7 @@ The following are collected — all anonymous and numerical:
 │                                                                  │
 │  performanceStorage.getSessionEvents(filters)                    │
 │  → queries session_perf_logs by indexed summary columns          │
-│  → expands entries JSONB per row                                 │
+│  → expands metrics_summary JSONB per row                         │
 │  → returns flat PerformanceEventPayload[]                        │
 │  → feeds unchanged analytics engine functions                   │
 │                                                                  │
@@ -284,18 +285,20 @@ CREATE TABLE session_perf_logs (
   total_entries     INT            NOT NULL DEFAULT 0,
   telemetry_events  INT            NOT NULL DEFAULT 0,
   skipped           INT            NOT NULL DEFAULT 0,
-  entries           JSONB,                          -- complete session payload
+  metrics_summary   JSONB,                          -- bounded representative rollups
+  r2_key            TEXT,                           -- complete raw session archive in R2
   received_at       TIMESTAMPTZ    DEFAULT NOW()    -- indexed
 );
 ```
 
 Summary columns (`os_family`, `gpu_vendor`, `app_version`, `app_environment`, `received_at`) are extracted at ingest from the first well-formed telemetry entry. Dashboard `WHERE` clauses hit B-tree indexes on these columns — no JSONB scan is needed for the most common filter patterns.
 
-Analytics queries expand `entries` inline:
+Analytics queries expand `metrics_summary` inline; use the stored `r2_key`
+when a full raw session investigation is needed:
 
 ```sql
 -- Example: all events from the last 30 days on Windows
-SELECT entries
+SELECT metrics_summary
 FROM session_perf_logs
 WHERE received_at >= NOW() - INTERVAL '30 days'
   AND os_family = 'windows'
