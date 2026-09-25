@@ -1157,16 +1157,22 @@ pub async fn configure_native_playback_render(
     }
     .unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
 
-    // This is a readiness gate, not background best-effort work. It makes
-    // expensive Windows pipeline compilation complete before the render worker
-    // (and therefore audio-driven presentation) starts.
-    crate::commands::native_preview::prepare_native_preview_pipelines(
+    // Both operations are readiness gates, but they touch independent
+    // resources: pipeline warmup owns the GPU session while the capability
+    // probe owns the decoder. Running them serially made every project wait
+    // for a decode probe *after* the expensive Windows pipeline compilation.
+    // Join them before the worker starts so first presentation remains exact
+    // and the chosen quality policy still applies to the first lookahead.
+    let pipeline_warmup = crate::commands::native_preview::prepare_native_preview_pipelines(
         &app,
         canvas_w,
         canvas_h,
         target_format,
-    )
-    .await?;
+    );
+    let capability_probe = probe_decode_capability(&snapshot_clone);
+    let (pipeline_warmup_result, (capability_policy, capability_probe_us)) =
+        tokio::join!(pipeline_warmup, capability_probe);
+    pipeline_warmup_result?;
     let _ = app.emit(
         "clypra://native-playback-startup",
         NativePlaybackStartupMilestone {
@@ -1179,11 +1185,9 @@ pub async fn configure_native_playback_render(
         },
     );
 
-    // Capability probe: decode one keyframe from the first video layer with a
-    // 400 ms timeout. This runs synchronously here — after the GPU readiness
-    // gate and before the first lookahead frame is queued — so the chosen
-    // quality tier takes effect immediately for the entire lookahead window.
-    let (capability_policy, capability_probe_us) = probe_decode_capability(&snapshot_clone).await;
+    // The probe completed concurrently with GPU warmup. Apply its result
+    // before the first lookahead frame is queued, so one session revision
+    // still uses a single, deterministic decode scale.
     let lookahead_quality = capability_policy.lookahead_quality();
 
     // Apply the decision before the worker can start. This keeps the warmup
