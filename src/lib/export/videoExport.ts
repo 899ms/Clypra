@@ -288,6 +288,7 @@ export async function exportVideo(
     avgFrameWriteMs: number;
     p95FrameWriteMs: number;
     framesWritten: number;
+    sourceEofFallbackFrames: number;
   } | null = null;
 
   // FIX (BUG-C2): Provide a cancel function to the caller immediately after the session
@@ -492,6 +493,7 @@ export async function exportVideo(
         avgFrameWriteMs: number;
         p95FrameWriteMs: number;
         framesWritten: number;
+        sourceEofFallbackFrames: number;
       }>("finalize_video_export", { sessionId });
     }
   } catch (error) {
@@ -579,6 +581,7 @@ export async function exportVideo(
     encodeTimeUs: exportTimings
       ? Math.round(exportTimings.ffmpegFinalizeMs * 1000)
       : Math.round(totalTimeMs * 400),
+    sourceEofFallbackFrames: exportTimings?.sourceEofFallbackFrames,
     peakRamMb: perfLogService.getPeakMemoryMb() || 1024,
     success: !cancelled,
     failureReason: cancelled ? "User cancelled export" : undefined,

@@ -49,6 +49,10 @@ pub struct ExportTimings {
     /// Number of frames written to the encoder (may differ from
     /// `total_frames` if the export was cancelled partway through).
     pub frames_written: u32,
+    /// Number of terminal source-decode misses recovered by repeating the
+    /// most recently composited frame. A non-zero value means the export
+    /// completed, but an input stream ended before its declared duration.
+    pub source_eof_fallback_frames: u32,
 }
 
 /// Export progress update.
@@ -211,6 +215,12 @@ struct ExportSession {
     /// Performance monitoring
     frame_write_times: VecDeque<f64>, // Last 60 frame write times (ms) — VecDeque for O(1) front removal
     last_perf_log_time: std::time::Instant,
+
+    /// The most recently successful complete composition. This is retained
+    /// only for the life of an export so a container-duration/decoder-EOF
+    /// mismatch on the final source frame cannot discard the whole file.
+    last_composited_frame: Option<Arc<[u8]>>,
+    source_eof_fallback_frames: u32,
 }
 
 /// Type alias for the shared export session map.
@@ -784,6 +794,8 @@ pub async fn start_video_export(
         temp_output_path,
         frame_write_times: VecDeque::with_capacity(60),
         last_perf_log_time: std::time::Instant::now(),
+        last_composited_frame: None,
+        source_eof_fallback_frames: 0,
     };
 
     // Store session wrapped in Arc<Mutex<ExportSession>>
@@ -1160,6 +1172,10 @@ pub async fn write_export_frames_batch(request: Request<'_>) -> Result<(), Strin
 /// (e.g. 33.17 MB per 4K frame) across the Rust <-> Chromium WebView boundary.
 /// The GPU texture is read back into Rust memory and written immediately to FFmpeg stdin,
 /// eradicating V8 JavaScript heap pressure and garbage collection pauses.
+fn is_terminal_source_eof_error(error: &str) -> bool {
+    error.contains("No frame found at ")
+}
+
 #[tauri::command]
 pub async fn render_and_write_export_frame(
     app: tauri::AppHandle,
@@ -1174,7 +1190,33 @@ pub async fn render_and_write_export_frame(
             .ok_or_else(|| format!("Export session not found: {}", session_id))?
     };
 
-    let rgba = crate::commands::native_preview::render_frame_request_rgba(&app, &request).await?;
+    let (rgba, used_source_eof_fallback) =
+        match crate::commands::native_preview::render_frame_request_rgba(&app, &request).await {
+            Ok(rgba) => (Arc::<[u8]>::from(rgba), false),
+            Err(error) if is_terminal_source_eof_error(&error) => {
+                // A demuxer/container duration can extend just past the final decodable
+                // source frame. Only recover the terminal export frame; an earlier miss
+                // is a real project/media error and must still surface to the caller.
+                let session = session_arc.lock().await;
+                let is_terminal_frame = session.current_frame.saturating_add(1) >= session.total_frames;
+                let fallback = if is_terminal_frame {
+                    session.last_composited_frame.clone()
+                } else {
+                    None
+                };
+                drop(session);
+
+                let Some(fallback) = fallback else {
+                    return Err(error);
+                };
+                eprintln!(
+                    "[render_and_write_export_frame] Recovering terminal source EOF for session {} by repeating the preceding composition: {}",
+                    session_id, error
+                );
+                (fallback, true)
+            }
+            Err(error) => return Err(error),
+        };
 
     let mut session = session_arc.lock().await;
     let expected_size = (session.width * session.height * 4) as usize;
@@ -1205,6 +1247,12 @@ pub async fn render_and_write_export_frame(
     session.frame_write_times.push_back(write_duration);
     if session.frame_write_times.len() > 60 {
         session.frame_write_times.pop_front();
+    }
+
+    if used_source_eof_fallback {
+        session.source_eof_fallback_frames = session.source_eof_fallback_frames.saturating_add(1);
+    } else {
+        session.last_composited_frame = Some(Arc::clone(&rgba));
     }
 
     session.current_frame += 1;
@@ -1367,6 +1415,7 @@ pub async fn finalize_video_export(session_id: String) -> Result<ExportTimings, 
     // Capture timing data before consuming the session fields.
     let start_time = session.start_time;
     let current_frame = session.current_frame;
+    let source_eof_fallback_frames = session.source_eof_fallback_frames;
     let temp_output_path = session.temp_output_path.clone();
     let final_output_path = session.final_output_path.clone();
 
@@ -1430,6 +1479,7 @@ pub async fn finalize_video_export(session_id: String) -> Result<ExportTimings, 
             avg_frame_write_ms,
             p95_frame_write_ms,
             frames_written: current_frame,
+            source_eof_fallback_frames,
         })
     } else {
         let _ = tokio::fs::remove_file(&temp_output_path).await;
