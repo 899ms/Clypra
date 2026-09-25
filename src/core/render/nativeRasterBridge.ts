@@ -71,6 +71,11 @@ export interface NativeRasterBridgeOptions {
 const MAX_TEXT_CACHE_ENTRIES = 96;
 const MAX_REGISTERED_ASSETS = 256;
 const PLAYBACK_TEXT_OBSERVATION_INTERVAL_MS = 250;
+// Animated templates and effect scenes can be far more expensive than a frame
+// budget on integrated GPUs. During live playback retain the newest completed
+// raster and refresh it at most ten times per second, rather than keeping a
+// worker fully saturated with revisions viewers can never see.
+const PLAYBACK_TEXT_PREPARATION_COOLDOWN_MS = 100;
 
 function evictOldest<TKey, TValue>(
   cache: Map<TKey, TValue>,
@@ -209,6 +214,7 @@ export class NativeRasterBridge {
           revisionId: input.layer.templateRevisionId,
           error: error instanceof Error ? error.message : String(error),
         }),
+      { cooldownMs: PLAYBACK_TEXT_PREPARATION_COOLDOWN_MS },
     );
   /**
    * Off-thread renderer for animated text templates.
@@ -276,7 +282,10 @@ export class NativeRasterBridge {
     phase: TextRenderTracePhase = "text-prefetch",
   ): Promise<void> {
     if (!isTauriRuntime()) return;
-    await this.rasterizeText(scene, phase, false);
+    // Timeline-boundary prefetch runs alongside playback. Route it through the
+    // same latest-only scheduler so it cannot bypass the interactive budget.
+    // Session prewarm remains exact: it happens before a clip is needed.
+    await this.rasterizeText(scene, phase, phase === "text-prefetch");
   }
 
   /**
@@ -500,7 +509,10 @@ export class NativeRasterBridge {
     );
     if (layers.length === 0) return [];
 
-    if (nonBlocking && phase === "visible-playback") {
+    if (
+      nonBlocking &&
+      (phase === "visible-playback" || phase === "text-prefetch")
+    ) {
       const results: NativeRasterLayerSnapshot[] = [];
       for (const layer of layers) {
         const key = buildNativeTextRasterKey(layer);
