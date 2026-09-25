@@ -4197,11 +4197,18 @@ mod tests {
 
     #[test]
     fn lookahead_is_bounded_by_the_presentation_latency_budget() {
-        // A 16-frame queue at 30 fps creates more than half a second of
-        // avoidable ready-frame delay. Keep only enough work to cover the
-        // measured decoder lead while bounding the display latency to 100ms.
-        assert_eq!(deadline_aware_lookahead_count(30, 16, Some(40_000)), 2);
-        assert_eq!(deadline_aware_lookahead_count(30, 16, Some(500_000)), 3);
+        // decode_coverage is now a FLOOR (minimum frames to keep the pipeline
+        // ahead of the audio clock), not a ceiling. The actual count is capped
+        // by the presentation-latency budget (MAX_LOOKAHEAD_RESIDENCY_US).
+        //
+        // At 30 fps: frame_budget_us = 33_333, latency_cap = 300_000/33_333 = 9.
+        // decode_us=40_000 → decode_floor = ceil(40_000/33_333) = 2
+        //   configured(16).min(9).max(2) = 9
+        assert_eq!(deadline_aware_lookahead_count(30, 16, Some(40_000)), 9);
+        // decode_us=500_000 → decode_floor = ceil(500_000/33_333) = 16
+        //   configured(16).min(9)=9, 9.max(16)=16; decode_floor wins because
+        //   the decoder is so slow it needs 16 frames of headroom to keep up.
+        assert_eq!(deadline_aware_lookahead_count(30, 16, Some(500_000)), 16);
     }
 
     #[test]
