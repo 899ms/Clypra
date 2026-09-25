@@ -374,12 +374,23 @@ export class NativeAudioPreviewController {
           await nativePauseFromAudio().catch(() => undefined);
           await pauseNativeAudio();
           interaction.telemetry.audioTransportUs = elapsedUs(transportStartedAt);
+          // Space may have restarted playback while the native pause was in
+          // flight. Never let this old end-of-timeline command seek the new
+          // playback run back to its former terminal position.
+          if (!this.isCurrentPauseIntent(transportIntentRevision)) {
+            this.finishInteraction(interaction, commandStartedAt, "superseded");
+            return;
+          }
           const seekStartedAt = performance.now();
           await seekNativeAudio(targetTicks);
           await nativeSeekFromAudio(
             Math.max(0, Math.floor(targetTime * this.clock.frameRate)),
           );
           interaction.telemetry.audioSeekUs = elapsedUs(seekStartedAt);
+          if (!this.isCurrentPauseIntent(transportIntentRevision)) {
+            this.finishInteraction(interaction, commandStartedAt, "superseded");
+            return;
+          }
           this.adoptNativePosition(targetTicks);
           this.finishInteraction(interaction, commandStartedAt, "completed");
         } catch (error) {
@@ -479,6 +490,15 @@ export class NativeAudioPreviewController {
     this.clock.setNativeClockPosition(position, this.clock.speed);
   }
 
+  /** Dynamic check used after awaits; TypeScript narrowing cannot model an
+   * external keyboard event changing the transport while native IPC is pending. */
+  private isCurrentPauseIntent(revision: number): boolean {
+    return (
+      this.transportIntentRevision === revision &&
+      this.clock.state !== "playing"
+    );
+  }
+
   private beginInteraction(name: TelemetryInteractionName): TimedInteraction {
     return {
       startedAt: performance.now(),
@@ -517,11 +537,24 @@ export class NativeAudioPreviewController {
 
   private async pollNativeClock(): Promise<void> {
     if (!this.active || this.disposed) return;
+    // A status request can resolve after the user starts a new transport run.
+    // Its position belongs to the previous run (often exactly `duration`) and
+    // must not stop or overwrite the restart.
+    const transportIntentRevision = this.transportIntentRevision;
+    const expectedState = this.clock.state;
     try {
       const nativeState =
-        this.clock.state === "playing"
+        expectedState === "playing"
           ? await nativeTickFromAudio()
           : await getNativeAudioStatus();
+      if (
+        !this.active ||
+        this.disposed ||
+        this.transportIntentRevision !== transportIntentRevision ||
+        this.clock.state !== expectedState
+      ) {
+        return;
+      }
       const positionTicks =
         "audioPositionTicks" in nativeState
           ? nativeState.audioPositionTicks
