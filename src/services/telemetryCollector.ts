@@ -390,6 +390,8 @@ export interface TelemetryExportMetrics {
   peakVramMb?: number;
   success: boolean;
   failureReason?: string;
+  /** Terminal source frames recovered by repeating the prior full composition. */
+  sourceEofFallbackFrames?: number;
   videoProfile?: Partial<TelemetryVideoProfile>;
 }
 
@@ -450,6 +452,7 @@ export interface TelemetryEvent {
     encodeTimeUs: number;
     success: boolean;
     failureReason?: string;
+    sourceEofFallbackFrames?: number;
   };
   aiMetrics?: {
     task:
@@ -2658,6 +2661,7 @@ class TelemetryCollector {
         encodeTimeUs: metrics.encodeTimeUs,
         success: metrics.success,
         failureReason: metrics.failureReason,
+        sourceEofFallbackFrames: metrics.sourceEofFallbackFrames,
       },
       timestampMs: Date.now(),
     };
