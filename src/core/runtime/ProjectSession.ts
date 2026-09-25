@@ -67,6 +67,7 @@ import {
   stopSharedAudioEngine,
 } from "../audio/audioRuntime";
 import { isTauriRuntime } from "@/lib/platform/tauri";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Clip, MediaAsset } from "@/types";
 import { lifecycleMonitor } from "@/core/monitoring/LifecycleMonitor";
 import {
@@ -161,6 +162,9 @@ export class ProjectSession {
     null;
   private _fontIdlePrewarmTimer: ReturnType<typeof setTimeout> | null = null;
   private _nativeRasterPrewarmInFlight: Promise<boolean> | null = null;
+  private _nativePreviewStartupUnlisten: UnlistenFn | null = null;
+  private _nativePreviewStartupTimeout: ReturnType<typeof setTimeout> | null =
+    null;
   private _initializationTimingsMs: SessionLoadTimings = {};
   private _disposalTimingsMs: SessionCloseTimings = {};
 
@@ -408,6 +412,12 @@ export class ProjectSession {
           rendererMode: RendererMode.Canvas2D,
           initialZoom,
         });
+        if (isTauriRuntime()) {
+          // Do not let cold timeline thumbnails occupy the native decode/GPU
+          // path before Program Preview has produced its first real frame.
+          this._renderRuntime.setNativePreviewReady(false);
+          void this._installNativePreviewStartupGate(this._renderRuntime);
+        }
       });
 
       // Browser audio is decoded before the session becomes active, matching
@@ -507,6 +517,7 @@ export class ProjectSession {
     }
 
     this._state = "disposing";
+    this._releaseNativePreviewStartupGate();
     const disposalStartedAt = performance.now();
     lifecycleMonitor.record("PROJECT_CLOSE_START", {
       projectId: this.projectId,
@@ -539,6 +550,7 @@ export class ProjectSession {
         this._sourceContext = null;
       });
       await this._measureDisposalStage("release-rendering", async () => {
+        this._releaseNativePreviewStartupGate();
         this._nativeRasterBridge?.dispose();
         this._nativeRasterBridge = null;
         if (this._renderRuntime) {
@@ -724,6 +736,53 @@ export class ProjectSession {
    */
   unregisterRAF(rafId: number): void {
     this._rafIds.delete(rafId);
+  }
+
+  /**
+   * The native renderer publishes this milestone only after a real frame has
+   * reached the Program Preview surface. Releasing filmstrip work here keeps
+   * first-frame latency independent from the number of visible timeline tiles.
+   */
+  private async _installNativePreviewStartupGate(runtime: RenderEngine): Promise<void> {
+    try {
+      const unlisten = await listen<{ stage?: string }>(
+        "clypra://native-playback-startup",
+        ({ payload }) => {
+          if (payload.stage !== "first-native-frame-presented") return;
+          runtime.setNativePreviewReady(true);
+          this._releaseNativePreviewStartupGate();
+        },
+      );
+
+      if (this._state === "disposing" || this._state === "disposed" || this._renderRuntime !== runtime) {
+        unlisten();
+        return;
+      }
+      this._nativePreviewStartupUnlisten = unlisten;
+
+      // A capability failure must not leave timeline imagery permanently
+      // suppressed. This is a safety release only; normal desktop sessions
+      // release as soon as the first native frame is presented.
+      this._nativePreviewStartupTimeout = setTimeout(() => {
+        runtime.setNativePreviewReady(true);
+        this._releaseNativePreviewStartupGate();
+      }, 60_000);
+    } catch {
+      // Older/native-disabled runtimes have no startup event; preserve the
+      // ordinary filmstrip behavior rather than withholding imagery.
+      runtime.setNativePreviewReady(true);
+    }
+  }
+
+  private _releaseNativePreviewStartupGate(): void {
+    if (this._nativePreviewStartupTimeout !== null) {
+      clearTimeout(this._nativePreviewStartupTimeout);
+      this._nativePreviewStartupTimeout = null;
+    }
+    if (this._nativePreviewStartupUnlisten) {
+      this._nativePreviewStartupUnlisten();
+      this._nativePreviewStartupUnlisten = null;
+    }
   }
 
   // ─── Private Helpers ────────────────────────────────────────────────────

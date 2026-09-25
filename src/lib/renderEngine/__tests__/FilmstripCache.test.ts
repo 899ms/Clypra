@@ -145,6 +145,37 @@ describe("FilmstripCache RAF Batching", () => {
     expect(mockRequestNativeFilmstripArtifacts).toHaveBeenCalledTimes(1);
   });
 
+  it("holds cold tile decoding until Program Preview has presented its first frame", async () => {
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    mockRequestNativeFilmstripArtifacts.mockImplementation(() => vi.fn());
+    cache.setNativePreviewReady(false);
+
+    cache.requestFilmstrip({
+      clipId: "clip-startup-gate",
+      videoPath: "/test.mp4",
+      trimIn: 0,
+      trimOut: 10,
+      duration: 10,
+      clipStartTime: 0,
+      clipWidthPx: 300,
+      spatialTier: SpatialTier.L1,
+      epochId: eid("epoch-startup-gate"),
+      viewportScrollLeft: 0,
+      viewportWidth: 1920,
+      pixelsPerSecond: 30,
+      onUpdate,
+    });
+
+    expect(mockRequestNativeFilmstripArtifacts).not.toHaveBeenCalled();
+
+    cache.setNativePreviewReady(true);
+    await vi.runAllTimersAsync();
+
+    expect(mockRequestNativeFilmstripArtifacts).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("deduplicates artifacts by timestamp during batch", () => {
     let capturedOnArtifact: ((artifact: any) => void) | null = null;
     const onUpdate = vi.fn();

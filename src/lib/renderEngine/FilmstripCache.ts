@@ -54,6 +54,8 @@ interface FilmstripCacheEntry {
    * requiring new thumbnails when the requested tile addresses are unchanged.
    */
   layoutKey: string;
+  /** Missing tiles are deliberately held until the first Program Preview frame. */
+  startupDeferred: boolean;
 }
 
 function computeFilmstripLayoutKey(options: {
@@ -210,6 +212,14 @@ export class FilmstripCache {
     string,
     { options: FilmstripRequestOptions; timer: ReturnType<typeof setTimeout> }
   >();
+  /**
+   * On a cold desktop project open, native thumbnail decode competes with the
+   * first Program Preview frame for GPU/decoder initialization. Keep only the
+   * newest request per clip until that frame has presented.
+   */
+  private nativePreviewReady = true;
+  private startupDeferredRequests = new Map<string, FilmstripRequestOptions>();
+  private startupDeferredPreloads = new Map<string, { videoPath: string; duration: number }>();
 
   constructor(memoryBudgetMB: number = 100) {
     this.memoryBudgetBytes = memoryBudgetMB * 1024 * 1024;
@@ -247,6 +257,26 @@ export class FilmstripCache {
     this.velocityState = v;
   }
 
+  setNativePreviewReady(ready: boolean): void {
+    if (this.nativePreviewReady === ready) return;
+    this.nativePreviewReady = ready;
+    if (!ready) return;
+
+    const deferredRequests = [...this.startupDeferredRequests.values()];
+    const deferredPreloads = [...this.startupDeferredPreloads.values()];
+    this.startupDeferredRequests.clear();
+    this.startupDeferredPreloads.clear();
+
+    // Defer one turn: the native first-frame event is emitted on the render
+    // worker; giving it this turn avoids immediately replacing its work with
+    // a fan-out of thumbnail requests.
+    setTimeout(() => {
+      if (!this.nativePreviewReady) return;
+      for (const options of deferredRequests) this.requestFilmstrip(options);
+      for (const options of deferredPreloads) this.preloadAssetCoarseBaseline(options);
+    }, 0);
+  }
+
   private _cancelPrefetch(clipId: string): void {
     const cancels = this.prefetchCancels.get(clipId);
     if (!cancels) return;
@@ -273,6 +303,7 @@ export class FilmstripCache {
     viewportWidth: number;
     pixelsPerSecond: number;
   }): void {
+    if (!this.nativePreviewReady) return;
     this._cancelPrefetch(options.clipId);
 
     const tiers = [options.spatialTier - 1, options.spatialTier + 1]
@@ -414,6 +445,10 @@ export class FilmstripCache {
   preloadAssetCoarseBaseline(options: { videoPath: string; duration: number }): void {
     const { videoPath, duration } = options;
     if (!videoPath || !duration || duration <= 0) return;
+    if (!this.nativePreviewReady) {
+      this.startupDeferredPreloads.set(videoPath, options);
+      return;
+    }
 
     // Phase 1: Try instant restore from on-disk/in-memory cache
     this.restoreCoarseBaselineFromDisk({
@@ -664,7 +699,7 @@ export class FilmstripCache {
         this.currentMemoryBytes -= disposedMemory;
         this.entries.delete(clipId);
       } else {
-        if (existing.layoutKey === layoutKey) {
+        if (existing.layoutKey === layoutKey && !existing.startupDeferred) {
           existing.lastViewportUpdate = Date.now();
           onUpdate([...existing.artifacts]);
           return;
@@ -682,7 +717,11 @@ export class FilmstripCache {
 
         // Skip if same layout and recent viewport update (debounce)
         const timeSinceUpdate = Date.now() - existing.lastViewportUpdate;
-        if (timeSinceUpdate < 100 && existing.layoutKey === layoutKey) {
+        if (
+          timeSinceUpdate < 100 &&
+          existing.layoutKey === layoutKey &&
+          !existing.startupDeferred
+        ) {
           // Debounce: return cached artifacts from tiles
           const cachedArtifacts = this._buildArtifactsFromTiles(tileAddresses, epochId, spatialTier);
           onUpdate(cachedArtifacts);
@@ -812,6 +851,7 @@ export class FilmstripCache {
       tileAddresses,
       spatialTier,
       layoutKey,
+      startupDeferred: false,
     };
 
     this.entries.set(clipId, entry);
@@ -823,6 +863,16 @@ export class FilmstripCache {
     if (missingTileAddresses.length === 0) {
       return;
     }
+
+    // Cached/fallback tiles above remain visible immediately. New native
+    // decodes wait until the first Program Preview frame is presented, which
+    // prevents an 8-tile cold fan-out from delaying GPU pipeline warm-up.
+    if (!this.nativePreviewReady) {
+      entry.startupDeferred = true;
+      this.startupDeferredRequests.set(clipId, options);
+      return;
+    }
+    entry.startupDeferred = false;
 
     // Partition missing tiles into:
     // 1. Visible tiles: within the current viewport window (priority 10, playhead/center-first)
@@ -1042,6 +1092,8 @@ export class FilmstripCache {
       this._disposeArtifacts(entry.artifacts);
     }
     this.entries.clear();
+    this.startupDeferredRequests.clear();
+    this.startupDeferredPreloads.clear();
     this.currentMemoryBytes = 0;
 
     // Dispose tile cache

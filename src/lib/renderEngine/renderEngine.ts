@@ -218,6 +218,14 @@ export class RenderEngine {
   }
 
   /**
+   * Holds filmstrip decode fan-out during cold native preview initialization.
+   * Cached tiles remain usable; only new decoder/GPU work is deferred.
+   */
+  setNativePreviewReady(ready: boolean): void {
+    this._filmstripCache.setNativePreviewReady(ready);
+  }
+
+  /**
    * Request filmstrip for a clip (called by ClipFilmstrip via useFilmstrip hook)
    * Viewport-bounded, epoch-gated, auto-updates RenderState.visibleArtifacts
    */
