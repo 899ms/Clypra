@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LatestTextPreparationScheduler } from "../latestTextPreparationScheduler";
 
 function deferred<T>() {
@@ -12,6 +12,10 @@ function deferred<T>() {
 }
 
 describe("LatestTextPreparationScheduler", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("keeps one active task and replaces stale pending work", async () => {
     const first = deferred<void>();
     const second = deferred<void>();
@@ -53,6 +57,31 @@ describe("LatestTextPreparationScheduler", () => {
     gate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(started).toEqual(["a", "b"]);
+    scheduler.dispose();
+  });
+
+  it("keeps only the newest revision during a playback cooldown", async () => {
+    vi.useFakeTimers();
+    const started: string[] = [];
+    const scheduler = new LatestTextPreparationScheduler<{ key: string }>(
+      async ({ key }) => {
+        started.push(key);
+      },
+      undefined,
+      { cooldownMs: 100 },
+    );
+
+    scheduler.enqueue("first", { key: "first" });
+    await vi.runAllTicks();
+    expect(started).toEqual(["first"]);
+
+    scheduler.enqueue("stale", { key: "stale" });
+    scheduler.enqueue("latest", { key: "latest" });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(started).toEqual(["first"]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual(["first", "latest"]);
     scheduler.dispose();
   });
 });

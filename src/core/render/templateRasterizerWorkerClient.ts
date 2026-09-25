@@ -333,7 +333,9 @@ export class TemplateRasterizerWorkerClient {
             layerWidth: layer.width,
             layerHeight: layer.height,
             controlValues: resolveControlValues(layer, artifact),
-          } as Omit<WorkerRenderTemplateMessage, "id">);
+          } as Omit<WorkerRenderTemplateMessage, "id">,
+          `RENDER_TEMPLATE:${phase}`,
+        );
         const transferMs = Math.max(
           0,
           performance.now() - sendAt - workerRasterMs,
@@ -435,7 +437,9 @@ export class TemplateRasterizerWorkerClient {
             time: layer.time ?? 0,
             evalWidth: canvasWidth,
             evalHeight: canvasHeight,
-          } as Omit<WorkerRenderEffectMessage, "id">);
+          } as Omit<WorkerRenderEffectMessage, "id">,
+          `RENDER_EFFECT:${phase}`,
+        );
         const transferMs = Math.max(
           0,
           performance.now() - sendAt - workerRasterMs,
@@ -476,6 +480,7 @@ export class TemplateRasterizerWorkerClient {
     params:
       | Omit<WorkerRenderTemplateMessage, "id">
       | Omit<WorkerRenderEffectMessage, "id">,
+    operation?: string,
   ): Promise<{
     bitmap: ImageBitmap;
     offsetX: number;
@@ -494,7 +499,7 @@ export class TemplateRasterizerWorkerClient {
         resolve,
         reject,
         startTime: performance.now(),
-        operation: (params as any).type ?? "RENDER",
+        operation: operation ?? (params as any).type ?? "RENDER",
       });
       this.worker.postMessage({ ...params, id });
     });

@@ -211,13 +211,47 @@ describe("NativeRasterBridge", () => {
       assetId: "native-text:title:0", rgba: [255, 255, 255, 255], width: 1, height: 1,
       x: 0, y: 0, rotation: 0, opacity: 1, zIndex: 0, blendMode: "normal", isText: true,
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Playback preparation intentionally leaves a small cooldown after an
+    // expensive worker job, so it cannot monopolize an integrated GPU.
+    await new Promise((resolve) => setTimeout(resolve, 120));
 
     expect(mocks.rasterizeText).toHaveBeenCalledTimes(2);
     expect((mocks.rasterizeText.mock.calls[1]?.[0] as { time?: number }).time).toBe(2);
     resolveLatest({
       assetId: "native-text:title:2", rgba: [255, 255, 255, 255], width: 1, height: 1,
       x: 0, y: 0, rotation: 0, opacity: 1, zIndex: 0, blendMode: "normal", isText: true,
+    });
+    bridge.dispose();
+  });
+
+  it("keeps timeline text prefetch on the non-blocking playback path", async () => {
+    let resolveRaster!: (asset: object) => void;
+    mocks.rasterizeText.mockReturnValue(
+      new Promise<object>((resolve) => {
+        resolveRaster = resolve;
+      }),
+    );
+    const scene = {
+      visualLayers: [{ layerType: "text", layerId: "upcoming-title" }],
+      metadata: { canvasWidth: 1920, canvasHeight: 1080 },
+    } as unknown as EvaluatedScene;
+    const bridge = new NativeRasterBridge();
+
+    await bridge.prewarmTextAssets(scene, "text-prefetch");
+    expect(mocks.rasterizeText).toHaveBeenCalledTimes(1);
+
+    resolveRaster({
+      assetId: "native-text:upcoming-title:hash",
+      rgba: [255, 255, 255, 255],
+      width: 1,
+      height: 1,
+      x: 0,
+      y: 0,
+      rotation: 0,
+      opacity: 1,
+      zIndex: 0,
+      blendMode: "normal",
+      isText: true,
     });
     bridge.dispose();
   });
@@ -437,4 +471,3 @@ describe("NativeRasterBridge", () => {
     bridge.dispose();
   });
 });
-
