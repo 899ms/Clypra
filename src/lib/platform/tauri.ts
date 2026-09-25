@@ -719,11 +719,16 @@ export async function getNativePreviewSurfaceGeometry(
   // directly to client-area screen coordinates. Using `innerPosition()` ensures exact
   // alignment with the DOM canvas on all platforms (including macOS with titleBarStyle: "Overlay").
   const windowPosition = await currentWindow.innerPosition();
+  const widthPhysical = Math.max(2, Math.round(rect.width * dpr));
+  const heightPhysical = Math.max(2, Math.round(rect.height * dpr));
+  const xPhysical = Math.round(windowPosition.x + rect.left * dpr);
+  const yPhysical = Math.round(windowPosition.y + rect.top * dpr);
+
   const geometry = {
-    xPhysical: windowPosition.x + Math.round(rect.left * dpr),
-    yPhysical: windowPosition.y + Math.round(rect.top * dpr),
-    widthPhysical: Math.max(1, Math.round(rect.width * dpr)),
-    heightPhysical: Math.max(1, Math.round(rect.height * dpr)),
+    xPhysical,
+    yPhysical,
+    widthPhysical,
+    heightPhysical,
     devicePixelRatio: dpr,
   };
 

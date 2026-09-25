@@ -3875,11 +3875,19 @@ pub async fn render_native_frame(
     request: FrameRequest,
 ) -> Result<tauri::ipc::Response, String> {
     let started = Instant::now();
+    eprintln!(
+        "[preview-diag][rust] render_native_frame called: frame={} mode={:?} quality={:?}",
+        request.frame_time.frame_index,
+        request.mode,
+        request.quality,
+    );
     if request.contract_version != NATIVE_CORE_CONTRACT_VERSION {
-        return Err(format!(
+        let err = format!(
             "Unsupported native core contract version: {}",
             request.contract_version
-        ));
+        );
+        eprintln!("[preview-diag][rust] render_native_frame contract version mismatch: {}", err);
+        return Err(err);
     }
     if request.mode.as_deref() != Some("frameStep") {
         if let Some(generation) = request.generation {
@@ -3951,9 +3959,36 @@ pub async fn render_native_frame(
         }
     }
 
-    let legacy_request = to_video_project_request(&request)?;
-    let (rgba, stage_timings) =
-        render_native_video_project_frame_bytes_timed(app.clone(), legacy_request).await?;
+    let legacy_request = match to_video_project_request(&request) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[preview-diag][rust] to_video_project_request FAILED: {}", e);
+            return Err(e);
+        }
+    };
+    eprintln!(
+        "[preview-diag][rust] rendering legacy video request: layers={}, rasters={}, texts={}, clear_color={:?}",
+        legacy_request.layers.len(),
+        legacy_request.raster_layers.len(),
+        legacy_request.text_layers.len(),
+        legacy_request.clear_color,
+    );
+    let (rgba, stage_timings) = match render_native_video_project_frame_bytes_timed(app.clone(), legacy_request).await {
+        Ok(res) => {
+            eprintln!(
+                "[preview-diag][rust] render_native_video_project_frame_bytes_timed OK: bytes={}",
+                res.0.len()
+            );
+            res
+        }
+        Err(e) => {
+            eprintln!(
+                "[preview-diag][rust] render_native_video_project_frame_bytes_timed FAILED: {}",
+                e
+            );
+            return Err(e);
+        }
+    };
     if request.mode.as_deref() != Some("frameStep") {
         if let Some(generation) = request.generation {
             if let Some(queue) = app.try_state::<Arc<tokio::sync::Mutex<NativePreviewFrameQueue>>>()
