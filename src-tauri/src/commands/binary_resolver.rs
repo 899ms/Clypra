@@ -251,7 +251,7 @@ pub fn resolve_binary_path(base_name: &str) -> Option<PathBuf> {
 
     // Strict isolation guard: if CLYPRA_REQUIRE_BUNDLED_MEDIA is set, disallow system PATH fallback
     if std::env::var("CLYPRA_REQUIRE_BUNDLED_MEDIA")
-        .map_or(false, |v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     {
         log::error!(
             "[BinaryResolver] CLYPRA_REQUIRE_BUNDLED_MEDIA is active but '{}' was not found in Tier 1 or Tier 2. Refusing system PATH fallback.",
