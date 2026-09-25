@@ -18,14 +18,14 @@ export const SafeOverlay: React.FC<SafeOverlayProps> = ({
   // 90% Action Safe dimensions
   const actionWidth = displayWidth * 0.9;
   const actionHeight = displayHeight * 0.9;
-  const actionX = displayOffset.x + (displayWidth - actionWidth) / 2;
-  const actionY = displayOffset.y + (displayHeight - actionHeight) / 2;
+  const actionX = (displayWidth - actionWidth) / 2;
+  const actionY = (displayHeight - actionHeight) / 2;
 
   // 80% Title Safe dimensions
   const titleWidth = displayWidth * 0.8;
   const titleHeight = displayHeight * 0.8;
-  const titleX = displayOffset.x + (displayWidth - titleWidth) / 2;
-  const titleY = displayOffset.y + (displayHeight - titleHeight) / 2;
+  const titleX = (displayWidth - titleWidth) / 2;
+  const titleY = (displayHeight - titleHeight) / 2;
 
   return (
     <div

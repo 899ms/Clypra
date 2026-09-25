@@ -130,11 +130,19 @@ pub fn run() {
                     })?;
             }
 
-            // Build desktop application menu with event-driven Undo/Redo.
-            // On macOS, predefined Undo/Redo menu items swallow Cmd+Z / Shift+Cmd+Z
-            // without forwarding to WKWebView unless an HTML input is active.
-            // Using custom menu items with accelerators ensures Cmd+Z and Shift+Cmd+Z
-            // are emitted to the webview and handle both editor timeline and text inputs.
+            // macOS owns its application menus in the system menu bar, so keep
+            // the native menu there. On Windows/Linux the same menu is rendered
+            // as a separate row beneath the title bar; it duplicates editor
+            // commands and wastes vertical space. Do not install it there: the
+            // WebView keyboard shortcuts remain available and native window
+            // controls stay in the real title bar.
+            //
+            // On macOS, custom Undo/Redo menu items are also necessary because
+            // predefined items swallow Cmd+Z / Shift+Cmd+Z before forwarding
+            // them to WKWebView unless an HTML input is active.
+            // Using custom menu items ensures Cmd+Z and Shift+Cmd+Z reach both
+            // editor timeline and text inputs.
+            #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 

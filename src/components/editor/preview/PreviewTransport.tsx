@@ -91,41 +91,48 @@ export const PreviewTransport: React.FC<PreviewTransportProps> = ({
   }, [isScrubbing, seekToPosition]);
 
   return (
-    <div className="@container flex flex-col w-full shrink-0 bg-surface/40 border-t border-white/5 select-none relative z-30">
-      {/* ── Scrub Bar (thin, edge-to-edge) ────────────────────────── */}
-      <div
-        ref={scrubRef}
-        className={`h-[5px] w-full group relative shrink-0 ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
-        onMouseDown={(e) => {
-          if (disabled) return;
-          setIsScrubbing(true);
-          seekToPosition(e.clientX, "start");
-        }}
-      >
-        {/* Track bg */}
-        <div className="absolute inset-0 bg-surface" />
-        {/* In/Out range */}
-        {inPoint != null && outPoint != null && duration > 0 && (
-          <div
-            className="absolute top-0 bottom-0 bg-accent/15"
-            style={{
-              left: `${(inPoint / duration) * 100}%`,
-              width: `${((outPoint - inPoint) / duration) * 100}%`,
-            }}
-          />
-        )}
-        {/* Progress fill */}
+    <div className="@container flex flex-col w-full shrink-0 bg-surface/30 border-t border-white/5 select-none relative z-30">
+      {/* ── Scrub Bar (padded, rounded pill track) ────────────────────────── */}
+      <div className="px-3 pt-1.5 pb-0.5">
         <div
-          className={`absolute top-0 bottom-0 left-0 transition-all duration-100 ease-linear ${disabled ? "bg-text-muted/30" : "bg-accent"}`}
-          style={{ width: `${progressPct}%` }}
-        />
-        {/* Playhead dot */}
-        {!disabled && (
-          <div
-            className="absolute top-1/2 -translate-y-1/2 w-[10px] h-[10px] rounded-full bg-accent border-2 border-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
-            style={{ left: `calc(${progressPct}% - 5px)` }}
-          />
-        )}
+          ref={scrubRef}
+          className={`h-3 w-full group relative flex items-center shrink-0 ${
+            disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"
+          }`}
+          onMouseDown={(e) => {
+            if (disabled) return;
+            setIsScrubbing(true);
+            seekToPosition(e.clientX, "start");
+          }}
+        >
+          {/* Track background */}
+          <div className="w-full h-1 group-hover:h-1.5 rounded-full bg-white/10 group-hover:bg-white/15 transition-all overflow-hidden relative">
+            {/* In/Out range */}
+            {inPoint != null && outPoint != null && duration > 0 && (
+              <div
+                className="absolute top-0 bottom-0 bg-accent/20"
+                style={{
+                  left: `${(inPoint / duration) * 100}%`,
+                  width: `${((outPoint - inPoint) / duration) * 100}%`,
+                }}
+              />
+            )}
+            {/* Progress fill */}
+            <div
+              className={`absolute top-0 bottom-0 left-0 transition-all duration-100 ease-linear rounded-full ${
+                disabled ? "bg-text-muted/30" : "bg-accent"
+              }`}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          {/* Playhead dot */}
+          {!disabled && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-accent border border-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+              style={{ left: `calc(${progressPct}% - 5px)` }}
+            />
+          )}
+        </div>
       </div>
 
       {/* ── Bottom Controls ────────────────────────────────────────── */}

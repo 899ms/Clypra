@@ -40,6 +40,7 @@ import {
   useViewportPan,
 } from "../viewport/ViewportControls";
 import { calculateDisplayTransform } from "@/lib/utils/coordinateSystem";
+import { PreviewLayoutManager } from "@/core/preview/PreviewLayoutManager";
 import {
   PreviewQualityManager,
   PreviewQualityTier,
@@ -524,6 +525,12 @@ export const NativeProgramPreview: React.FC = () => {
   );
   const nativeSurfaceConfiguredRef = useRef(false);
   const nativeSurfaceGeometrySettledRef = useRef(false);
+  // Incremented each time the native surface transitions to ready/settled.
+  // The render loop watches this to reset readback circuit-breakers (nativeBlockedKey,
+  // nativeFailureCount, nativeRetryAt) so the first frame always gets a clean retry
+  // opportunity after geometry is established — even if early attempts failed while
+  // the Rust decoder was still warming up.
+  const nativeSurfaceReadyRevisionRef = useRef(0);
   const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
   const previewContainerCallback = useCallback(
     (node: HTMLDivElement | null) => {
@@ -805,13 +812,17 @@ export const NativeProgramPreview: React.FC = () => {
   );
 
   const displayTransform = useMemo(() => {
-    return calculateDisplayTransform(
-      { width: canvasWidth, height: canvasHeight },
-      viewport,
-      dimensions.width,
-      dimensions.height,
-      "fit",
-    );
+    return PreviewLayoutManager.compute({
+      canvasWidth,
+      canvasHeight,
+      containerWidth: dimensions.width,
+      containerHeight: dimensions.height,
+      mode: "fit",
+      padding: 16,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+    });
   }, [
     canvasWidth,
     canvasHeight,
@@ -1071,12 +1082,20 @@ export const NativeProgramPreview: React.FC = () => {
               setNativeSurfaceError(null);
               setNativeSurfaceReady(true);
               markNativeSurfaceReady(readinessToken);
-              // Resizing intentionally hides the retained child surface. The
-              // paused renderer is otherwise event-driven, so without an
-              // explicit wake it can leave the DOM fallback canvas visible
-              // and blank after a window resize. Request a fresh frame after
-              // the new native surface geometry is fully configured.
-              wakeNativeRenderLoopRef.current?.();
+              // Increment the surface-ready revision so the render loop can
+              // detect the geometry-settled transition and clear readback
+              // circuit-breakers (nativeBlockedKey / nativeFailureCount) that
+              // may have tripped while the Rust decoder was still warming up.
+              nativeSurfaceReadyRevisionRef.current += 1;
+              console.log(
+                "%c[preview-diag] native surface READY — revision=" + nativeSurfaceReadyRevisionRef.current,
+                "color:#6366f1;font-weight:bold",
+                { projectId: project.id, pendingRepaint: !_globalPreviewForceRepaintFn },
+              );
+              // Force a repaint: the loop was waiting for the surface to be
+              // ready before attempting readback. Now that it is, we need both
+              // forceRenderNeeded=true AND the circuit-breaker reset above.
+              forceRepaintNativeProgramPreview();
             }
           }
         } catch (error) {
@@ -1105,11 +1124,28 @@ export const NativeProgramPreview: React.FC = () => {
       })();
     };
 
-    const handleWindowResize = () => syncSurface();
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const requestSync = (immediate: boolean = false) => {
+      if (immediate || clock.state === "playing") {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = null;
+        }
+        syncSurface();
+      } else {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          if (active) syncSurface();
+        }, 100);
+      }
+    };
 
-    syncSurface();
+    const handleWindowResize = () => requestSync(false);
+
+    requestSync(true);
     let unlistenWindowMoved: (() => void | Promise<void>) | null = null;
-    void onNativePreviewWindowMoved(syncSurface)
+    void onNativePreviewWindowMoved(() => requestSync(false))
       .then((unlisten) => {
         if (active) {
           unlistenWindowMoved = unlisten;
@@ -1120,13 +1156,21 @@ export const NativeProgramPreview: React.FC = () => {
       .catch(() => undefined);
     const resizeObserver =
       typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => syncSurface())
+        ? new ResizeObserver(() => requestSync(false))
         : null;
     resizeObserver?.observe(target);
     window.addEventListener("resize", handleWindowResize);
 
+    const unsubscribeClockSync = clock.subscribe((clockState) => {
+      if (clockState.state === "playing") {
+        requestSync(true);
+      }
+    });
+
     return () => {
       active = false;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubscribeClockSync();
       resizeObserver?.disconnect();
       if (unlistenWindowMoved) {
         void Promise.resolve(unlistenWindowMoved()).catch(() => undefined);
@@ -1393,6 +1437,9 @@ export const NativeProgramPreview: React.FC = () => {
     let nativeFailureKey = "";
     let nativeFailureCount = 0;
     let nativeBlockedKey = "";
+    // Track the surface-ready revision so renderLoop() can detect when the
+    // native surface becomes newly settled and reset readback circuit-breakers.
+    let lastSeenNativeSurfaceReadyRevision = nativeSurfaceReadyRevisionRef.current;
     let nativePlaybackInFlight: Promise<void> | null = null;
     let nativePlaybackRenderSnapshotKey = "";
     let nativePlaybackRenderSnapshotInFlight: Promise<void> | null = null;
@@ -2603,6 +2650,8 @@ export const NativeProgramPreview: React.FC = () => {
         const mediaReadyChanged =
           mediaReadyRevision !== lastRenderedMediaReadyRevision;
 
+        const needsInitialFrame = !isPlaying && nativeDisplayedFrameRef.current === null;
+
         const mightNeedRender =
           isPlaying ||
           timeChanged ||
@@ -2610,6 +2659,7 @@ export const NativeProgramPreview: React.FC = () => {
           transportChanged ||
           isFirstFrame ||
           forceRenderNeeded ||
+          needsInitialFrame ||
           clipsChanged ||
           tracksChanged ||
           transitionsChanged ||
@@ -2821,6 +2871,22 @@ export const NativeProgramPreview: React.FC = () => {
           }
         } else {
           lastSeekTraceKey = "";
+        }
+        // When the native surface transitions to ready/settled (geometry just
+        // configured by the Rust IPC), clear all readback circuit-breakers so
+        // the first frame gets a clean decode attempt. This handles the common
+        // cold-start case where the FFmpeg decoder wasn't ready yet when the
+        // very first renderLoop() iteration fired.
+        const currentNativeSurfaceReadyRevision =
+          nativeSurfaceReadyRevisionRef.current;
+        if (currentNativeSurfaceReadyRevision !== lastSeenNativeSurfaceReadyRevision) {
+          lastSeenNativeSurfaceReadyRevision = currentNativeSurfaceReadyRevision;
+          nativeRetryAt = 0;
+          nativeRetryKey = "";
+          nativeFailureKey = "";
+          nativeFailureCount = 0;
+          nativeBlockedKey = "";
+          forceRenderNeeded = true;
         }
         if (nativeRequestKey !== nativeRetryKey) {
           nativeRetryKey = nativeRequestKey;
@@ -3098,17 +3164,36 @@ export const NativeProgramPreview: React.FC = () => {
         ) => {
           const current = renderStateRef.current;
           const isDragging = Boolean(dragPreviewClipId);
-          return (
+          const generationMatches =
+            visibleRequestGeneration === targetGeneration ||
+            (!isPlaying && nativeDisplayedFrameRef.current === null);
+          const currentFrameIndex = getFrameIndexAtTime(current.clock.time, frameRate);
+          const matches =
             isActive &&
-            visibleRequestGeneration === targetGeneration &&
+            generationMatches &&
             current.project?.id === state.project?.id &&
             current.epoch === state.epoch &&
             current.clock.state === playbackState &&
             (isDragging ||
               dragPreviewRevision === dragPreviewRevisionAtStart) &&
             (!requireExactFrame ||
-              getFrameIndexAtTime(current.clock.time, frameRate) === frameIndex)
-          );
+              currentFrameIndex === frameIndex);
+          if (!matches) {
+            console.log("%c[preview-diag] targetStillCurrent rejected frame:", "color:#f43f5e;font-weight:bold", {
+              isActive,
+              generationMatches,
+              visibleRequestGeneration,
+              targetGeneration,
+              hasDisplayedFrame: Boolean(nativeDisplayedFrameRef.current),
+              projectMatch: current.project?.id === state.project?.id,
+              epochMatch: current.epoch === state.epoch,
+              clockStateMatch: current.clock.state === playbackState,
+              frameMatch: !requireExactFrame || currentFrameIndex === frameIndex,
+              currentFrameIndex,
+              frameIndex,
+            });
+          }
+          return matches;
         };
 
         // Continuous native presentation is intentionally non-blocking. The
@@ -3626,6 +3711,7 @@ export const NativeProgramPreview: React.FC = () => {
           transportChanged ||
           isFirstFrame ||
           forceRenderNeeded ||
+          needsInitialFrame ||
           nativeFrameNeedsRetry ||
           clipsChanged ||
           tracksChanged ||
@@ -3692,6 +3778,36 @@ export const NativeProgramPreview: React.FC = () => {
               performance.now() >= nativeRetryAt &&
               nativeBlockedKey !== nativeRequestKey;
 
+            // ── First-frame diagnostic ────────────────────────────────────
+            // Logs exactly ONE line per render loop start-up to expose which
+            // guard prevents the initial frame from being decoded.
+            if (isFirstFrame || forceRenderNeeded) {
+              console.log(
+                "%c[preview-diag] first-frame gate",
+                "color:#f59e0b;font-weight:bold",
+                {
+                  isFirstFrame,
+                  forceRenderNeeded,
+                  needsRender,
+                  nativePausedPath,
+                  canUseNativePreview,
+                  nativeRequest: Boolean(nativeRequest),
+                  cachedNativeFrame: Boolean(cachedNativeFrame),
+                  nativeDirectSurfacePath,
+                  nativeSurfaceShown,
+                  nativeBlockedKey: nativeBlockedKey || "(none)",
+                  nativeRequestKey: nativeRequestKey.slice(0, 60) + "…",
+                  nativeRetryAt: nativeRetryAt > 0 ? `${(nativeRetryAt - performance.now()).toFixed(0)}ms` : "ready",
+                  nativeFailureCount,
+                  surfaceReady: nativeSurfaceReadyRef.current,
+                  surfaceGeometrySettled: nativeSurfaceGeometrySettledRef.current,
+                  surfaceReadyRevision: nativeSurfaceReadyRevisionRef.current,
+                  lastSeenRevision: lastSeenNativeSurfaceReadyRevision,
+                },
+              );
+            }
+            // ─────────────────────────────────────────────────────────────
+
             if (
               canUseNativePreview &&
               requestForRender &&
@@ -3738,6 +3854,17 @@ export const NativeProgramPreview: React.FC = () => {
                 nativeFrame = loadedFrame;
                 nativeDisplayedFrameRef.current = loadedFrame;
                 nativeRetryAt = 0;
+                // ── Readback success diagnostic ──
+                console.log(
+                  "%c[preview-diag] readback OK — frame received from Rust",
+                  "color:#10b981;font-weight:bold",
+                  {
+                    frameIndex,
+                    width: loadedFrame.width,
+                    height: loadedFrame.height,
+                    rgbaBytes: loadedFrame.rgba.byteLength,
+                  },
+                );
               } catch (error) {
                 // Keep the last native frame visible for this render boundary, then
                 // retry this exact request. One failed readback must not
@@ -3761,6 +3888,19 @@ export const NativeProgramPreview: React.FC = () => {
                   nativeFailureCount = 0;
                 }
                 nativeFailureCount += 1;
+                // ── Readback failure diagnostic ──
+                console.warn(
+                  "%c[preview-diag] readback FAILED",
+                  "color:#ef4444;font-weight:bold",
+                  {
+                    attempt: nativeFailureCount,
+                    error: error instanceof Error ? error.message : String(error),
+                    frameIndex,
+                    surfaceReady: nativeSurfaceReadyRef.current,
+                    surfaceGeometrySettled: nativeSurfaceGeometrySettledRef.current,
+                    willBlock: nativeFailureCount >= 3,
+                  },
+                );
                 if (nativeFailureCount >= 3) {
                   // Repeated invalid payloads are a native-renderer failure, not
                   // a reason to hammer FFmpeg/wgpu every RAF. Wait until the user
@@ -3804,10 +3944,54 @@ export const NativeProgramPreview: React.FC = () => {
             let canvasPaintMs: number | undefined;
             if (nativeFrame && canvasEl) {
               const canvasPaintStarted = performance.now();
-              if (!drawNativeFrameToCanvas(canvasEl, nativeFrame)) {
+              const drawn = drawNativeFrameToCanvas(canvasEl, nativeFrame);
+              console.log(
+                "%c[preview-diag] drawNativeFrameToCanvas painted!",
+                "color:#06b6d4;font-weight:bold",
+                {
+                  drawn,
+                  canvasWidth: canvasEl.width,
+                  canvasHeight: canvasEl.height,
+                  displayWidth,
+                  displayHeight,
+                },
+              );
+              if (!drawn) {
                 throw new Error(
                   "Native preview returned a frame that could not be drawn to the preview canvas",
                 );
+              }
+              // ── Diagnostic: inspect canvas pixels & DOM layering ──
+              try {
+                const sampleCtx = canvasEl.getContext("2d");
+                if (sampleCtx) {
+                  const midX = Math.floor(canvasEl.width / 2);
+                  const midY = Math.floor(canvasEl.height / 2);
+                  const sample = sampleCtx.getImageData(midX, midY, 1, 1).data;
+                  console.log(
+                    "%c[preview-diag] CANVAS PIXEL SAMPLE (center):",
+                    "color:#ec4899;font-weight:bold",
+                    `R=${sample[0]} G=${sample[1]} B=${sample[2]} A=${sample[3]}`,
+                    sample[0] === 0 && sample[1] === 0 && sample[2] === 0 ? "(ALL BLACK)" : "(COLORED PIXELS OK!)",
+                  );
+                }
+                const rect = canvasEl.getBoundingClientRect();
+                const elemAtPoint = document.elementFromPoint(
+                  rect.left + rect.width / 2,
+                  rect.top + rect.height / 2,
+                );
+                console.log(
+                  "%c[preview-diag] TOPMOST DOM ELEMENT AT CANVAS CENTER:",
+                  "color:#a855f7;font-weight:bold",
+                  {
+                    tagName: elemAtPoint?.tagName,
+                    className: elemAtPoint?.className?.slice(0, 80),
+                    testId: elemAtPoint?.getAttribute("data-testid"),
+                    isCanvas: elemAtPoint === canvasEl,
+                  },
+                );
+              } catch (diagErr) {
+                console.warn("[preview-diag] sampling failed", diagErr);
               }
               canvasPaintMs = performance.now() - canvasPaintStarted;
               if (
@@ -4158,32 +4342,12 @@ export const NativeProgramPreview: React.FC = () => {
       data-preview-space="program"
       className="flex-1 bg-bg flex flex-col min-h-0 border-l border-t border-white/3"
     >
-      <div
-        data-preview-header
-        className="flex items-center px-4 h-10 shrink-0 gap-2 overflow-hidden"
-      >
-        <span className="text-[13px] font-semibold text-text-primary tracking-tight leading-none">
-          Program Preview
-        </span>
-        {import.meta.env.DEV && nativeSurfaceError && (
-          <span className="text-[11px] text-danger leading-none truncate">
-            Preview surface unavailable
-          </span>
-        )}
-        <button
-          onClick={() => setShowSafeOverlay((s) => !s)}
-          className={cn(
-            "ml-auto px-2 h-6 rounded text-[10px] font-medium transition-colors cursor-pointer",
-            showSafeOverlay
-              ? "bg-accent/20 text-accent"
-              : "text-text-muted hover:text-text-primary hover:bg-white/6",
-          )}
-        >
-          Safe Zones
-        </button>
-      </div>
-
       <div className="flex-1 flex items-center justify-center overflow-hidden bg-[#06080a] relative">
+        {import.meta.env.DEV && nativeSurfaceError && (
+          <div className="absolute top-3 left-3 z-40 px-2.5 py-1 rounded bg-danger/20 border border-danger/40 text-[11px] text-danger font-medium pointer-events-none">
+            Preview surface unavailable: {nativeSurfaceError}
+          </div>
+        )}
         <div
           ref={previewContainerCallback}
           onPointerDownCapture={handlePreviewPointerDownCapture}
@@ -4197,7 +4361,7 @@ export const NativeProgramPreview: React.FC = () => {
             <div
               ref={nativeSurfaceTargetCallback}
               data-testid="program-preview-viewport"
-              className="relative flex shrink-0 items-center justify-center overflow-visible shadow-[0_0_40px_rgba(0,0,0,0.36)]"
+              className="relative flex shrink-0 items-center justify-center overflow-visible bg-black ring-1 ring-white/15 shadow-[0_4px_30px_rgba(0,0,0,0.8)]"
               style={{ width: displayWidth, height: displayHeight }}
             >
               <>

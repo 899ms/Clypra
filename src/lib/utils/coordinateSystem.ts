@@ -213,6 +213,7 @@ export function calculateDisplayTransform(
   containerWidth: number,
   containerHeight: number,
   scaleMode: "fit" | "fill" = "fit",
+  padding = 0,
 ): {
   /** Base scale factor (zoom-exclusive): how canvas maps to container at zoom=1 */
   scale: number;
@@ -220,23 +221,30 @@ export function calculateDisplayTransform(
   offsetX: number;
   /** Vertical offset (container-relative, includes pan) */
   offsetY: number;
-  /** Display width in CSS pixels (zoom-inclusive) */
+  /** Display width in CSS pixels (zoom-inclusive, snapped to even integer) */
   displayWidth: number;
-  /** Display height in CSS pixels (zoom-inclusive) */
+  /** Display height in CSS pixels (zoom-inclusive, snapped to even integer) */
   displayHeight: number;
 } {
-  // Base scale: canvas → container WITHOUT viewport zoom
-  const scaleX = containerWidth / canvas.width;
-  const scaleY = containerHeight / canvas.height;
+  const safeWidth = Math.max(1, containerWidth - padding * 2);
+  const safeHeight = Math.max(1, containerHeight - padding * 2);
+
+  // Base scale: canvas → safe container area WITHOUT viewport zoom
+  const scaleX = safeWidth / canvas.width;
+  const scaleY = safeHeight / canvas.height;
   const baseScale = scaleMode === "fit" ? Math.min(scaleX, scaleY) : Math.max(scaleX, scaleY);
 
-  // Display dimensions: canvas scaled to container, then zoom applied
-  const displayWidth = canvas.width * baseScale * viewport.zoom;
-  const displayHeight = canvas.height * baseScale * viewport.zoom;
+  // Display dimensions: canvas scaled to container, then zoom applied.
+  // Snapped to even integers to eliminate subpixel rounding seams and jitter
+  // on Windows fractional DPI scaling (125%, 150%, 175%).
+  const rawWidth = canvas.width * baseScale * viewport.zoom;
+  const rawHeight = canvas.height * baseScale * viewport.zoom;
+  const displayWidth = Math.max(2, Math.round(rawWidth / 2) * 2);
+  const displayHeight = Math.max(2, Math.round(rawHeight / 2) * 2);
 
-  // Center in container + apply pan (pan is in screen pixels)
-  const offsetX = (containerWidth - displayWidth) / 2 + viewport.panX;
-  const offsetY = (containerHeight - displayHeight) / 2 + viewport.panY;
+  // Center in container + apply pan (pan is in screen pixels), snapped to integer
+  const offsetX = Math.round((containerWidth - displayWidth) / 2 + viewport.panX);
+  const offsetY = Math.round((containerHeight - displayHeight) / 2 + viewport.panY);
 
   return {
     scale: baseScale,

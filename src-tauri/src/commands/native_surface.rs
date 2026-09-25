@@ -476,10 +476,12 @@ fn configure_surface(
         }
     }
 
-    // Pipeline preparation belongs to playback configuration, where it is
-    // awaited before audio/render start. Starting it here used to race the
-    // first visible presentation and could hold the shared GPU session lock
-    // for seconds on older Windows Intel adapters.
+    // The native surface window was configured and prewarmed on the UI thread.
+    // Ensure it is explicitly hidden until active native playback calls show_surface();
+    // otherwise the OS child window sits on top of the WebView and blocks the
+    // HTML5 canvas readback preview during paused inspection.
+    let _ = surface_window.hide();
+    runtime_state.is_shown.store(false, Ordering::Release);
 
     Ok(probe)
 }
