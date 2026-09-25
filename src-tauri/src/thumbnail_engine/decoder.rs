@@ -26,6 +26,9 @@ pub struct CachedNv12Frame {
     pub width: u32,
     pub height: u32,
     pub color: VideoColorMetadata,
+    /// Decode scale is part of the frame identity. A proxy frame must never
+    /// satisfy a full-quality paused render (or vice versa).
+    pub quality: QualityTier,
     pub is_approximate: bool,
 }
 
@@ -33,6 +36,68 @@ pub struct CachedNv12Frame {
 pub struct DecodeFrameOptions {
     pub allow_keyframe_approx: bool,
     pub quality: QualityTier,
+}
+
+/// NV12 chroma planes require even pixel dimensions. Keep the preview source
+/// proportional while making reduced-quality CPU fallback material enough
+/// smaller to avoid uploading an unnecessary 4K texture every frame.
+fn nv12_dimensions_for_quality(width: u32, height: u32, quality: QualityTier) -> (u32, u32) {
+    let divisor = match quality {
+        QualityTier::Full => 1,
+        QualityTier::Half => 2,
+        QualityTier::Quarter | QualityTier::Proxy => 4,
+    };
+    let scaled_width = (width / divisor).max(2) & !1;
+    let scaled_height = (height / divisor).max(2) & !1;
+    (scaled_width, scaled_height)
+}
+
+fn scale_frame_to_nv12(
+    frame: &ffmpeg::frame::Video,
+    target_width: u32,
+    target_height: u32,
+    frame_color: VideoColorMetadata,
+) -> Result<(Vec<u8>, Vec<u8>, u32, u32, VideoColorMetadata), String> {
+    use ffmpeg_next::software::scaling::{context::Context, flag::Flags};
+
+    let mut scaler = Context::get(
+        frame.format(),
+        frame.width(),
+        frame.height(),
+        ffmpeg::format::Pixel::NV12,
+        target_width,
+        target_height,
+        Flags::FAST_BILINEAR,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut out = ffmpeg::frame::Video::empty();
+    scaler.run(frame, &mut out).map_err(|e| e.to_string())?;
+
+    // This is intentionally a standalone helper because reduced quality has
+    // to pass through the same plane extraction path as full quality.
+    let y_stride = out.stride(0);
+    let uv_stride = out.stride(1);
+    if y_stride == 0 || uv_stride == 0 || out.data(0).is_empty() || out.data(1).is_empty() {
+        return Err("Scaled NV12 output has no Y/UV planes".to_string());
+    }
+    let mut y = Vec::with_capacity((target_width * target_height) as usize);
+    for row in 0..target_height as usize {
+        let start = row * y_stride;
+        y.extend_from_slice(&out.data(0)[start..start + target_width as usize]);
+    }
+    let uv_height = target_height.div_ceil(2) as usize;
+    let mut uv = Vec::with_capacity((target_width * uv_height as u32) as usize);
+    for row in 0..uv_height {
+        let start = row * uv_stride;
+        uv.extend_from_slice(&out.data(1)[start..start + target_width as usize]);
+    }
+    Ok((
+        y,
+        uv,
+        target_width,
+        target_height,
+        normalize_converted_nv12_color(frame_color),
+    ))
 }
 
 /// Explicit color metadata carried from FFmpeg into the native render path.
@@ -391,6 +456,7 @@ pub struct VideoDecoder {
         u32,
         u32,
         VideoColorMetadata,
+        QualityTier,
         bool,
     )>,
     raw_nv12_cache: VecDeque<CachedNv12Frame>,
@@ -400,7 +466,7 @@ pub struct VideoDecoder {
 
 impl VideoDecoder {
     pub fn is_last_frame_approximate(&self) -> bool {
-        self.last_raw_nv12.as_ref().map(|f| f.6).unwrap_or(false)
+        self.last_raw_nv12.as_ref().map(|f| f.7).unwrap_or(false)
     }
 
     pub fn container_format(&self) -> &str {
@@ -1865,7 +1931,8 @@ impl VideoDecoder {
 
         // 1. Check LRU ring-buffer cache for recently decoded frames
         if let Some(pos) = self.raw_nv12_cache.iter().position(|cached| {
-            (!cached.is_approximate || options.allow_keyframe_approx)
+            cached.quality == options.quality
+                && (!cached.is_approximate || options.allow_keyframe_approx)
                 && (cached.pts - target_pts).abs() <= pts_tolerance
         }) {
             let cached = self.raw_nv12_cache.remove(pos).unwrap();
@@ -1878,8 +1945,9 @@ impl VideoDecoder {
             return Ok((y_clone, uv_clone, width, height, color));
         }
 
-        if let Some((cached_pts, y, uv, width, height, color, is_approx)) = &self.last_raw_nv12 {
-            if (!*is_approx || options.allow_keyframe_approx)
+        if let Some((cached_pts, y, uv, width, height, color, quality, is_approx)) = &self.last_raw_nv12 {
+            if *quality == options.quality
+                && (!*is_approx || options.allow_keyframe_approx)
                 && (*cached_pts - target_pts).abs() <= pts_tolerance
             {
                 return Ok((
@@ -2078,42 +2146,36 @@ impl VideoDecoder {
 
         let cpu_frame = self.to_cpu_frame(best_frame)?;
         let frame_color = self.frame_metadata(&cpu_frame).color;
-        let result = if let Some(nv12) = self.extract_nv12_planes(&cpu_frame) {
-            Ok((
-                nv12.0,
-                nv12.1,
-                nv12.2,
-                nv12.3,
-                normalize_converted_nv12_color(frame_color),
-            ))
+        let (target_width, target_height) =
+            nv12_dimensions_for_quality(cpu_frame.width(), cpu_frame.height(), options.quality);
+        // QualityTier must change actual decoded-plane dimensions, not merely
+        // cache labels or output geometry. Before this, a `proxy` CPU fallback
+        // still uploaded/composited the source 4K NV12 surface, which is the
+        // exact failure mode observed on the Intel HD 520 beta session.
+        let result = if target_width == cpu_frame.width() && target_height == cpu_frame.height() {
+            if let Some(nv12) = self.extract_nv12_planes(&cpu_frame) {
+                Ok((
+                    nv12.0,
+                    nv12.1,
+                    nv12.2,
+                    nv12.3,
+                    normalize_converted_nv12_color(frame_color),
+                ))
+            } else {
+                scale_frame_to_nv12(
+                    &cpu_frame,
+                    target_width,
+                    target_height,
+                    frame_color.clone(),
+                )
+            }
         } else {
-            use ffmpeg_next::software::scaling::{context::Context, flag::Flags};
-            let mut scaler = Context::get(
-                cpu_frame.format(),
-                cpu_frame.width(),
-                cpu_frame.height(),
-                ffmpeg::format::Pixel::NV12,
-                cpu_frame.width(),
-                cpu_frame.height(),
-                Flags::FAST_BILINEAR,
+            scale_frame_to_nv12(
+                &cpu_frame,
+                target_width,
+                target_height,
+                frame_color.clone(),
             )
-            .map_err(|e| e.to_string())?;
-
-            let mut out = ffmpeg::frame::Video::empty();
-            scaler
-                .run(&cpu_frame, &mut out)
-                .map_err(|e| e.to_string())?;
-            self.extract_nv12_planes(&out)
-                .map(|nv12| {
-                    (
-                        nv12.0,
-                        nv12.1,
-                        nv12.2,
-                        nv12.3,
-                        normalize_converted_nv12_color(frame_color),
-                    )
-                })
-                .ok_or_else(|| "Failed to extract converted NV12 planes".to_string())
         }?;
         let y_arc: Arc<[u8]> = Arc::from(result.0);
         let uv_arc: Arc<[u8]> = Arc::from(result.1);
@@ -2126,6 +2188,7 @@ impl VideoDecoder {
             result.2,
             result.3,
             result.4.clone(),
+            options.quality,
             is_approx,
         ));
         if self.raw_nv12_cache.len() >= MAX_RAW_NV12_CACHE_ENTRIES {
@@ -2138,6 +2201,7 @@ impl VideoDecoder {
             width: result.2,
             height: result.3,
             color: result.4.clone(),
+            quality: options.quality,
             is_approximate: is_approx,
         });
         self.last_demux_us = demux_time_us;
@@ -3224,7 +3288,7 @@ mod still_image_tests {
 
     #[test]
     fn raw_nv12_lru_cache_evicts_oldest_when_exceeding_capacity() {
-        use super::{CachedNv12Frame, VideoColorMetadata, MAX_RAW_NV12_CACHE_ENTRIES};
+        use super::{CachedNv12Frame, QualityTier, VideoColorMetadata, MAX_RAW_NV12_CACHE_ENTRIES};
         use std::collections::VecDeque;
         use std::sync::Arc;
 
@@ -3240,6 +3304,7 @@ mod still_image_tests {
                 width: 1920,
                 height: 1080,
                 color: VideoColorMetadata::default(),
+                quality: QualityTier::Full,
                 is_approximate: false,
             });
         }
@@ -3249,8 +3314,33 @@ mod still_image_tests {
     }
 
     #[test]
+    fn preview_quality_scales_nv12_planes_before_gpu_upload() {
+        use super::{nv12_dimensions_for_quality, QualityTier};
+
+        assert_eq!(
+            nv12_dimensions_for_quality(3840, 2160, QualityTier::Full),
+            (3840, 2160),
+        );
+        assert_eq!(
+            nv12_dimensions_for_quality(3840, 2160, QualityTier::Half),
+            (1920, 1080),
+        );
+        // Proxy and quarter quality intentionally share the 25% decode scale.
+        // That turns a 12.4MB 4K NV12 upload into roughly 0.78MB.
+        assert_eq!(
+            nv12_dimensions_for_quality(3840, 2160, QualityTier::Proxy),
+            (960, 540),
+        );
+        // NV12 must preserve even chroma-plane dimensions.
+        assert_eq!(
+            nv12_dimensions_for_quality(1919, 1079, QualityTier::Half),
+            (958, 538),
+        );
+    }
+
+    #[test]
     fn raw_nv12_cache_ignores_approximate_frame_for_exact_request() {
-        use super::{CachedNv12Frame, VideoColorMetadata};
+        use super::{CachedNv12Frame, QualityTier, VideoColorMetadata};
         use std::collections::VecDeque;
         use std::sync::Arc;
 
@@ -3262,6 +3352,7 @@ mod still_image_tests {
             width: 1920,
             height: 1080,
             color: VideoColorMetadata::default(),
+            quality: QualityTier::Full,
             is_approximate: true,
         });
 
